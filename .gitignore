@@ -1,0 +1,60 @@
+# Umgebung & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.secrets/
+secrets/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend (spaeter)
+node_modules/
+.next/
+.nuxt/
+dist/
+*.local
+
+# IDEs & Tools
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Logs & laufende Artefakte
+*.log
+logs/
+tmp/
+temp/
+.cache/
+
+# Docker (optional lokale Overrides)
+docker-compose.override.yml
+
+# OS
+.Spotlight-V100
+.Trashes
+
+# Lokale Notizen, die nicht ins Repo
+*.local.md
+scratch/

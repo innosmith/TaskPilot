@@ -1,0 +1,12 @@
+# Grosse/lokale Artefakte (Cursor-Index)
+.venv/
+venv/
+node_modules/
+__pycache__/
+.env
+.env.*
+.secrets/
+dist/
+build/
+.cache/
+

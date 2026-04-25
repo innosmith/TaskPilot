@@ -1,0 +1,10 @@
+# In diesem Ordner: nur Synthesen & Prompts versionieren.
+# Roh-Importe aus Deep Research (Perplexity, PDF-Exports, lange Dumps) bleiben lokal
+# — urheberrechtlich / Lizenzen, Groesse, Rotationsfaehigkeit.
+*
+!research-prompts.md
+!research-erkenntnisse.md
+!.gitignore
+
+# Roh-Importe in Unterordner (empfohlen)
+incoming/
