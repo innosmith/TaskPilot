@@ -1,6 +1,6 @@
 # Pflichtenheft — InnoSmith TaskPilot
 
-> **Version:** 0.10  
+> **Version:** 0.12  
 > **Datum:** 25. April 2026  
 > **Autor:** InnoSmith (mit Cursor-AI-Co-Pilot)  
 > **Status:** Konzeptphase — Architektur-Kern verifiziert, Cockpit-Frontend entschieden (React + FastAPI + @dnd-kit)
@@ -37,11 +37,11 @@
 
 **Arbeitsmodell:** Der Berater entscheidet pro Aufgabe, ob er sie selbst bearbeitet, dem Agenten zuweist, oder gemeinsam mit dem Agenten erledigt. Bei der Zuweisung bestimmt er auch, **welches LLM** der Agent nutzen soll — analog zur Modellwahl in Cursor. Externe Kommunikation (Kunden, Lieferanten) durchläuft immer ein Human-Review.
 
-### Entscheidungs-Stack v0.10
+### Entscheidungs-Stack v0.12
 
 | Schicht | Entscheidung | Status |
 |---------|-------------|--------|
-| **Agent-Runtime** | **nanobot** v0.1.5 (HKUDS, MIT, ~3.7K LOC Kern, 40K+ Stars, 240 Contributors) | **Verifiziert** — Telegram, MCP, Dream Memory, Heartbeat, Cron, Subagent nativ eingebaut |
+| **Agent-Runtime** | **nanobot** v0.1.5 (HKUDS, MIT, ~3.7K LOC Kern, 40K+ Stars, 240 Contributors) | **Verifiziert** — MCP, Dream Memory, Heartbeat, Cron, Subagent nativ eingebaut |
 | **Task-Board / Cockpit** | **Eigenes agentisches Cockpit:** React 19 (Vite) + Tailwind CSS + @dnd-kit als Frontend, FastAPI + SQLModel als Backend-API, SSE für Real-Time, PostgreSQL als Datenbank. Code wird vollständig AI-generiert (Cursor/Claude Code/Codex). MeisterTask Pro läuft parallel als Safety-Net, bis das Cockpit es ablöst. Fallback: NiceGUI (Python-only) | **Entschieden** |
 | **LLM lokal** | Ollama auf ASUS GX10 (NVIDIA Blackwell, 128 GB Unified Memory) | **Verifiziert** — produktiv im Einsatz, diverse Modelle erprobt |
 | **LLM Cloud** | Anthropic, OpenAI, Gemini APIs (nach Datenklasse geroutet) | **Verifiziert** — API-Keys aktiv |
@@ -52,10 +52,13 @@
 | **Workflow** | Kein LangGraph — nanobot AgentLoop; eigene LangChain-Erfahrung bestätigt: zu komplex | **Entschieden** |
 | **Multi-Agent** | Formal zurückgewiesen (CrewAI/AutoGen) | Entschieden |
 | **Tool-Integration** | MCP (Model Context Protocol) — nanobot ist MCP-Client seit v0.1.4 | Bestätigt |
-| **Messenger** | Telegram — **nativ in nanobot eingebaut** (Channel-System mit Media-Upload, Message-Splitting) | **Verifiziert** — kein separater Bot nötig |
+| **Messenger** | **Kein externer Messenger.** Stattdessen PWA Push Notifications via Cockpit (Web Push API). Telegram verworfen: Bot-Nachrichten nicht E2E-verschlüsselt, Server in Dubai (kein DSGVO/revDSG-Angemessenheitsbeschluss), untergräbt lokale Datenschutzstrategie. Cockpit wird mobile-friendly für Quick-Capture und Approvals | **Entschieden** — Telegram verworfen |
 | **Agent-Skills** | SKILL.md-Format (Markdown, versioniert in Git, Progressive Disclosure) | **Neu** — Standard-Format gemäss Research |
 | **Business-Tools** | Bexio, Toggl Track, Runn — Lazy-Add via MCP (Phase 2–3) | Bestätigt |
 | **InnoSmith-Ökosystem** | SIGNA (read-only, PostgreSQL @ Hostinger) + InvoiceInsight (lokal auf GX10) | Bestätigt |
+| **Deployment** | 3-Stufen: Dev (lokal ohne Docker) → Staging (Docker Compose) → Prod (Docker Compose auf GX10). Zugang via Cloudflare Tunnel | **Entschieden** |
+| **Auth & User Management** | E-Mail + Passwort + Magic Link, JWT-Sessions, Cloudflare Zero Trust als vorgelagerter Schutz. Drei Rollen: owner / member / viewer. Board-Level-Sharing für Gäste | **Entschieden** |
+| **Backup** | pg_dump (täglich, GPG-verschlüsselt), Memory via Git, Docker Volumes wöchentlich. Quartalsweiser Restore-Test | **Entschieden** |
 
 ---
 
@@ -176,13 +179,13 @@ Agent zeigt konsolidierte Sicht: vorklassifizierte neue Tasks aus Inbox, überf�
 Kunde schickt Mail → CoPilot kategorisiert → Agent liest Kategorie → **Quick Response (<15 Min):** Agent entwirft Antwort, Berater bestätigt mit 1 Klick → **Tiefe Aufgabe:** Agent erstellt Task im Board mit Projekt, Checkliste, Deadline → **FYI:** Agent archiviert, kein Task.
 
 ### C — Agent führt Research-Aufgabe aus
-Berater erstellt Task "Recherchiere aktuelle Pricing-Modelle für AI-Beratung DACH" → Agent nutzt Web-Search, synthetisiert Ergebnisse in einem Markdown-Dokument → legt es in Obsidian-Vault ab → meldet Fertigstellung via Telegram → Berater reviewt und gibt Feedback.
+Berater erstellt Task "Recherchiere aktuelle Pricing-Modelle für AI-Beratung DACH" → Agent nutzt Web-Search, synthetisiert Ergebnisse in einem Markdown-Dokument → legt es in Obsidian-Vault ab → meldet Fertigstellung via Cockpit Push Notification → Berater reviewt und gibt Feedback.
 
 ### D — Agent schreibt Dokument
 Berater erstellt Task "Erstelle Offerte für Kunde X basierend auf Vorlage Y" → Agent liest Vorlage aus Obsidian, füllt kundenspezifische Teile via RAG-Kontext → erzeugt Markdown-Entwurf → Berater reviewt in Cursor/Obsidian → Feedback fliesst in Memory.
 
 ### E — Mobile Quick-Capture
-Berater schickt Telegram-Nachricht "Erinnere mich an Offerte Smith" → Agent klassifiziert, erstellt Task, bestätigt zurück.
+Berater öffnet Cockpit auf dem Smartphone, tippt "Erinnere mich an Offerte Smith" → Agent klassifiziert, erstellt Task, bestätigt per Push Notification zurück.
 
 ### F — Wiederkehrende Admin-Tasks
 Cron-Trigger am 25. → Agent erzeugt "Lohn-Lauf" mit Checkliste → prüft historische Anpassungen → schlägt Updates vor.
@@ -191,7 +194,7 @@ Cron-Trigger am 25. → Agent erzeugt "Lohn-Lauf" mit Checkliste → prüft hist
 Monatsende → Agent erinnert an fällige Monatsabschlüsse → prüft offene Toggl-Einträge auf Plausibilität → stösst bestehendes Python-Script an (Toggl→Leistungsrapport PDF) → stösst Bexio-Script an (Rechnung erstellen, PDF exportieren) → bereitet E-Mail mit Anhängen vor → Berater prüft Empfänger, Betrag und Rechnung → bestätigt → Agent sendet.
 
 ### G — Re-Priorisierung im Tagesverlauf
-11:42 trifft dringende Mail ein → Heartbeat erkennt: harte Deadline + freier Kalender-Slot → Agent schlägt Re-Priorisierung via Telegram vor → Berater bestätigt mit 1 Klick → Agent entwirft Antwort.
+11:42 trifft dringende Mail ein → Heartbeat erkennt: harte Deadline + freier Kalender-Slot → Agent schlägt Re-Priorisierung via Push Notification vor → Berater bestätigt im Cockpit mit 1 Klick → Agent entwirft Antwort.
 
 ### H — Agent unterstützt beim Code
 Berater delegiert Task "Implementiere MCP-Server für Toggl-Integration" → Agent erzeugt Code-Skeleton in Markdown/Python → legt es im Repo ab → Berater reviewt in Cursor.
@@ -419,9 +422,9 @@ Exaktes MeisterTask-Verhalten: Recurring Tasks erscheinen automatisch zum defini
 
 | ID | Anforderung | Prio |
 |----|-------------|------|
-| FA-6h | **Dark Mode** als Default (wie MeisterTask Dark), Light Mode als Alternative | SHOULD |
+| FA-6h | **Theme: System-Preference als Default** (`prefers-color-scheme`). Tagsüber hell, nachts dunkel — automatisch. Manuell überschreibbar (Light / Dark / System) als User-Einstellung | MUST |
 | FA-6i | **Hintergrundbilder:** Pro Projekt wählbar (Unsplash-API oder Upload). Board-Spalten halbtransparent darüber | SHOULD |
-| FA-6j | **Responsive Layout:** Desktop-optimiert (primär), Tablet brauchbar, Mobile nicht Pflicht (Telegram ist der Mobile-Kanal) | MUST |
+| FA-6j | **Responsive Layout:** Desktop-optimiert (primär). **Mobile-friendly für Kernfunktionen:** Quick-Capture, Approval-Buttons, Agenda-Ansicht, Push Notifications. Das Cockpit ersetzt den externen Messenger — daher muss es auf dem Smartphone brauchbar sein, nicht nur am Desktop | MUST |
 | FA-6k | **Keyboard-Shortcuts:** Schnelles Navigieren und Task-Erstellen ohne Maus (n = neuer Task, / = Suche, Esc = Dialog schliessen) | SHOULD |
 | FA-6l | **Globale Suche:** Tasks, Projekte, Tags durchsuchbar — Volltextsuche über Titel, Beschreibung, Checklisten-Einträge | MUST |
 
@@ -454,7 +457,7 @@ Der Agent arbeitet wie ein Mitarbeiter: er bekommt Aufgaben zugewiesen, führt s
 | FA-19 | **Zusammenfassungs-Skill:** Lange Dokumente/Mail-Threads kondensieren | MUST |
 | FA-20 | **Iterativer Refinement-Loop:** Agent produziert Entwurf → Berater gibt Feedback → Agent verbessert → Feedback fliesst in Memory | SHOULD |
 | FA-21 | **Job-Queue mit Status:** queued / running / awaiting-approval / completed / failed — pro Task sichtbar | MUST |
-| FA-22 | **Langläufer-Management:** Tasks, die Minuten bis Stunden dauern (z.B. Research), laufen im Hintergrund mit Fortschritts-Updates via Telegram | SHOULD |
+| FA-22 | **Langläufer-Management:** Tasks, die Minuten bis Stunden dauern (z.B. Research), laufen im Hintergrund mit Fortschritts-Updates via Cockpit Push Notification | SHOULD |
 | FA-23 | **Output-Format:** Alles, was der Agent produziert, ist **Markdown** — kompatibel mit Obsidian-Vault und Cursor | MUST |
 | FA-23a | **LLM-Override pro Task:** Berater kann bei Task-Zuweisung das LLM explizit wählen (z.B. "Research mit Claude", "Zusammenfassung mit lokalem Modell"). Default-Routing greift, wenn nichts angegeben | MUST |
 | FA-23b | **Meeting-Analyse-Skill:** Transkript/Protokoll → Zusammenfassung + Aktionsliste + Task-Vorschläge | SHOULD |
@@ -462,17 +465,18 @@ Der Agent arbeitet wie ein Mitarbeiter: er bekommt Aufgaben zugewiesen, führt s
 | FA-23d | **Workflow-Orchestrierung:** Agent stösst bestehende Python-Scripts und Automationen an (Toggl→Leistungsrapport, Bexio→Rechnung, Markdown→Word/PPT) — über MCP-Tools oder Shell. Die bewährten Scripts bleiben intakt, TaskPilot verkettet und terminiert sie intelligent | SHOULD |
 | FA-23e | **Dokument-Pipeline-Skill:** Agent erstellt Markdown-Entwurf → Berater reviewt → Agent ruft den bestehenden Markdown→Word/PPT-Converter auf → CI/CD-konformes Kunden-Dokument entsteht automatisch | SHOULD |
 
-### 5.4 Messenger (Telegram — nativ in nanobot)
+### 5.4 Mobile-Kanal (PWA Push Notifications via Cockpit)
 
-Telegram ist als Channel nativ in nanobot eingebaut (seit v0.1.4, inkl. Media-Upload, Message-Splitting, Inline-Buttons). Es muss kein separater Bot von Grund auf entwickelt werden — Konfiguration in nanobot's `config.json` reicht. Telegram wird ausschliesslich als privater Kanal zwischen Berater und Agent genutzt (kein WhatsApp).
+> **Entscheidung:** Kein externer Messenger (Telegram, Threema, WhatsApp).  
+> **Begründung:** Telegram Bot-Nachrichten sind nicht E2E-verschlüsselt, Server in Dubai (kein DSGVO/revDSG-Angemessenheitsbeschluss). Das untergräbt die lokale Datenschutzstrategie (highly_confidential auf GX10). Threema Gateway ist kostenpflichtig (pro Nachricht) und hat eine weniger reife Bot-API. Stattdessen: Das Cockpit selbst wird mobile-friendly gestaltet und nutzt **PWA Push Notifications** (Web Push API) für Benachrichtigungen. Alle Daten bleiben auf der GX10 — kein externer Messenger-Server involviert.
 
 | ID | Anforderung | Prio |
 |----|-------------|------|
-| FA-24 | Quick-Capture per Telegram mit automatischer Klassifikation | MUST |
-| FA-25 | Approval-Anfragen per Telegram mit Inline-Buttons (Ja / Editieren / Ablehnen) | MUST |
-| FA-26 | Fortschritts-Updates für laufende Agent-Jobs | SHOULD |
-| FA-27 | Daily Briefing als Push (Top-3-Tasks, offene Approvals, Agent-Status) | SHOULD |
-| FA-28 | Sprachnachrichten → Whisper (lokal) → Task-Erstellung | COULD |
+| FA-24 | **Quick-Capture** via mobile-optimiertes Cockpit: schnelles Task-Erstellen (Titel + optional Projekt/Pipeline-Spalte) | MUST |
+| FA-25 | **Approval-Anfragen** als PWA Push Notification mit Deep-Link ins Cockpit (Approval-Review-Panel) | MUST |
+| FA-26 | **Fortschritts-Updates** für laufende Agent-Jobs als Push Notification | SHOULD |
+| FA-27 | **Daily Briefing** als Push (Top-3-Tasks, offene Approvals, Agent-Status) — morgens automatisch | SHOULD |
+| FA-28 | Sprachnachrichten → Whisper (lokal auf GX10) → Task-Erstellung — via Cockpit-Mikrofon-Button | COULD |
 
 ### 5.5 Agent-Engine (nanobot v0.1.5 — verifiziert)
 
@@ -561,7 +565,7 @@ Obsidian ist kein Wissensmanagement-System, sondern der bevorzugte Markdown-Edit
 
 ### 5.10 Business-Tool-Connectors (Lazy-Add via MCP)
 
-Phase 1: **M365 Mail + Telegram + Filesystem (Obsidian-Vaults) + Web-Search.** Das Cockpit greift direkt auf PostgreSQL zu — kein separates Backend-API nötig. Alles Weitere nur bei konkretem Bedarf — jeder Connector ist Wartungsaufwand.
+Phase 1: **M365 Mail + Filesystem (Obsidian-Vaults) + Web-Search.** Das Cockpit greift direkt auf PostgreSQL zu — kein separates Backend-API nötig. Benachrichtigungen via PWA Push Notifications. Alles Weitere nur bei konkretem Bedarf — jeder Connector ist Wartungsaufwand.
 
 **Wichtig:** Wo bereits funktionierende Python-Scripts existieren, baut TaskPilot keinen neuen Connector, sondern **ruft das bestehende Script als MCP-Tool auf** (Wrapper-Pattern). Das reduziert Build- und Wartungsaufwand erheblich.
 
@@ -580,6 +584,32 @@ Phase 1: **M365 Mail + Telegram + Filesystem (Obsidian-Vaults) + Web-Search.** D
 
 **Realistischer Warnhinweis:** Mit 4–6h/Monat Wartungsbudget sind 3–4 Connectors gut pflegbar, nicht 8+. Priorisierung nach tatsächlichem Zeitgewinn. Bestehende Scripts als MCP-Wrapper erfordern deutlich weniger Wartung als Neuentwicklungen.
 
+### 5.11 User Management & Board-Sharing
+
+TaskPilot ist primär ein Einzelnutzer-System (Berater + Agenten). Gäste können aber zu **einzelnen Projekt-Boards** eingeladen werden — z.B. Kunden, die den Fortschritt eines Mandats sehen oder eigene Tasks melden sollen. Das Kern-Cockpit (Agent-Queue, Memory-Dashboard, Cross-Project-Pipeline, Approval-Review, Skills-Overview, Unified Inbox) bleibt exklusiv für den Berater.
+
+| ID | Anforderung | Prio |
+|----|-------------|------|
+| FA-54 | **Rollen:** Drei Rollen — `owner` (Berater, voller Zugriff inkl. Agent-Steuerung, Memory, alle Boards), `member` (Zugriff auf zugewiesene Boards, Tasks lesen/erstellen/kommentieren, keine Agent-Steuerung, kein Memory), `viewer` (read-only auf einzelne Boards) | MUST |
+| FA-55 | **Board-Level-Sharing:** Pro Projekt-Board konfigurierbar, welche Nutzer (`member`/`viewer`) Zugriff haben. Default: nur `owner` | MUST |
+| FA-56 | **Einladung per E-Mail:** Berater gibt E-Mail-Adresse ein → System verschickt Magic Link → Gast erstellt bei erstem Login ein Passwort. Kein Self-Signup ohne Einladung | MUST |
+| FA-57 | **Isolation des Kern-Cockpits:** Agent-Queue, Memory-Dashboard, Cross-Project-Pipeline, Approval-Review, Skills-Overview, Unified Inbox sind **nur für `owner` sichtbar**. Gäste sehen ausschliesslich die ihnen zugewiesenen Projekt-Boards | MUST |
+| FA-58 | **Task-Zuweisung an Personen:** Tasks können dem Berater, einem Agenten oder einem eingeladenen Gast zugewiesen werden. Gäste sehen nur ihre Tasks und die Board-Übersicht, nicht andere Personen-Tasks ausserhalb des Boards | SHOULD |
+| FA-59 | **Gast-Verwaltung:** Berater kann Gäste pro Board einladen, entfernen, Rolle ändern (member ↔ viewer). Übersicht aller aktiven Gäste und deren Board-Zuordnungen | MUST |
+
+### 5.12 Authentifizierung & Zugangsschutz
+
+| ID | Anforderung | Prio |
+|----|-------------|------|
+| FA-60 | **E-Mail + Passwort Login** für Owner und Gäste. Passwort-Hashing mit bcrypt/argon2 | MUST |
+| FA-61 | **Magic Link (E-Mail-OTP):** Als Erstanmeldung bei Einladung und als optionaler Login-Weg. Berater kann nach Session-Ablauf per E-Mail-Code (Einmalcode) erneut zugreifen, ohne Passwort eingeben zu müssen | SHOULD |
+| FA-62 | **Session-Management:** JWT-basiert (httpOnly, Secure, SameSite=Strict), konfigurierbare Session-Dauer (Default: 7 Tage), Refresh-Token-Rotation | MUST |
+| FA-63 | **Cloudflare Zero Trust / Access:** Vorgelagerte Schutzschicht — nur autorisierte E-Mail-Adressen (Whitelist) erreichen das Cockpit überhaupt. Doppelter Schutz: Cloudflare filtert auf Netzwerk-Ebene, FastAPI prüft Session/JWT auf Applikations-Ebene | MUST |
+| FA-64 | **Rate-Limiting:** Login-Versuche begrenzt (z.B. 5 Fehlversuche → 15 Min Sperre pro IP) | MUST |
+| FA-65 | **HTTPS-only:** Cockpit ausschliesslich über HTTPS erreichbar (Cloudflare Tunnel oder Let's Encrypt) | MUST |
+
+**Architektur-Hinweis:** Kein externer Identity Provider (Auth0, Keycloak) in Phase 1 — zu viel Overhead für einen Einzelnutzer + wenige Gäste. FastAPI + python-jose (JWT) + bcrypt reichen. Falls später Dutzende Nutzer hinzukommen, kann ein IdP nachgerüstet werden.
+
 ---
 
 ## 6. Nicht-funktionale Anforderungen
@@ -590,7 +620,7 @@ Phase 1: **M365 Mail + Telegram + Filesystem (Obsidian-Vaults) + Web-Search.** D
 - Sensitive Daten bleiben auf der GX10 (Ollama); Cloud-LLMs nur für public/internal
 - Datenexport jederzeit in offenen Formaten (Markdown, JSON, CSV)
 - Markdown-Memory = DSGVO-Compliance-Vorteil: Auskunft (`cat MEMORY.md`), Berichtigung (Editieren), Löschung (Zeile entfernen)
-- **Telegram als Agent-Kanal:** kein Zugriff auf persönliche Nachrichten; dedizierter Bot; Datenschutzprüfung für revDSG-Konformität nötig (Metadata-Sichtbarkeit bei Telegram)
+- **Kein externer Messenger:** Alle Benachrichtigungen via PWA Push Notifications vom Cockpit. Daten verlassen nie die GX10-Infrastruktur. Kein Drittanbieter-Server (Telegram, WhatsApp) im Datenfluss
 
 ### 6.2 Sicherheit
 
@@ -599,6 +629,10 @@ Phase 1: **M365 Mail + Telegram + Filesystem (Obsidian-Vaults) + Web-Search.** D
 - **Phase 1:** MCP-Tool-Allowlist (nur eigene + geprüfte Server), System-Prompt-Constraints, Docker-Container-Isolation, User-Confirmation-Gates für alle Side-Effects
 - **Phase 3/4:** Cerbos PEP für ABAC, NeMo/Llama Guard als Output-Filter, Anomalie-Detection
 - OpenClaw-Anti-Patterns verboten: kein Auto-Approve, kein Plaintext-Keys, kein Skill-Marketplace
+- **MCP Tool Poisoning / Prompt Injection:** Agent-Outputs von MCP-Tools werden als untrusted behandelt. Kein `eval()` auf Tool-Responses. Validierung von Tool-Ergebnissen gegen erwartetes Schema vor Weiterverarbeitung. Sandboxing aller MCP-Server in separaten Docker-Containern
+- **PostgreSQL als Single Point of Trust:** Backup-Strategie (pg_dump, täglicher Cronjob, verschlüsseltes Backup auf separatem Volume), Encryption at Rest (LUKS oder pgcrypto für sensitive Spalten), granulares Rollen-Modell (separater DB-User pro Service, kein `superuser` für Applikation)
+- **LiteLLM Logging:** Für Requests an lokale Ollama-Modelle (highly_confidential) wird Request/Response-Logging in LiteLLM deaktiviert (`LITELLM_LOG=ERROR`). Nur Metadata (Kosten, Token-Count, Latenz) wird geloggt. Für Cloud-Modelle (public/internal) kann volles Logging aktiv bleiben
+- **Graph API Token Security:** Application-level Token (Client Credentials Flow) mit minimalen Scopes (Mail.Read, Mail.Send, Calendars.Read). Token-Rotation alle 90 Tage. Secrets in `.env` (nicht im Code), langfristig in einem Secrets Manager (z.B. Vault oder 1Password CLI)
 
 ### 6.3 Performance
 
@@ -610,7 +644,7 @@ Phase 1: **M365 Mail + Telegram + Filesystem (Obsidian-Vaults) + Web-Search.** D
 
 - **Zielwert: 4–6 Stunden/Monat** für Updates, Patches, Sicherheitsfixes. Realistisch ab Phase 2 mit 6+ laufenden Services eher **8–12h/Monat** — bewusst einkalkulieren
 - Kein LangGraph, kein Multi-Agent-Framework — Wartungskomplexität muss handhabbar bleiben
-- Modulare Architektur (Skills als MCP-Server), CI/CD via GitHub Actions
+- Modulare Architektur (Skills als MCP-Server). Kein CI/CD via GitHub Actions — bei Solo-Projekt ohne Mehrwert. Nachrüstbar bei Bedarf
 - Agentic Engineering (Cursor + AI-Assistenten) reduziert Entwicklungs- und Wartungszeit erheblich gegenüber klassischer Schätzung
 
 ### 6.5 Skalierbarkeit für komplexe Aufgaben
@@ -625,7 +659,53 @@ Kritische Anforderung: Die Architektur darf bei komplexen Aufgaben nicht an die 
 
 TaskPilot ist primär ein **Experiment mit direktem Nutzen** — ein ambitioniertes Lernprojekt, das gleichzeitig realen Produktivitätsgewinn bringen soll. Die Bereitschaft, neue Frameworks zu testen (und bei Bedarf umzuschwenken), ist bewusst hoch. Erst wenn sich der persönliche Nutzen bestätigt, wird es zum Demo-/Show-Projekt für Kunden.
 
-Mandantenfähigkeit ist explizit kein Ziel dieses Pflichtenhefts. Falls TaskPilot eines Tages Multi-Tenant werden soll, wird dafür ein eigenes Pflichtenheft geschrieben.
+Mandantenfähigkeit (Multi-Tenancy) ist explizit kein Ziel dieses Pflichtenhefts. Board-Sharing mit Gästen (Kunden, Partner) ist aber vorgesehen — allerdings auf Einzelboard-Ebene mit strikter Isolation des Kern-Cockpits (siehe 5.11). Falls TaskPilot eines Tages Multi-Tenant werden soll, wird dafür ein eigenes Pflichtenheft geschrieben.
+
+### 6.7 Backup & Disaster Recovery
+
+Datenverlust bei einem Einzelunternehmer-System ist existenzbedrohend. Die Backup-Strategie muss ohne manuellen Aufwand funktionieren.
+
+| Was | Wie | Frequenz | Aufbewahrung |
+|-----|-----|----------|-------------|
+| **PostgreSQL** (Tasks, Agent-Jobs, Audit-Log, Memory, Embeddings) | `pg_dump` → komprimiert → GPG-verschlüsselt → separates Volume auf GX10 + optional Offsite (verschlüsselter Sync zu einem Cloud-Bucket oder externem NAS) | Täglich (Cronjob, 03:00 Uhr) | 30 Tage rollierend lokal, 90 Tage offsite |
+| **Memory-Dateien** (MEMORY.md, HISTORY.md) | Git-versioniert im Workspace — `git push` zu GitHub (privates Repo) | Bei jeder Konsolidierung (automatisch) | Vollständige Git-History |
+| **Obsidian-Vaults** | Kunden-Vault: OneDrive-synchronisiert (bereits gegeben). Solutions-Vault: Git-versioniert | Automatisch (OneDrive/Git) | OneDrive Recycle Bin (93 Tage) + Git-History |
+| **Docker Volumes** (LiteLLM-Config, Langfuse-Data, nanobot-Config) | Snapshot der Docker Volumes (`docker run --rm -v ... tar czf`) → selbes Backup-Volume | Wöchentlich | 12 Wochen rollierend |
+| **`.env`-Dateien / Secrets** | Manuell gesichert in 1Password oder verschlüsseltem Speicher (nie im Git!) | Bei jeder Änderung | Unbegrenzt (Vault) |
+
+**Recovery-Test:** Mindestens einmal pro Quartal ein Restore der PostgreSQL-DB auf die Staging-Umgebung durchführen, um sicherzustellen, dass Backups tatsächlich funktionieren.
+
+### 6.8 Usability & Look-and-Feel
+
+Das Cockpit ist das tägliche Arbeitsinstrument. Es muss **Freude machen**, damit zu planen und zu arbeiten. Trocke, lieblose Dashboards werden nicht akzeptiert.
+
+- **Theme:** System-Preference als Default (`prefers-color-scheme`). Tagsüber hell, nachts dunkel — automatisch. Manuell überschreibbar (Light / Dark / System) als User-Einstellung
+- **Visuelle Qualität:** Moderne, cleane UI mit Tailwind CSS. Micro-Interactions (sanfte Animationen bei Drag-and-Drop, Card-Hover-States, Transitions). Keine nackte Bootstrap-Optik. Inspiration: MeisterTask, Linear, Notion
+- **Hintergrundbilder:** Pro Projekt-Board wählbar (Unsplash-API oder Upload). Spalten halbtransparent darüber — schafft Atmosphäre und visuellen Kontext pro Projekt
+- **Typografie & Spacing:** Grosszügige Abstände, gut lesbare Schriftgrössen, konsistente Hierarchie (Headlines, Body, Meta-Text)
+- **Responsive:** Desktop-optimiert. Mobile brauchbar für Kernfunktionen (Quick-Capture, Agenda, Approvals). Tablet voll nutzbar
+- **Onboarding:** Kein Onboarding-Wizard nötig (Einzelnutzer), aber intuitive Bedienbarkeit: neue Projekte, Spalten, Tasks erstellen ohne Dokumentation lesen zu müssen (No-Code-Prinzip)
+- **Feedback-Loops:** Jede Aktion gibt visuelles Feedback (Toast-Notifications, Spinner bei Ladezeiten, Erfolgs-/Fehlerindikatoren). Kein "stilles Nichts" nach einem Klick
+- **Barrierefreiheit:** Kein Fokus auf WCAG-Zertifizierung, aber grundlegende Best Practices: ausreichende Kontraste, Keyboard-Navigation, sinnvolle `aria-labels` für Screen-Reader-Grundkompatibilität
+
+### 6.9 Suche & Auffindbarkeit
+
+| Anforderung | Prio |
+|-------------|------|
+| **Globale Volltextsuche:** Tasks (Titel, Beschreibung, Checklisten-Einträge), Projekte, Tags — durchsuchbar über ein einziges Suchfeld (Keyboard-Shortcut `/`) | MUST |
+| **Ergebnisse live:** Suchergebnisse erscheinen während der Eingabe (Debounce 200ms), gruppiert nach Typ (Tasks, Projekte, Tags) | SHOULD |
+| **Semantische Suche (Phase 2):** pgvector + BGE-M3 für Ähnlichkeitssuche über Memory, Task-Beschreibungen, Mails ("Finde alles, was mit Pricing-Modellen zu tun hat") | SHOULD |
+| **Memory durchsuchbar:** Owner kann im Memory-Dashboard nach Einträgen suchen — "Was hat der Agent über Kunde X gelernt?" | SHOULD |
+| **Filter & Facetten:** Tasks filtern nach Projekt, Tag, Status, Zuweisungsperson, Zeithorizont (Pipeline-Spalte), Erstellt-Datum | MUST |
+
+### 6.10 Logging, Monitoring & Observability
+
+- **Structured Logging:** Alle Services loggen im JSON-Format (Timestamp, Service, Level, Message, Correlation-ID). Log-Aggregation in einem zentralen Volume
+- **Health-Checks:** Jeder Docker-Container exponiert einen `/health`-Endpoint. Docker Compose Health-Check konfiguriert — automatischer Restart bei Unhealthy
+- **Langfuse:** Agent-Observability (Cost pro Task, Latenz, Token-Verbrauch, Agent-State-Visibility). Einzige "Luxus"-Komponente in der Observability — aber der ROI ist hoch bei LLM-Kosten-Kontrolle
+- **Alerting (einfach):** Bei kritischen Fehlern (DB-Connection lost, Agent-Runtime crashed, Backup fehlgeschlagen) → Push Notification ans Cockpit oder E-Mail. Kein PagerDuty — Einzelnutzer-Setup
+- **Log-Rotation:** Automatische Rotation (logrotate oder Docker-Logging-Driver), max. 500MB pro Service, 7 Tage History
+- **Audit-Trail:** Alle zustandsverändernden Aktionen (Task erstellt/verschoben/gelöscht, Approval erteilt, Mail gesendet) in PostgreSQL `activity_log` — append-only, compliance-tauglich (revDSG Auskunftspflicht)
 
 ---
 
@@ -636,10 +716,9 @@ Mandantenfähigkeit ist explizit kein Ziel dieses Pflichtenhefts. Falls TaskPilo
 ```mermaid
 flowchart TB
     subgraph Channels [Interaktions-Kanäle]
-        Telegram[Telegram Bot<br/>dedizierter Agent-Kanal]
         Mail[M365 Outlook<br/>via Graph API]
         Cursor[Cursor IDE<br/>via MCP]
-        Cockpit[TaskPilot Cockpit<br/>Web-UI: Inbox / Queue /<br/>Pipeline / Approval / Memory]
+        Cockpit[TaskPilot Cockpit<br/>PWA: Inbox / Queue /<br/>Pipeline / Approval / Memory<br/>Push Notifications]
     end
 
     subgraph Agent [Agent-Runtime: nanobot]
@@ -698,7 +777,7 @@ flowchart TB
 ### 7.2 Wie nanobot, LiteLLM und Ollama zusammenspielen
 
 ```
-Berater ──Telegram──→ nanobot (AgentLoop)
+Berater ──Cockpit/Cursor──→ nanobot (AgentLoop)
                          │
                          ├──→ MCP-Tools (Mail, Filesystem, SIGNA-DB, ...)
                          │
@@ -862,7 +941,7 @@ CREATE TABLE tasks (
     board_position  FLOAT NOT NULL,        -- Fractional Indexing innerhalb der Board-Spalte
     pipeline_column_id UUID REFERENCES pipeline_columns(id),  -- optional: Agenda-Position
     pipeline_position  FLOAT,              -- Fractional Indexing innerhalb der Pipeline-Spalte
-    assignee        TEXT NOT NULL DEFAULT 'me',  -- me | agent | shared
+    assignee        TEXT NOT NULL DEFAULT 'me',  -- 'me' | 'agent' | 'shared' | user-UUID (für Gäste)
     due_date        DATE,
     data_class      TEXT NOT NULL DEFAULT 'internal',  -- public | internal | confidential | highly_confidential
     llm_override    TEXT,                  -- z.B. 'cloud/claude', 'local/qwen'
@@ -928,9 +1007,30 @@ CREATE TABLE activity_log (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     task_id         UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     event_type      TEXT NOT NULL,          -- created | moved | checklist_changed | commented | agent_action | completed | ...
-    actor           TEXT NOT NULL,          -- 'user' | 'agent'
+    actor           TEXT NOT NULL,          -- 'user:<uuid>' | 'agent'
     details         JSONB,                 -- Flexibles Payload: {from_column, to_column}, {comment_text}, etc.
     created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- User Management
+CREATE TABLE users (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email           TEXT UNIQUE NOT NULL,
+    password_hash   TEXT NOT NULL,          -- argon2 / bcrypt
+    display_name    TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member', 'viewer')),
+    is_active       BOOLEAN DEFAULT true,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    last_login_at   TIMESTAMPTZ
+);
+
+CREATE TABLE board_members (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'viewer')),
+    invited_at      TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(project_id, user_id)
 );
 
 -- NOTIFY-Trigger für Real-Time-Updates
@@ -979,6 +1079,43 @@ CREATE TRIGGER agent_jobs_notify AFTER INSERT OR UPDATE ON agent_jobs
 - **Phase 2:** Tool-Description-Scanning, Anomalie-Detection
 - **Phase 3:** ABAC-Policies, Output-Filter (Llama Guard o.ä.), Pen-Test
 
+### 7.9 Deployment-Strategie (drei Stufen auf GX10)
+
+Alle drei Stufen laufen auf der GX10. Entwicklung, Test und Produktion auf derselben Maschine — kein externer Hosting-Provider für TaskPilot selbst.
+
+| Stufe | Zweck | Charakteristik |
+|-------|-------|----------------|
+| **Dev (lokal, ohne Docker)** | Schnelle Iteration, Debugging, AI-Coding-Sessions in Cursor | Python-Prozesse direkt starten (`uvicorn`, `python main.py`), React Dev-Server (`npm run dev`), lokale PostgreSQL-Instanz, Hot-Reload. `.env.dev` mit Entwicklungs-Konfiguration. Kein Docker-Overhead — Cursor/Claude Code arbeiten direkt auf dem Filesystem. Zugang: `localhost:3000` (Frontend), `localhost:8000` (API) |
+| **Test (Docker Compose)** | Integrations-Test vor Prod-Deployment, neue Skills/Connectors validieren | `docker-compose.test.yml` — identische Container wie Prod, aber mit eigenem DB-Schema/Namespace, reduziertem Heartbeat-Intervall, Debug-Logging. Hier wird geprüft, ob alles als Container korrekt zusammenspielt |
+| **Prod (Docker Compose)** | Stabiler Dauerbetrieb, echter Datenbestand | `docker-compose.prod.yml` — alle Services als Container. Restart-Policy `unless-stopped`. Health-Checks pro Container. Log-Rotation konfiguriert |
+
+**Domain- und Zugangsschema (innosmith.ai bei Cloudflare):**
+
+| Umgebung | URL | Zugang |
+|----------|-----|--------|
+| **Dev** | `localhost:3000` / `localhost:8000` | Nur lokal auf GX10 (kein Cloudflare) |
+| **Test** | `test.tp.innosmith.ai` | Cloudflare Tunnel, Zero Trust (nur Owner-E-Mail) |
+| **Prod** | `tp.innosmith.ai` | Cloudflare Tunnel, Zero Trust (Owner + eingeladene Gäste) |
+
+Alle drei Umgebungen laufen auf unterschiedlichen Ports auf der GX10. Docker Compose mappt Test- und Prod-Services auf getrennte Host-Ports (z.B. Test: 3100/8100, Prod: 3000/8000). Cloudflare Tunnel routet die Subdomains auf die jeweiligen Ports. Dev braucht keinen Tunnel — direkter Zugriff auf der Maschine.
+
+**Services in Docker Compose (Prod):**
+
+```
+services:
+  postgres        # PostgreSQL 16 + pgvector
+  fastapi         # Cockpit-Backend (FastAPI + SQLModel)
+  nanobot         # Agent-Runtime
+  litellm         # LLM-Proxy
+  langfuse        # Observability (optional, kann auch extern)
+```
+
+**Übergang Dev → Test → Prod:**
+- Dev: manuell, direkte Prozesse — der Normalfall während aktiver Entwicklung
+- Test: `docker compose -f docker-compose.test.yml up --build` — nach grösseren Änderungen
+- Prod: `docker compose -f docker-compose.prod.yml up -d` — nach erfolgreicher Test-Validierung
+- **Kein CI/CD via GitHub Actions.** Bei einem Solo-Projekt mit AI-Coding auf derselben Maschine bringt eine CI-Pipeline keinen Mehrwert — `docker compose build` lokal ist schneller und direkter. CI kann nachgerüstet werden, falls TaskPilot zum Team-Projekt wird oder eine umfangreiche Testsuite automatisiert laufen soll
+
 ---
 
 ## 8. Roadmap
@@ -989,7 +1126,7 @@ CREATE TRIGGER agent_jobs_notify AFTER INSERT OR UPDATE ON agent_jobs
 
 Zwei harte Fragen beantworten — bei "Nein" umplanen, bevor Wochen fliessen:
 
-1. **nanobot End-to-End-Spike:** Kann nanobot eine Mail lesen (Graph API MCP), einen Task-Vorschlag generieren und via Telegram zur Bestätigung vorlegen? Inklusive: nanobot → LiteLLM → Ollama mit zuverlässigem Function-Calling.
+1. **nanobot End-to-End-Spike:** Kann nanobot eine Mail lesen (Graph API MCP), einen Task-Vorschlag generieren und via Cockpit/Push Notification zur Bestätigung vorlegen? Inklusive: nanobot → LiteLLM → Ollama mit zuverlässigem Function-Calling.
 2. **CoPilot-Kategorien-Check:** Erscheinen CoPilots Kategorisierungen als `categories` in der Graph API? (Einfacher Graph-Explorer-Test — die Graph API selbst ist bereits eingerichtet und verifiziert.)
 
 **Bereits verifiziert (kein Spike nötig):**
@@ -1008,12 +1145,12 @@ Zwei harte Fragen beantworten — bei "Nein" umplanen, bevor Wochen fliessen:
 
 ### Phase 1 — Beobachter + Quick-Wins + Cockpit MVP (3–6 Wochen)
 
-- nanobot + M365 MCP (Read-Only) + Telegram (nativ in nanobot, nur Konfiguration nötig)
-- **Cockpit MVP:** Cross-Project-Pipeline (Focus → Beyond) mit Drag-and-Drop, Agent-Queue-Panel (Status aller Jobs), Approval-Review-Panel (Agent-Outputs prüfen), Unified Inbox (eingehende Signale)
-- **Inbox-Triage:** CoPilot-Brücke liest kategorisierte Mails → klassifiziert (Quick Response / Task / Parken / FYI) → Vorschläge via Telegram + Cockpit
-- **Quick-Response-Skill:** Agent entwirft kurze Mail-Antworten → Berater bestätigt im Cockpit oder via Telegram
+- nanobot + M365 MCP (Read-Only)
+- **Cockpit MVP (PWA):** Cross-Project-Pipeline (Focus → Beyond) mit Drag-and-Drop, Agent-Queue-Panel (Status aller Jobs), Approval-Review-Panel (Agent-Outputs prüfen), Unified Inbox (eingehende Signale), PWA Push Notifications (Service Worker), mobile-friendly Quick-Capture und Approval-Ansicht
+- **Inbox-Triage:** CoPilot-Brücke liest kategorisierte Mails → klassifiziert (Quick Response / Task / Parken / FYI) → Vorschläge via Push Notification + Cockpit
+- **Quick-Response-Skill:** Agent entwirft kurze Mail-Antworten → Berater bestätigt im Cockpit (Desktop oder Mobile)
 - **SIGNA-Anbindung (read-only):** MCP-Server für PostgreSQL bei Hostinger — Agent kann Trend-Signale lesen und als Kontext nutzen
-- Mobile Quick-Capture via Telegram
+- Mobile Quick-Capture via Cockpit PWA (Smartphone)
 - Dream Memory aktiv (HISTORY.md + MEMORY.md)
 - Approval-Gates konfiguriert (L0–L3), Default L1
 - **SKILL.md-Dateien** für erste Skills (Mail-Triage, Quick-Response, Research)
@@ -1054,7 +1191,7 @@ Zwei harte Fragen beantworten — bei "Nein" umplanen, bevor Wochen fliessen:
 - **Quick-Response-Entwürfe:** Routine-Antworten spart 60–70% der Bearbeitungszeit; Human-Review bleibt Pflicht
 - **Zusammenfassungen & Meeting-Analyse:** LLM-Kernkompetenz; funktioniert zuverlässig
 - **Task-Erstellung aus Mails:** Standard-Extraktionsaufgabe, gut lösbar
-- **Quick-Capture via Telegram:** Technisch simpel, ausgereift
+- **Quick-Capture via Cockpit PWA:** Technisch simpel — ein mobile-optimiertes Eingabefeld mit Push Notification als Bestätigung
 - **LLM-Wahl pro Task:** Trivial über LiteLLM-Proxy; gibt dem AI-erfahrenen Nutzer die nötige Kontrolle
 - **Memory für Muster & Präferenzen:** Dream Memory ist genau dafür gebaut; lernt Klassifizierungs-Korrekturen schnell
 - **SIGNA-Anbindung:** Read-only PostgreSQL-MCP-Server = 1 Tag Aufwand, sofort wertvolle Wissensbasis. Quick-Win für Phase 1
@@ -1110,7 +1247,7 @@ Zwei harte Fragen beantworten — bei "Nein" umplanen, bevor Wochen fliessen:
 
 | # | Frage | Status |
 |---|-------|--------|
-| 8 | Telegram revDSG-konform als Agent-Kanal? Metadata-Risiko? | **offen — Prüfung nötig** |
+| 8 | ~~Telegram revDSG-konform als Agent-Kanal?~~ | **Entschieden** — Telegram verworfen (nicht E2E-verschlüsselt für Bots, Server in Dubai). Ersetzt durch PWA Push Notifications via Cockpit |
 
 ### Inferenz
 
@@ -1154,13 +1291,20 @@ Zwei harte Fragen beantworten — bei "Nein" umplanen, bevor Wochen fliessen:
 | R6 | **Memory Drift** (falsche Patterns akkumulieren) | Mittel | Mittel | MEMORY.md wöchentlich inspizierbar, kein Blackbox-Start |
 | R7 | **Alert Fatigue** (zu viele Approvals) | Hoch | Niedrig | Batching, dynamische L2-Erhöhung nach erfolgreichen Bestätigungen |
 | R8 | **LLM-Kosten explodieren bei komplexen Tasks** | Mittel | Mittel | Kosten-Logging pro Task, lokales Modell als Default, Cloud nur bei Bedarf |
-| R9 | **Telegram Datenschutz-Risiko** | Mittel | Mittel | Nur Agent-Kanal, keine Mandantendaten in Messages, Threema als Plan B |
+| R9 | **PWA Push Notifications nicht zugestellt** (Browser-Permission verweigert, Service Worker nicht registriert, iOS-Safari-Einschränkungen) | Mittel | Niedrig | Service Worker korrekt registrieren, Fallback: Cockpit zeigt Notification-Badge bei nächstem Login; iOS seit 16.4 unterstützt Web Push |
 | R10 | **Architektur-Sackgasse bei sehr komplexen Workflows** | Niedrig | Hoch | Escape Hatch: einzelne Skills als eigenständige MCP-Server-Services |
 | R11 | **Cross-System-Fragilität** (Onboarding-Kette Bexio→Toggl→Runn bricht ab) | Hoch | Mittel | Hybrid: Agent füllt vor, deterministische Pipeline führt aus; Rollback-Strategie pro Schritt |
 | R12 | **Wartungsbudget-Überschreitung** (zu viele Connectors für 4–6h/Monat) | Mittel | Mittel | Strikte Priorisierung: max. 3–4 aktive Connectors, Rest nur bei klarem ROI |
 | R13 | **CoPilot-Kategorien nicht via Graph API lesbar** — CoPilot nutzt internen Mechanismus statt `categories`-Property | Mittel | Mittel | Agent-eigene Mail-Klassifikation als Fallback (machbar mit lokalem Modell, mehr Initial-Aufwand) |
 | R14 | **OneDrive-Sync-Konflikte** bei gleichzeitigem Agent- und Berater-Zugriff auf Kunden-Vault | Niedrig | Niedrig | Agent schreibt in dedizierte Unterordner (`_agent-outputs/`), keine gleichzeitige Bearbeitung |
 | R15 | **React/TypeScript-Unvertrautheit** — User hat keine React-Tiefe, Code wird 100% AI-generiert | Niedrig | Niedrig | React ist das bestgenerierte Framework in allen LLMs (Cursor, Claude Code, Codex). @dnd-kit Kanban-Boards sind Standard-Generierungsaufgabe. Fallback: NiceGUI (Python-only) |
+| R16 | **MCP Tool Poisoning / Prompt Injection** — kompromittierter MCP-Server liefert manipulierte Daten, die Agent-Reasoning vergiften | Mittel | Hoch | MCP-Tool-Allowlist, Schema-Validierung auf Tool-Responses, Docker-Isolation pro MCP-Server, kein `eval()` auf Tool-Output |
+| R17 | **PostgreSQL als Single Point of Trust** — Datenverlust oder unbefugter Zugriff auf die zentrale DB | Niedrig | Kritisch | Tägliches verschlüsseltes Backup (pg_dump + gpg), Encryption at Rest (LUKS), granulare DB-Rollen (kein Applikations-Superuser), pg_audit für Zugriffs-Logging |
+| R18 | **LiteLLM loggt sensitive Daten** — Requests an lokale Modelle (highly_confidential) werden in LiteLLM-Logs sichtbar | Mittel | Mittel | Logging für Ollama-Backend auf Metadata-only setzen (`LITELLM_LOG=ERROR`), Request/Response-Body nicht persistieren, regelmässige Log-Rotation |
+| R19 | **Graph API Token-Kompromittierung** — gestohlener Token erlaubt E-Mail-Zugriff und -Versand | Niedrig | Hoch | Minimale Scopes (Mail.Read, Mail.Send, Calendars.Read), Token-Rotation alle 90 Tage, Secrets in `.env` / Vault, Conditional Access Policies in Entra ID |
+| R20 | **Backup-Restore ungetestet** — Backup läuft, aber Restore wurde nie geprüft → bei Datenverlust funktioniert es nicht | Mittel | Kritisch | Quartalsweiser Restore-Test auf Staging-Umgebung. Automatisierter Smoke-Test nach pg_dump (Dateigrösse > 0, pg_restore ohne Fehler) |
+| R21 | **Session-Hijacking / JWT-Leak** — gestohlenes JWT-Token gewährt vollen Cockpit-Zugriff | Niedrig | Hoch | httpOnly + Secure + SameSite=Strict Cookies, kurze Access-Token-Lifetime (15 Min) + Refresh-Token-Rotation, Cloudflare Zero Trust als vorgelagerte Schicht |
+| R22 | **Docker-Compose-Drift** — Test/Prod-Konfigurationen laufen auseinander | Mittel | Mittel | Gemeinsame Base-Config (`docker-compose.yml`) + Environment-spezifische Overrides (`docker-compose.test.yml`, `docker-compose.prod.yml`). Bei jedem Prod-Deployment kurz Test vorschalten |
 
 ---
 
@@ -1182,6 +1326,9 @@ Zwei harte Fragen beantworten — bei "Nein" umplanen, bevor Wochen fliessen:
 | **A2A** | Agent-to-Agent Protocol (Google) — Standard für Cross-Platform-Agent-Kommunikation. Für TaskPilot erst relevant, wenn es mit externen Agent-Systemen kommunizieren muss |
 | **revDSG** | Revidiertes Datenschutzgesetz (Schweiz, seit 2023) |
 | **EU AI Act** | EU-Verordnung über KI, Hochrisiko-Pflichten ab August 2026 |
+| **PWA** | Progressive Web App — Web-Anwendung, die nativ installierbar ist (Add to Home Screen) und Offline-/Push-Fähigkeiten bietet |
+| **Magic Link** | Login-Mechanismus, bei dem ein Einmal-Link per E-Mail verschickt wird — kein Passwort nötig |
+| **Cloudflare Zero Trust** | Vorgelagerter Zugriffsschutz auf Netzwerk-Ebene. Nur autorisierte Identitäten (E-Mail-Whitelist) erreichen die geschützte Anwendung |
 
 ---
 
