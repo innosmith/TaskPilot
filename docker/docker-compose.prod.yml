@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: taskpilot-postgres-prod
+    ports:
+      - "127.0.0.1:5437:5432"
+    environment:
+      POSTGRES_USER: ${TP_DB_USER}
+      POSTGRES_PASSWORD: ${TP_DB_PASSWORD}
+      POSTGRES_DB: ${TP_DB_NAME}
+    volumes:
+      - /data/taskpilot/postgres/prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TP_DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ../src/backend
+      dockerfile: ../../docker/Dockerfile.backend
+    container_name: taskpilot-backend-prod
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../src/frontend
+      dockerfile: ../../docker/Dockerfile.frontend
+    container_name: taskpilot-frontend-prod
+    ports:
+      - "127.0.0.1:3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
