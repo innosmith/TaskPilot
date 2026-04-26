@@ -64,7 +64,7 @@ async def _listen_pg(channels: list[str]):
 @router.get("/events")
 async def event_stream(_user: User = Depends(_get_user_from_token)):
     async def generate():
-        async for msg in _listen_pg(["tasks_changed", "agent_jobs_changed"]):
+        async for msg in _listen_pg(["tasks_changed", "agent_jobs_changed", "email_triage_changed"]):
             yield {
                 "event": msg["channel"],
                 "data": msg["data"],

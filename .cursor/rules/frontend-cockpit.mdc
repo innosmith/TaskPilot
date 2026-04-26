@@ -1,0 +1,33 @@
+---
+description: React/TypeScript-Konventionen für das TaskPilot Cockpit Frontend
+globs: "src/cockpit/**/*.{tsx,ts,jsx,js}"
+alwaysApply: false
+---
+
+# Frontend-Konventionen (Cockpit)
+
+## Stack
+- React 19 + Vite + TypeScript
+- Tailwind CSS für Styling (Glass-Blur-Design, dunkle Ästhetik)
+- @dnd-kit für Drag-and-Drop (Tasks + Spalten)
+- Lucide-React (~1700 Icons, MIT-lizenziert)
+- Zustand oder React Context für State
+
+## UI-Prinzipien
+- Modernes Glass-Blur-Design mit dunklem Hintergrund
+- Sidebar: Kollabierbar, enthält Suche, Projekte, Navigation
+- Boards: Customizable Spalten (Name, Farbe, Icon editierbar)
+- Pipeline: Zeithorizont-Spalten (Focus → Beyond)
+- Überall deutsche UI-Texte (Schweizer Hochdeutsch, keine ß)
+
+## API-Kommunikation
+- Alle Backend-Calls über `fetch()` an `http://localhost:8000/api/`
+- Auth via Bearer Token im Authorization-Header
+- SSE-Events von `/api/sse/events` für Real-Time-Updates (tasks_changed, agent_jobs_changed, email_triage_changed)
+
+## Wichtige Seiten
+- `/` — Dashboard / Agenda (Pipeline)
+- `/project/:id` — Kanban Board
+- `/inbox` — Unified Inbox (E-Mails + Triage)
+- `/agent-queue` — Agent-Jobs Übersicht
+- `/settings` — Einstellungen (Triage-Konfiguration, Profil)

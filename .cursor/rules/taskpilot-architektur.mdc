@@ -1,0 +1,39 @@
+---
+description: TaskPilot Architektur-Kontext und zentrale Design-Entscheidungen
+alwaysApply: true
+---
+
+# TaskPilot Architektur-Kontext
+
+## Stack
+- **Frontend:** React 19 + Vite + Tailwind CSS + @dnd-kit + Lucide-React Icons
+- **Backend:** FastAPI (Python 3.12) + SQLAlchemy 2.0 (async) + asyncpg + Pydantic v2
+- **Datenbank:** PostgreSQL mit pgvector, Port 5435
+- **Agent-Runtime:** nanobot (HKUDS), Config: `~/.nanobot/config.json`
+- **LLM-Gateway:** LiteLLM-Proxy, Default-Modell: Qwen 3.5 35B (Ollama lokal)
+- **MCP-Server:** `src/mcp-taskpilot/` (DB-Zugriff), `src/mcp-email/` (Graph API)
+- **Graph API:** `src/email-graph/graph_client.py` (Shared Library)
+- **Skills:** `~/.nanobot/workspace/skills/*.md`
+
+## Verzeichnisstruktur
+```
+src/
+  backend/app/       → FastAPI (routers, models, schemas, services)
+  cockpit/src/       → React Frontend
+  mcp-taskpilot/     → MCP-Server für DB
+  mcp-email/         → MCP-Server für E-Mail + Kalender
+  email-graph/       → Shared Graph API Client
+db/schema.sql        → PostgreSQL DDL
+```
+
+## Env-Variablen
+- Backend: `TP_`-Prefix (via Pydantic `env_prefix`), geladen aus `.env.dev`
+- MCP-Server/GraphClient: ohne Prefix (`GRAPH_TENANT_ID`, `TP_DB_HOST` etc.)
+
+## HITL-Autonomie (4 Stufen)
+- **L0 Block:** Verboten (Finanztransaktionen, Daten löschen)
+- **L1 Approve:** Agent bereitet vor, Mensch gibt frei (externe Kommunikation IMMER)
+- **L2 Notify:** Agent führt aus, informiert post-hoc
+- **L3 Auto:** Autonom, nur Audit-Log
+
+**Eiserne Regel:** Externe Kommunikation = immer L1. Kein Auto-Versand von E-Mails.

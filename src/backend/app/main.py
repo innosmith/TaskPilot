@@ -11,19 +11,25 @@ from app.database import async_session
 from app.routers import (
     agent_jobs,
     auth,
+    calendar,
+    emails,
     memory,
+    models,
     pipeline,
     projects,
     search,
     sse,
     tags,
     tasks,
+    triage,
     unsplash,
     uploads,
 )
 from app.routers import settings as user_settings
 from app.routers.auth import ensure_owner_exists
-from app.services.nanobot_bridge import start_bridge, stop_bridge
+from app.services.nanobot_worker import start_nanobot_worker, stop_nanobot_worker
+from app.services.recurring import start_recurring_scheduler, stop_recurring_scheduler
+from app.services.triage import start_triage_service, stop_triage_service
 
 logging.basicConfig(level=logging.INFO)
 app_settings = get_settings()
@@ -38,9 +44,13 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 async def lifespan(app: FastAPI):
     async with async_session() as db:
         await ensure_owner_exists(db)
-    await start_bridge()
+    await start_nanobot_worker()
+    await start_recurring_scheduler()
+    await start_triage_service()
     yield
-    await stop_bridge()
+    await stop_triage_service()
+    await stop_recurring_scheduler()
+    await stop_nanobot_worker()
 
 
 app = FastAPI(
@@ -69,6 +79,10 @@ app.include_router(user_settings.router)
 app.include_router(unsplash.router)
 app.include_router(uploads.router)
 app.include_router(sse.router)
+app.include_router(emails.router)
+app.include_router(calendar.router)
+app.include_router(triage.router)
+app.include_router(models.router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 

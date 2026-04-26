@@ -21,3 +21,4 @@ pydantic-settings>=2.7
 httpx>=0.28
 sse-starlette>=2.1
 websockets>=14.0
+croniter>=5.0

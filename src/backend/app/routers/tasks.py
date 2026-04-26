@@ -1,5 +1,7 @@
 import uuid
+from datetime import datetime, timezone
 
+from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -173,3 +175,91 @@ async def update_checklist_item(
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(item, field, value)
     return item
+
+
+@router.get("/{task_id}/recurrence")
+async def get_recurrence_info(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> dict:
+    """Gibt Wiederholungsinformationen zurück: nächstes Auftreten,
+    letzte Instanz und menschenlesbarer Cron-Text."""
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not task.recurrence_rule:
+        return {"recurrence_rule": None, "next_occurrence": None, "description": None}
+
+    if not croniter.is_valid(task.recurrence_rule):
+        return {
+            "recurrence_rule": task.recurrence_rule,
+            "next_occurrence": None,
+            "description": "Ungueltige Cron-Expression",
+        }
+
+    now = datetime.now(timezone.utc)
+    cron = croniter(task.recurrence_rule, now)
+    next_run = cron.get_next(datetime)
+
+    description = _cron_to_human(task.recurrence_rule)
+
+    return {
+        "recurrence_rule": task.recurrence_rule,
+        "next_occurrence": next_run.isoformat(),
+        "description": description,
+    }
+
+
+def _cron_to_human(cron_expr: str) -> str:
+    """Konvertiert gaengige Cron-Ausdruecke in lesbaren deutschen Text."""
+    presets = {
+        "0 0 * * *": "Taeglich um Mitternacht",
+        "0 7 * * *": "Taeglich um 07:00",
+        "0 8 * * *": "Taeglich um 08:00",
+        "0 9 * * *": "Taeglich um 09:00",
+        "0 7 * * MON": "Jeden Montag um 07:00",
+        "0 7 * * 1": "Jeden Montag um 07:00",
+        "0 8 * * MON": "Jeden Montag um 08:00",
+        "0 8 * * 1": "Jeden Montag um 08:00",
+        "0 9 * * MON": "Jeden Montag um 09:00",
+        "0 9 * * 1": "Jeden Montag um 09:00",
+        "0 7 * * MON-FRI": "Werktags um 07:00",
+        "0 7 * * 1-5": "Werktags um 07:00",
+        "0 8 1 * *": "Monatlich am 1. um 08:00",
+        "0 9 1 * *": "Monatlich am 1. um 09:00",
+        "0 8 15 * *": "Monatlich am 15. um 08:00",
+    }
+    if cron_expr in presets:
+        return presets[cron_expr]
+
+    parts = cron_expr.split()
+    if len(parts) != 5:
+        return cron_expr
+
+    minute, hour, dom, month, dow = parts
+
+    time_str = ""
+    if hour != "*" and minute != "*":
+        time_str = f" um {hour.zfill(2)}:{minute.zfill(2)}"
+
+    if dom == "*" and dow == "*":
+        return f"Taeglich{time_str}"
+    if dom == "*" and dow != "*":
+        day_names = {
+            "0": "Sonntag", "SUN": "Sonntag",
+            "1": "Montag", "MON": "Montag",
+            "2": "Dienstag", "TUE": "Dienstag",
+            "3": "Mittwoch", "WED": "Mittwoch",
+            "4": "Donnerstag", "THU": "Donnerstag",
+            "5": "Freitag", "FRI": "Freitag",
+            "6": "Samstag", "SAT": "Samstag",
+        }
+        day = day_names.get(dow.upper(), dow)
+        return f"Jeden {day}{time_str}"
+    if dow == "*" and dom != "*":
+        return f"Monatlich am {dom}.{time_str}"
+
+    return cron_expr

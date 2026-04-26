@@ -37,6 +37,7 @@ async def search_photos(
                     "thumb": photo["urls"]["small"],
                     "regular": photo["urls"]["regular"],
                     "full": photo["urls"]["full"],
+                    "hq": _hq_url(photo["urls"].get("raw", photo["urls"]["full"])),
                     "author": photo["user"]["name"],
                     "author_url": photo["user"]["links"]["html"],
                     "description": photo.get("alt_description", ""),
@@ -44,3 +45,9 @@ async def search_photos(
                 for photo in data.get("results", [])
             ],
         }
+
+
+def _hq_url(raw_url: str) -> str:
+    """Hochwertige URL aus der Unsplash-Raw-URL generieren (1920px, Qualitaet 85%)."""
+    base = raw_url.split("?")[0]
+    return f"{base}?w=1920&q=85&fm=jpg&fit=crop&auto=format"

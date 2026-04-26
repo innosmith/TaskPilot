@@ -115,6 +115,9 @@ class TaskCreate(TaskBase):
     board_position: float | None = None
     pipeline_column_id: uuid.UUID | None = None
     pipeline_position: float | None = None
+    email_message_id: str | None = None
+    calendar_duration_minutes: int | None = None
+    calendar_preferred_time: str | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -131,6 +134,9 @@ class TaskUpdate(BaseModel):
     autonomy_level: str | None = None
     is_completed: bool | None = None
     is_pinned: bool | None = None
+    recurrence_rule: str | None = None
+    calendar_duration_minutes: int | None = None
+    calendar_preferred_time: str | None = None
 
 
 class TaskOut(TaskBase):
@@ -142,6 +148,11 @@ class TaskOut(TaskBase):
     pipeline_column_id: uuid.UUID | None
     pipeline_position: float | None
     is_completed: bool
+    email_message_id: str | None = None
+    calendar_event_id: str | None = None
+    calendar_duration_minutes: int | None = None
+    calendar_preferred_time: str | None = None
+    template_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
     tags: list[TagOut] = []
@@ -149,7 +160,7 @@ class TaskOut(TaskBase):
 
 
 class TaskCard(BaseModel):
-    """Leichtgewichtige Task-Darstellung fuer Board/Pipeline-Ansichten."""
+    """Leichtgewichtige Task-Darstellung für Board/Pipeline-Ansichten."""
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     title: str
@@ -162,6 +173,8 @@ class TaskCard(BaseModel):
     due_date: date | None
     is_completed: bool
     is_pinned: bool
+    recurrence_rule: str | None = None
+    template_id: uuid.UUID | None = None
     tags: list[TagOut] = []
     checklist_total: int = 0
     checklist_done: int = 0
@@ -239,21 +252,25 @@ class PipelineColumnUpdate(BaseModel):
 class AgentJobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
-    task_id: uuid.UUID
+    task_id: uuid.UUID | None
+    job_type: str | None = None
     status: str
     llm_model: str | None
     tokens_used: int | None
     cost_usd: float | None
     output: str | None
     error_message: str | None
+    metadata_json: dict | None = None
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
 
 
 class AgentJobCreate(BaseModel):
-    task_id: uuid.UUID
+    task_id: uuid.UUID | None = None
+    job_type: str | None = None
     llm_model: str | None = None
+    metadata_json: dict | None = None
 
 
 class AgentJobUpdate(BaseModel):
@@ -263,7 +280,33 @@ class AgentJobUpdate(BaseModel):
     llm_model: str | None = None
     tokens_used: int | None = None
     cost_usd: float | None = None
+    metadata_json: dict | None = None
 
 
 class AgentJobWithTask(AgentJobOut):
     task_title: str | None = None
+
+
+# --- Email Triage ---
+
+class EmailTriageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    message_id: str
+    subject: str | None
+    from_address: str | None
+    from_name: str | None
+    received_at: datetime | None
+    inference_class: str | None
+    triage_class: str | None
+    confidence: float | None
+    suggested_action: dict | None
+    agent_job_id: uuid.UUID | None
+    status: str
+    created_at: datetime
+
+
+class EmailTriageUpdate(BaseModel):
+    triage_class: str | None = None
+    status: str | None = None
+    suggested_action: dict | None = None

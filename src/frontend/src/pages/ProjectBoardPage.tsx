@@ -33,8 +33,10 @@ export function ProjectBoardPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [iconMenuOpen, setIconMenuOpen] = useState(false);
   const [userAvatarUrl, setUserAvatarUrl] = useState<string | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const iconUploadRef = useRef<HTMLInputElement>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -67,6 +69,7 @@ export function ProjectBoardPage() {
         setSettingsOpen(false);
         setConfirmDelete(false);
         setIconPickerOpen(false);
+        setIconMenuOpen(false);
       }
     };
     if (settingsOpen) {
@@ -298,7 +301,7 @@ export function ProjectBoardPage() {
           <div className="ml-auto flex items-center gap-1">
             <div className="relative" ref={settingsRef}>
               <button
-                onClick={() => { setSettingsOpen(!settingsOpen); setConfirmDelete(false); setIconPickerOpen(false); }}
+                onClick={() => { setSettingsOpen(!settingsOpen); setConfirmDelete(false); setIconPickerOpen(false); setIconMenuOpen(false); }}
                 className={`rounded-lg p-2 transition-colors ${
                   hasBg
                     ? 'text-white/70 hover:bg-white/10 hover:text-white'
@@ -311,7 +314,7 @@ export function ProjectBoardPage() {
               {settingsOpen && (
                 <div className="absolute right-0 top-10 z-20 w-64 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
                   <button
-                    onClick={() => { setIconPickerOpen(!iconPickerOpen); setSettingsOpen(false); }}
+                    onClick={() => { setIconMenuOpen(!iconMenuOpen); setSettingsOpen(false); }}
                     className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     <EmojiIcon className="h-4 w-4" />
@@ -359,6 +362,68 @@ export function ProjectBoardPage() {
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+              {iconMenuOpen && (
+                <div className="absolute right-0 top-10 z-30 w-56 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                  <button
+                    onClick={() => { iconUploadRef.current?.click(); }}
+                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    <CameraIcon className="h-4 w-4" />
+                    Bild hochladen
+                  </button>
+                  <button
+                    onClick={() => { setIconPickerOpen(true); setIconMenuOpen(false); }}
+                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    <EmojiIcon className="h-4 w-4" />
+                    Icon-Bibliothek
+                  </button>
+                  {(board.project.icon_url || board.project.icon_emoji) && (
+                    <>
+                      <div className="my-1 border-t border-gray-100 dark:border-gray-800" />
+                      <button
+                        onClick={async () => {
+                          if (!id) return;
+                          await api.patch(`/api/projects/${id}`, { icon_emoji: null, icon_url: null });
+                          fetchBoard();
+                          refreshSidebar();
+                          setIconMenuOpen(false);
+                        }}
+                        className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                        Icon entfernen
+                      </button>
+                    </>
+                  )}
+                  <input
+                    ref={iconUploadRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file || !id) return;
+                      const form = new FormData();
+                      form.append('file', file);
+                      try {
+                        const token = localStorage.getItem('taskpilot_token');
+                        const res = await fetch('/api/uploads/icons', {
+                          method: 'POST',
+                          headers: { Authorization: `Bearer ${token}` },
+                          body: form,
+                        });
+                        if (!res.ok) return;
+                        const { url } = await res.json();
+                        await api.patch(`/api/projects/${id}`, { icon_url: url, icon_emoji: null });
+                        fetchBoard();
+                        refreshSidebar();
+                        setIconMenuOpen(false);
+                      } catch { /* */ }
+                    }}
+                  />
                 </div>
               )}
               {iconPickerOpen && (

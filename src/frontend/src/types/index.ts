@@ -16,6 +16,8 @@ export interface TaskCard {
   due_date: string | null;
   is_completed: boolean;
   is_pinned: boolean;
+  recurrence_rule: string | null;
+  template_id: string | null;
   tags: Tag[];
   checklist_total: number;
   checklist_done: number;
@@ -45,6 +47,9 @@ export interface TaskDetail {
   llm_override: string | null;
   autonomy_level: string;
   recurrence_rule: string | null;
+  template_id: string | null;
+  calendar_duration_minutes: number | null;
+  calendar_preferred_time: string | null;
   tags: Tag[];
   checklist_items: ChecklistItem[];
   created_at: string;
@@ -112,9 +117,10 @@ export interface TaskUpdatePayload {
   data_class?: string;
   llm_override?: string;
   autonomy_level?: string;
-}
-
-export type TaskDetailMode = 'modal' | 'panel' | 'fullscreen';
+  recurrence_rule?: string | null;
+  calendar_duration_minutes?: number | null;
+  calendar_preferred_time?: string | null;
+} = 'modal' | 'panel' | 'fullscreen';
 
 export interface TaskCreatePayload {
   title: string;
@@ -124,19 +130,22 @@ export interface TaskCreatePayload {
   pipeline_column_id?: string;
   assignee?: string;
   due_date?: string;
+  recurrence_rule?: string;
 }
 
 // --- Agent Jobs ---
 
 export interface AgentJob {
   id: string;
-  task_id: string;
+  task_id: string | null;
+  job_type: string | null;
   status: 'queued' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
   llm_model: string | null;
   tokens_used: number | null;
   cost_usd: number | null;
   output: string | null;
   error_message: string | null;
+  metadata_json: Record<string, unknown> | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;

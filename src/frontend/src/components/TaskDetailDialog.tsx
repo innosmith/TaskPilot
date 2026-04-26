@@ -8,6 +8,18 @@ interface TaskDetailDialogProps {
   onUpdated: () => void;
 }
 
+interface ModelInfo {
+  id: string;
+  name: string;
+  type: 'local' | 'cloud';
+  provider: string;
+}
+
+interface ModelsData {
+  local: ModelInfo[];
+  cloud: ModelInfo[];
+}
+
 export function TaskDetailDialog({
   taskId,
   onClose,
@@ -24,7 +36,12 @@ export function TaskDetailDialog({
   const [newChecklistText, setNewChecklistText] = useState('');
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [mode, setMode] = useState<TaskDetailMode>('modal');
+  const [models, setModels] = useState<ModelsData | null>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.get<ModelsData>('/api/models').then(setModels).catch(() => {});
+  }, []);
 
   useEffect(() => {
     api.get<{ task_detail_mode?: string }>('/api/settings')
@@ -307,6 +324,55 @@ export function TaskDetailDialog({
                   </p>
                 </div>
               )}
+
+              {/* Wiederholung */}
+              <div>
+                <span className="text-gray-500 dark:text-gray-400">Wiederholung</span>
+                <RecurrenceSelector
+                  value={task.recurrence_rule}
+                  isInstance={!!task.template_id}
+                  onChange={(rule) => updateTask({ recurrence_rule: rule } as TaskUpdatePayload)}
+                />
+              </div>
+
+              {/* Kalender-Blocker (nur bei Wiederholungsvorlagen) */}
+              {task.recurrence_rule && !task.template_id && (
+                <>
+                  <div>
+                    <span className="text-gray-500 dark:text-gray-400">Kalender-Dauer</span>
+                    <select
+                      value={task.calendar_duration_minutes ?? ''}
+                      onChange={(e) => updateTask({ calendar_duration_minutes: e.target.value ? Number(e.target.value) : null } as TaskUpdatePayload)}
+                      className="mt-0.5 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                    >
+                      <option value="">Kein Kalenderblocker</option>
+                      <option value="15">15 Minuten</option>
+                      <option value="30">30 Minuten</option>
+                      <option value="45">45 Minuten</option>
+                      <option value="60">1 Stunde</option>
+                      <option value="90">1.5 Stunden</option>
+                      <option value="120">2 Stunden</option>
+                      <option value="180">3 Stunden</option>
+                      <option value="240">4 Stunden</option>
+                    </select>
+                  </div>
+                  {(task.calendar_duration_minutes ?? 0) > 0 && (
+                    <div>
+                      <span className="text-gray-500 dark:text-gray-400">Bevorzugte Zeit</span>
+                      <select
+                        value={task.calendar_preferred_time ?? 'morning_after_1030'}
+                        onChange={(e) => updateTask({ calendar_preferred_time: e.target.value } as TaskUpdatePayload)}
+                        className="mt-0.5 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                      >
+                        <option value="morning_after_1030">Vormittag (ab 10:30)</option>
+                        <option value="afternoon">Nachmittag (13:00-18:00)</option>
+                        <option value="any">Ganzer Tag (08:00-18:00)</option>
+                      </select>
+                    </div>
+                  )}
+                </>
+              )}
+
               <div className="col-span-2">
                 <label className="flex cursor-pointer items-center gap-2">
                   <input
@@ -330,17 +396,39 @@ export function TaskDetailDialog({
                 </h3>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
-                    <label className="text-xs text-gray-500 dark:text-gray-400">LLM-Override</label>
+                    <label className="text-xs text-gray-500 dark:text-gray-400">LLM-Modell</label>
                     <select
                       value={task.llm_override || ''}
                       onChange={(e) => updateTask({ llm_override: e.target.value || undefined } as TaskUpdatePayload)}
                       className="mt-0.5 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs dark:border-gray-700 dark:bg-gray-900 dark:text-white"
                     >
-                      <option value="">Standard (qwen3.5:35b)</option>
-                      <option value="qwen3.5:35b">qwen3.5:35b</option>
-                      <option value="qwen3:32b">qwen3:32b</option>
-                      <option value="gemma4:31b">gemma4:31b</option>
-                      <option value="qwen3.5:9b">qwen3.5:9b (schnell)</option>
+                      <option value="">Standard (lokal)</option>
+                      {models && (
+                        <>
+                          <optgroup label="🔒 Lokal (Datenschutz)">
+                            {models.local.map(m => (
+                              <option key={m.id} value={m.id}>{m.name}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="☁️ Cloud">
+                            {models.cloud.map(m => (
+                              <option
+                                key={m.id}
+                                value={m.id}
+                                disabled={task.data_class === 'highly_confidential'}
+                              >
+                                {m.name}{task.data_class === 'highly_confidential' ? ' (gesperrt)' : ''}
+                              </option>
+                            ))}
+                          </optgroup>
+                        </>
+                      )}
+                      {!models && (
+                        <>
+                          <option value="ollama/qwen3.5:35b">Qwen 3.5 35B</option>
+                          <option value="ollama/qwen3:32b">Qwen 3 32B</option>
+                        </>
+                      )}
                     </select>
                   </div>
                   <div>
@@ -552,6 +640,128 @@ function CloseIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+    </svg>
+  );
+}
+
+const RECURRENCE_PRESETS = [
+  { label: 'Keine', value: null },
+  { label: 'Täglich (09:00)', value: '0 9 * * *' },
+  { label: 'Werktags (09:00)', value: '0 9 * * 1-5' },
+  { label: 'Wöchentlich Mo (07:00)', value: '0 7 * * MON' },
+  { label: 'Wöchentlich Mo (09:00)', value: '0 9 * * MON' },
+  { label: 'Monatlich 1. (08:00)', value: '0 8 1 * *' },
+  { label: 'Monatlich 15. (08:00)', value: '0 8 15 * *' },
+  { label: 'Monatlich 20. (08:00)', value: '0 8 20 * *' },
+  { label: 'Monatlich 25. (08:00)', value: '0 8 25 * *' },
+] as const;
+
+function cronToHumanDE(cron: string): string {
+  const presets: Record<string, string> = {
+    '0 9 * * *': 'Täglich um 09:00',
+    '0 7 * * *': 'Täglich um 07:00',
+    '0 8 * * *': 'Täglich um 08:00',
+    '0 9 * * 1-5': 'Werktags um 09:00',
+    '0 7 * * 1-5': 'Werktags um 07:00',
+    '0 7 * * MON': 'Jeden Montag um 07:00',
+    '0 8 * * MON': 'Jeden Montag um 08:00',
+    '0 9 * * MON': 'Jeden Montag um 09:00',
+    '0 8 1 * *': 'Monatlich am 1. um 08:00',
+    '0 9 1 * *': 'Monatlich am 1. um 09:00',
+    '0 8 15 * *': 'Monatlich am 15. um 08:00',
+  };
+  return presets[cron] || cron;
+}
+
+function RecurrenceSelector({
+  value,
+  isInstance,
+  onChange,
+}: {
+  value: string | null;
+  isInstance: boolean;
+  onChange: (rule: string | null) => void;
+}) {
+  const [showCustom, setShowCustom] = useState(false);
+  const [customValue, setCustomValue] = useState('');
+
+  if (isInstance) {
+    return (
+      <div className="mt-0.5 flex items-center gap-1.5 rounded-lg bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
+        <RepeatSmallIcon className="h-3.5 w-3.5" />
+        Instanz einer Vorlage
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-0.5">
+      <select
+        value={
+          showCustom
+            ? '__custom__'
+            : value && RECURRENCE_PRESETS.some((p) => p.value === value)
+              ? value
+              : value
+                ? '__custom__'
+                : ''
+        }
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === '__custom__') {
+            setShowCustom(true);
+            setCustomValue(value || '');
+          } else if (v === '') {
+            setShowCustom(false);
+            onChange(null);
+          } else {
+            setShowCustom(false);
+            onChange(v);
+          }
+        }}
+        className="w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+      >
+        {RECURRENCE_PRESETS.map((p) => (
+          <option key={p.label} value={p.value ?? ''}>
+            {p.label}
+          </option>
+        ))}
+        <option value="__custom__">Benutzerdefiniert (Cron)...</option>
+      </select>
+      {showCustom && (
+        <div className="mt-1.5 flex gap-1.5">
+          <input
+            value={customValue}
+            onChange={(e) => setCustomValue(e.target.value)}
+            placeholder="z.B. 0 7 * * MON"
+            className="flex-1 rounded-lg border border-gray-200 bg-transparent px-2 py-1 text-xs outline-none focus:border-indigo-300 dark:border-gray-700 dark:text-white"
+          />
+          <button
+            onClick={() => {
+              if (customValue.trim()) {
+                onChange(customValue.trim());
+                setShowCustom(false);
+              }
+            }}
+            className="rounded-lg bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700"
+          >
+            OK
+          </button>
+        </div>
+      )}
+      {value && (
+        <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+          {cronToHumanDE(value)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RepeatSmallIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M21.015 4.356v4.992" />
     </svg>
   );
 }

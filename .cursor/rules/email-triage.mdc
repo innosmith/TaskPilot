@@ -1,0 +1,33 @@
+---
+description: E-Mail-Triage Kategorien und Regeln für Agent-Skills und Klassifikation
+globs: "**/*triage*"
+alwaysApply: false
+---
+
+# E-Mail-Triage Regeln
+
+## 4 Triage-Klassen
+| Klasse | Aktion | HITL |
+|--------|--------|------|
+| `quick_response` | Antwort-Entwurf erstellen | L1 |
+| `board_task` | Task im Kanban Board erstellen | L1 |
+| `fyi` | Archivieren, zur Kenntnis | L2 |
+| `bedenkzeit` | Komplex, menschliches Review | L1 |
+
+## Kategorisierungs-Logik (aus CoPilot-Prompt)
+- **Signale:** Interne Intelligence-Reports (anthony@innosmith.ch → anthony@innosmith.ch)
+- **Wichtig:** Echte Mensch-zu-Mensch Kommunikation, BFH-E-Mails
+- **Offerten/Verträge:** Formelle Dokumente → `bedenkzeit`
+- **Networking/Leads:** LinkedIn-Einladungen, Erstkontakte → `board_task`
+- **Finanzen:** QR-Rechnungen, Mahnungen, Treuhand → `board_task`
+- **Kalender:** Termineinladungen → je nach Kontext
+- **System:** Auto-generierte Mails → `fyi`
+- **Newsletter:** Marketing → `fyi`
+- **Junk:** Phishing, Spam, Cold Outreach → `fyi`
+
+## Entscheidungshilfen
+- `inferenceClassification: "other"` → tendiert zu `fyi`
+- `inferenceClassification: "focused"` → genauer prüfen
+- Schweizer `.ch`-Domains → höhere Relevanz
+- Selbst-E-Mails (anthony@...) → `board_task`
+- Im Zweifel → `bedenkzeit`

@@ -237,7 +237,7 @@ export function PipelinePage() {
       {hasBg && !isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/30" />}
       {isGradient && <div className="absolute inset-0 bg-black/5 dark:bg-black/20" />}
 
-      <div className={`relative z-10 border-b px-6 py-4 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 dark:border-gray-800'}`}>
+      <div className={`relative z-20 border-b px-6 py-4 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 dark:border-gray-800'}`}>
         <div className="flex items-center justify-between">
           <div>
             <h1 className={`text-xl font-bold ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>

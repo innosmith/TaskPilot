@@ -67,6 +67,8 @@ TOOLS = [
                 "description": {"type": "string"},
                 "assignee": {"type": "string", "default": "me"},
                 "pipeline_column_id": {"type": "string"},
+                "due_date": {"type": "string", "description": "Faelligkeitsdatum im Format YYYY-MM-DD"},
+                "recurrence_rule": {"type": "string", "description": "Cron-Ausdruck für Wiederholungen, z.B. '0 7 * * MON'"},
             },
             "required": ["title", "project_id", "board_column_id"],
         },
@@ -82,6 +84,8 @@ TOOLS = [
                 "description": {"type": "string"},
                 "assignee": {"type": "string"},
                 "is_completed": {"type": "boolean"},
+                "due_date": {"type": "string", "description": "Faelligkeitsdatum im Format YYYY-MM-DD"},
+                "recurrence_rule": {"type": "string", "description": "Cron-Ausdruck für Wiederholungen, z.B. '0 7 * * MON'"},
             },
             "required": ["task_id"],
         },
@@ -219,8 +223,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     elif name == "create_task":
         row = await p.fetchrow(
-            "INSERT INTO tasks (title, project_id, board_column_id, description, assignee, pipeline_column_id, board_position) "
-            "VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6::uuid, "
+            "INSERT INTO tasks (title, project_id, board_column_id, description, assignee, "
+            "pipeline_column_id, due_date, recurrence_rule, board_position) "
+            "VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6::uuid, $7::date, $8, "
             "(SELECT COALESCE(MAX(board_position), 0) + 1 FROM tasks WHERE board_column_id = $3::uuid)) "
             "RETURNING id, title",
             arguments["title"],
@@ -229,6 +234,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             arguments.get("description"),
             arguments.get("assignee", "me"),
             arguments.get("pipeline_column_id"),
+            arguments.get("due_date"),
+            arguments.get("recurrence_rule"),
         )
         return [TextContent(type="text", text=json.dumps(_row_to_dict(row), indent=2))]
 
@@ -237,11 +244,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         sets = []
         params = []
         idx = 1
-        for key in ("title", "description", "assignee", "is_completed"):
+        for key in ("title", "description", "assignee", "is_completed", "recurrence_rule"):
             if key in arguments:
                 sets.append(f"{key} = ${idx}")
                 params.append(arguments[key])
                 idx += 1
+        if "due_date" in arguments:
+            sets.append(f"due_date = ${idx}::date")
+            params.append(arguments["due_date"])
+            idx += 1
         if not sets:
             return [TextContent(type="text", text="Keine Felder zum Aktualisieren")]
         params.append(task_id)

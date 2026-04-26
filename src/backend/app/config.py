@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Auth
     secret_key: str = "dev-secret-change-in-production"
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24 * 7  # 7 Tage fuer Dev
+    access_token_expire_minutes: int = 60 * 24 * 7  # 7 Tage für Dev
 
     # Owner (Phase 0: nur ein User)
     owner_email: str = "admin@innosmith.ai"
@@ -46,6 +46,19 @@ class Settings(BaseSettings):
 
     # Unsplash (optional, for background image search)
     unsplash_access_key: str = ""
+
+    # Microsoft Graph API (E-Mail-Integration)
+    graph_tenant_id: str = ""
+    graph_client_id: str = ""
+    graph_client_secret: str = ""
+    graph_user_email: str = ""
+
+    # LiteLLM Gateway
+    litellm_base_url: str = "http://localhost:4000"
+    triage_model: str = "ollama/qwen3.5:35b"
+
+    # Triage
+    triage_interval_seconds: int = 120
 
     model_config = {"env_file": ".env.dev", "env_prefix": "TP_"}
 

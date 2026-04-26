@@ -1,0 +1,34 @@
+---
+description: Deutschschweizer Schreibregeln für alle deutschen Texte im Projekt
+alwaysApply: true
+---
+
+# Deutschschweizer Schreibregeln
+
+Alle deutschen Texte (Code-Kommentare, Docstrings, Fehlermeldungen, UI-Texte, Skills, Dokumentation) folgen der **Schweizer Rechtschreibung**:
+
+## Umlaute
+- **ä** statt "ae" → richtig: "für", falsch: "fuer"
+- **ö** statt "oe" → richtig: "löschen", falsch: "loeschen"
+- **ü** statt "ue" → richtig: "prüfen", falsch: "pruefen"
+
+## Kein scharfes S
+- **ss** statt "ß" → richtig: "Grüsse", "strasse", "muss"
+- Das gilt überall: "gemäss", "Strasse", "Fussball", "dass" (bleibt gleich)
+
+## Beispiele
+
+```python
+# Richtig
+"""Prüft periodisch, ob neue Task-Instanzen erzeugt werden müssen."""
+raise HTTPException(detail="Nur Owner dürfen auf den Kalender zugreifen")
+
+# Falsch
+"""Prueft periodisch, ob neue Task-Instanzen erzeugt werden muessen."""
+raise HTTPException(detail="Nur Owner duerfen auf den Kalender zugreifen")
+```
+
+## Kommunikationssprache
+- Mit dem User wird **auf Deutsch** kommuniziert (Schweizer Hochdeutsch)
+- Code (Variablen, Funktionen, Klassen) bleibt auf **Englisch**
+- Docstrings und Kommentare dürfen Deutsch sein, wenn sie dem Projektkontext dienen

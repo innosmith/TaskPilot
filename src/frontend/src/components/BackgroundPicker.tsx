@@ -20,6 +20,7 @@ interface UnsplashPhoto {
   id: string;
   thumb: string;
   regular: string;
+  hq: string;
   author: string;
   author_url: string;
   description: string;
@@ -149,7 +150,7 @@ export function BackgroundPicker({ isOpen, onClose, currentUrl, onSelect }: Back
                   <button
                     key={photo.id}
                     onClick={() => {
-                      onSelect(photo.regular, 'unsplash');
+                      onSelect(photo.hq || photo.regular, 'unsplash');
                       onClose();
                     }}
                     className="group relative aspect-video overflow-hidden rounded-xl border-2 border-transparent transition-all hover:scale-105 hover:border-indigo-400"

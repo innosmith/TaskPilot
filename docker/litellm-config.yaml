@@ -1,0 +1,63 @@
+# LiteLLM Proxy Configuration -- TaskPilot LLM Gateway
+# Docs: https://docs.litellm.ai/docs/proxy/configs
+#
+# Alle LLM-Aufrufe (nanobot + Backend) gehen ueber diesen Proxy.
+# Modell-String im Request bestimmt das Routing:
+#   ollama/* → Ollama lokal
+#   anthropic/* → Anthropic Cloud
+#   openai/* → OpenAI Cloud
+#   gemini/* → Google Gemini Cloud
+
+model_list:
+  # ── Lokale Modelle (Ollama) ────────────────────────────────
+  - model_name: ollama/qwen3.5:35b
+    litellm_params:
+      model: ollama/qwen3.5:35b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: ollama/qwen3.5:9b
+    litellm_params:
+      model: ollama/qwen3.5:9b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: ollama/qwen3:32b
+    litellm_params:
+      model: ollama/qwen3:32b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: ollama/gemma4:31b
+    litellm_params:
+      model: ollama/gemma4:31b
+      api_base: http://host.docker.internal:11434
+
+  # ── Cloud-Modelle ──────────────────────────────────────────
+  - model_name: anthropic/claude-sonnet-4-20250514
+    litellm_params:
+      model: anthropic/claude-sonnet-4-20250514
+
+  - model_name: anthropic/claude-3-5-haiku-20241022
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
+
+  - model_name: openai/gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+
+  - model_name: openai/gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+
+  - model_name: gemini/gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+
+  - model_name: gemini/gemini-2.5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  num_retries: 2
+  request_timeout: 120
+  cache: false

@@ -1,0 +1,36 @@
+---
+description: Python-Konventionen für das TaskPilot Backend
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Python-Konventionen
+
+## FastAPI Router Pattern
+- Jeder Router in `src/backend/app/routers/` hat eigene Pydantic-Schemas (inline oder aus `schemas.py`)
+- Owner-Guard: `_require_owner(user)` für sensible Endpoints
+- Config-Guard: `_check_configured()` für externe APIs (Graph etc.)
+- Fehler als `HTTPException` mit deutschem `detail`-Text
+
+## SQLAlchemy Models
+- Async Sessions via `async_session()` Context-Manager
+- Mapped Columns mit Type Hints (`Mapped[str | None]`)
+- JSONB für flexible Metadaten (z.B. `settings`, `metadata`, `suggested_action`)
+
+## Graph API Client
+- Shared Library in `src/email-graph/graph_client.py`
+- Wird von Backend-Routern UND MCP-Servern importiert
+- Backend nutzt `TP_GRAPH_*` Env-Vars (via Pydantic Settings)
+- MCP-Server nutzt `GRAPH_*` Env-Vars (via `GraphConfig.from_env()`)
+- Immer `PermissionError` abfangen für 403-Responses
+
+## Background-Services
+- Pattern: `start_*()` / `stop_*()` Funktionen, `asyncio.create_task()`
+- Registrierung im Lifespan-Hook in `main.py`
+- Beispiele: `nanobot_bridge`, `recurring`, `triage`
+
+## Neue Tabellen/Spalten
+1. SQL in `db/schema.sql` ergänzen
+2. SQLAlchemy Model in `models/models.py` + Export in `__init__.py`
+3. Pydantic Schema in `schemas/schemas.py` + Export in `__init__.py`
+4. Migration via `asyncpg` Script ausführen

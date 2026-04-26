@@ -6,6 +6,7 @@ from app.models.models import (
     BoardColumn,
     BoardMember,
     ChecklistItem,
+    EmailTriage,
     PipelineColumn,
     Project,
     Tag,
@@ -28,4 +29,5 @@ __all__ = [
     "AgentJob",
     "ActivityLog",
     "BoardMember",
+    "EmailTriage",
 ]

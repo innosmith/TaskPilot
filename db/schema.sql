@@ -75,6 +75,7 @@ CREATE TABLE tasks (
     is_pinned       BOOLEAN DEFAULT false,
     recurrence_rule TEXT,
     template_id     UUID REFERENCES tasks(id),
+    email_message_id TEXT,
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now()
 );
@@ -114,13 +115,15 @@ CREATE TABLE attachments (
 -- Agent-Jobs
 CREATE TABLE agent_jobs (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id         UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    task_id         UUID REFERENCES tasks(id) ON DELETE CASCADE,
+    job_type        TEXT,
     status          TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'awaiting_approval', 'completed', 'failed')),
     llm_model       TEXT,
     tokens_used     INT,
     cost_usd        NUMERIC(10,4),
     output          TEXT,
     error_message   TEXT,
+    metadata        JSONB DEFAULT '{}'::jsonb,
     started_at      TIMESTAMPTZ,
     completed_at    TIMESTAMPTZ,
     created_at      TIMESTAMPTZ DEFAULT now()
@@ -146,6 +149,23 @@ CREATE TABLE board_members (
     UNIQUE(project_id, user_id)
 );
 
+-- E-Mail-Triage
+CREATE TABLE email_triage (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id      TEXT NOT NULL UNIQUE,
+    subject         TEXT,
+    from_address    TEXT,
+    from_name       TEXT,
+    received_at     TIMESTAMPTZ,
+    inference_class TEXT,
+    triage_class    TEXT CHECK (triage_class IN ('quick_response', 'board_task', 'fyi', 'bedenkzeit')),
+    confidence      REAL,
+    suggested_action JSONB,
+    agent_job_id    UUID REFERENCES agent_jobs(id),
+    status          TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'acted', 'dismissed')),
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
 -- Indizes
 CREATE INDEX idx_tasks_project ON tasks(project_id);
 CREATE INDEX idx_tasks_board_column ON tasks(board_column_id);
@@ -160,6 +180,9 @@ CREATE INDEX idx_agent_jobs_status ON agent_jobs(status);
 CREATE INDEX idx_board_columns_project ON board_columns(project_id);
 CREATE INDEX idx_board_members_project ON board_members(project_id);
 CREATE INDEX idx_board_members_user ON board_members(user_id);
+CREATE INDEX idx_email_triage_status ON email_triage(status);
+CREATE INDEX idx_email_triage_message_id ON email_triage(message_id);
+CREATE INDEX idx_tasks_email_message ON tasks(email_message_id);
 
 -- NOTIFY-Trigger fuer Real-Time-Updates
 CREATE OR REPLACE FUNCTION notify_change() RETURNS trigger AS $$
@@ -176,6 +199,9 @@ CREATE TRIGGER tasks_notify AFTER INSERT OR UPDATE OR DELETE ON tasks
 
 CREATE TRIGGER agent_jobs_notify AFTER INSERT OR UPDATE ON agent_jobs
     FOR EACH ROW EXECUTE FUNCTION notify_change('agent_jobs_changed');
+
+CREATE TRIGGER email_triage_notify AFTER INSERT OR UPDATE ON email_triage
+    FOR EACH ROW EXECUTE FUNCTION notify_change('email_triage_changed');
 
 -- updated_at Trigger
 CREATE OR REPLACE FUNCTION update_updated_at() RETURNS trigger AS $$

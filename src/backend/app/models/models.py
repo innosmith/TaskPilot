@@ -100,6 +100,10 @@ class Task(Base):
     is_pinned: Mapped[bool] = mapped_column(Boolean, server_default="false")
     recurrence_rule: Mapped[str | None] = mapped_column(Text)
     template_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id"))
+    email_message_id: Mapped[str | None] = mapped_column(Text)
+    calendar_event_id: Mapped[str | None] = mapped_column(Text)
+    calendar_duration_minutes: Mapped[int | None] = mapped_column(Integer)
+    calendar_preferred_time: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
@@ -159,18 +163,20 @@ class AgentJob(Base):
     __tablename__ = "agent_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
-    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    job_type: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     llm_model: Mapped[str | None] = mapped_column(Text)
     tokens_used: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[float | None] = mapped_column(Numeric(10, 4))
     output: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB, server_default="{}")
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    task: Mapped["Task"] = relationship(back_populates="agent_jobs")
+    task: Mapped["Task | None"] = relationship(back_populates="agent_jobs")
 
 
 class ActivityLog(Base):
@@ -194,3 +200,21 @@ class BoardMember(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
     invited_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class EmailTriage(Base):
+    __tablename__ = "email_triage"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    subject: Mapped[str | None] = mapped_column(Text)
+    from_address: Mapped[str | None] = mapped_column(Text)
+    from_name: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    inference_class: Mapped[str | None] = mapped_column(Text)
+    triage_class: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    suggested_action: Mapped[dict | None] = mapped_column(JSONB)
+    agent_job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_jobs.id"))
+    status: Mapped[str] = mapped_column(Text, server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())

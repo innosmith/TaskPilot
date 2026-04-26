@@ -14,6 +14,7 @@ import { ProjectsPage } from './pages/ProjectsPage';
 import { AgentQueuePage } from './pages/AgentQueuePage';
 import { MemoryPage } from './pages/MemoryPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { InboxPage } from './pages/InboxPage';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -48,6 +49,7 @@ export default function App() {
           }
         >
           <Route path="/pipeline" element={<PipelinePage />} />
+          <Route path="/inbox" element={<InboxPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectBoardPage />} />
           <Route path="/agent-queue" element={<AgentQueuePage />} />

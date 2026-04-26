@@ -27,8 +27,22 @@ interface ManagedUser {
   avatar_url: string | null;
 }
 
+interface TriageSettingsData {
+  triage_prompt: string | null;
+  triage_interval_seconds: number | null;
+  triage_enabled: boolean | null;
+}
+
+interface TriageTestResult {
+  id: string;
+  message_id: string;
+  subject: string | null;
+  from_address: string | null;
+  triage_class: string | null;
+}
+
 export function SettingsPage() {
-  const [tab, setTab] = useState<'profile' | 'display' | 'admin'>('profile');
+  const [tab, setTab] = useState<'profile' | 'display' | 'triage' | 'admin'>('profile');
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [settings, setSettings] = useState<UserSettingsData>({});
   const [users, setUsers] = useState<ManagedUser[]>([]);
@@ -48,6 +62,13 @@ export function SettingsPage() {
   const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState('member');
 
+  const [triagePrompt, setTriagePrompt] = useState('');
+  const [triageInterval, setTriageInterval] = useState(2);
+  const [triageEnabled, setTriageEnabled] = useState(true);
+  const [triageMsg, setTriageMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [triageTestResults, setTriageTestResults] = useState<TriageTestResult[] | null>(null);
+  const [triageTesting, setTriageTesting] = useState(false);
+
   const fetchData = useCallback(async () => {
     try {
       const [p, s] = await Promise.all([
@@ -58,8 +79,14 @@ export function SettingsPage() {
       setSettings(s);
       setDisplayName(p.display_name);
       if (p.role === 'owner') {
-        const u = await api.get<ManagedUser[]>('/api/auth/users');
+        const [u, ts] = await Promise.all([
+          api.get<ManagedUser[]>('/api/auth/users'),
+          api.get<TriageSettingsData>('/api/settings/triage'),
+        ]);
         setUsers(u);
+        if (ts.triage_prompt) setTriagePrompt(ts.triage_prompt);
+        if (ts.triage_interval_seconds) setTriageInterval(Math.round(ts.triage_interval_seconds / 60));
+        if (ts.triage_enabled !== null && ts.triage_enabled !== undefined) setTriageEnabled(ts.triage_enabled);
       }
     } catch { /* */ }
     finally { setLoading(false); }
@@ -133,6 +160,36 @@ export function SettingsPage() {
     setUsers(u);
   };
 
+  const saveTriageSettings = async () => {
+    try {
+      await api.put<TriageSettingsData>('/api/settings/triage', {
+        triage_prompt: triagePrompt || null,
+        triage_interval_seconds: triageInterval * 60,
+        triage_enabled: triageEnabled,
+      });
+      setTriageMsg({ type: 'ok', text: 'Triage-Einstellungen gespeichert' });
+      setTimeout(() => setTriageMsg(null), 3000);
+    } catch {
+      setTriageMsg({ type: 'err', text: 'Fehler beim Speichern' });
+    }
+  };
+
+  const testTriage = async () => {
+    setTriageTesting(true);
+    setTriageTestResults(null);
+    try {
+      const result = await api.post<{ classified: number }>('/api/triage/run?top=5');
+      const items = await api.get<TriageTestResult[]>('/api/triage?limit=5');
+      setTriageTestResults(items);
+      setTriageMsg({ type: 'ok', text: `${result.classified} E-Mails klassifiziert` });
+      setTimeout(() => setTriageMsg(null), 5000);
+    } catch {
+      setTriageMsg({ type: 'err', text: 'Test-Triage fehlgeschlagen' });
+    } finally {
+      setTriageTesting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -145,6 +202,7 @@ export function SettingsPage() {
   const tabs = [
     { id: 'profile' as const, label: 'Profil' },
     { id: 'display' as const, label: 'Darstellung' },
+    ...(isOwner ? [{ id: 'triage' as const, label: 'E-Mail-Triage' }] : []),
     ...(isOwner ? [{ id: 'admin' as const, label: 'Admin' }] : []),
   ];
 
@@ -396,6 +454,105 @@ export function SettingsPage() {
                     </button>
                   )}
                 </div>
+              </div>
+            </section>
+          )}
+
+          {tab === 'triage' && isOwner && (
+            <section>
+              <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">E-Mail-Triage</h2>
+              <div className="space-y-6">
+
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <div>
+                    <p className="font-medium text-gray-900 dark:text-white">Automatische Triage aktiv</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Neue E-Mails werden automatisch klassifiziert
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setTriageEnabled(!triageEnabled)}
+                    className={`relative h-6 w-11 rounded-full transition-colors ${triageEnabled ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                  >
+                    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${triageEnabled ? 'left-[22px]' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Triage-Intervall: {triageInterval} Min.
+                  </label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    value={triageInterval}
+                    onChange={(e) => setTriageInterval(Number(e.target.value))}
+                    className="w-full accent-indigo-600"
+                  />
+                  <div className="flex justify-between text-xs text-gray-400">
+                    <span>1 Min.</span>
+                    <span>10 Min.</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Triage-Prompt (System-Prompt für die Klassifikation)
+                  </label>
+                  <textarea
+                    value={triagePrompt}
+                    onChange={(e) => setTriagePrompt(e.target.value)}
+                    rows={12}
+                    placeholder="Standard-Prompt wird verwendet wenn leer..."
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-white font-mono"
+                  />
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={saveTriageSettings}
+                    className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
+                  >
+                    Einstellungen speichern
+                  </button>
+                  <button
+                    onClick={testTriage}
+                    disabled={triageTesting}
+                    className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+                  >
+                    {triageTesting ? 'Teste...' : 'Test-Triage (5 E-Mails)'}
+                  </button>
+                  {triageMsg && (
+                    <span className={`text-sm ${triageMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>
+                      {triageMsg.text}
+                    </span>
+                  )}
+                </div>
+
+                {triageTestResults && triageTestResults.length > 0 && (
+                  <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                    <h3 className="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-50 dark:bg-gray-900 dark:text-gray-300">
+                      Test-Ergebnisse
+                    </h3>
+                    <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                      {triageTestResults.map((r) => (
+                        <div key={r.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            r.triage_class === 'quick_response' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' :
+                            r.triage_class === 'board_task' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
+                            r.triage_class === 'bedenkzeit' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' :
+                            'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                          }`}>
+                            {r.triage_class}
+                          </span>
+                          <span className="flex-1 truncate text-gray-700 dark:text-gray-300">{r.subject}</span>
+                          <span className="shrink-0 text-xs text-gray-400">{r.from_address}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
           )}

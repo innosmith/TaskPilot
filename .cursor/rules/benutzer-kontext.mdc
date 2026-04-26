@@ -1,0 +1,29 @@
+---
+description: Kontext zu Anthony Smith / InnoSmith für personalisierte Agent-Ausgaben
+alwaysApply: true
+---
+
+# Benutzerkontext
+
+## Person
+- **Name:** Anthony Smith
+- **Unternehmen:** InnoSmith GmbH, Schweiz (Einmannunternehmen)
+- **Rollen:** Strategischer Berater, KI-Experte, Co-Leiter/Dozent an der BFH (Berner Fachhochschule)
+- **E-Mail-Adressen:** anthony@gerbersmith.ch, anthony@innosmith.ch, anthony.thomas.smith@gmail.com
+
+## Arbeitsweise
+- 10–14 parallele Projekte, Cross-Project-Pipeline mit Zeithorizonten
+- Markdown-First-Workflow (Obsidian + Cursor)
+- Team-Modell: Anthony ist Orchestrator, delegiert an AI-Agenten
+- Schweizer Kunden: E-Mails von `.ch`-Domains haben hohe Relevanz
+- BFH-E-Mails (Studierende, Administration) sind IMMER wichtig
+
+## Entwicklungsumgebung
+- **Maschine:** ASUS GX10 mit NVIDIA Blackwell GPU, 128 GB Unified Memory
+- **OS:** Linux (Ubuntu-basiert)
+- **Kein Windows** — keine .exe oder Windows-spezifischen Tools
+- **Lokale LLMs:** via Ollama (Qwen 3.5 35B als Default)
+- **Cloud LLMs:** Anthropic Claude, Google Gemini, OpenAI GPT
+
+## Wichtige Treuhand-Kontakte
+- dominique.chuard@t-r.ch → Kategorie "Finanzen"
