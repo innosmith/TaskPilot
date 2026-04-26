@@ -231,6 +231,16 @@ class GraphClient:
         )
         resp.raise_for_status()
 
+    async def delete_message(self, message_id: str) -> None:
+        """E-Mail oder Entwurf loeschen."""
+        client = await self._ensure_client()
+        headers = await self._headers()
+        resp = await client.delete(
+            f"{GRAPH_BASE}{self._user_path}/messages/{message_id}",
+            headers=headers,
+        )
+        resp.raise_for_status()
+
     async def mark_as_read(self, message_id: str) -> None:
         """E-Mail als gelesen markieren."""
         client = await self._ensure_client()

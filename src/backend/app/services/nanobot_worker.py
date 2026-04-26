@@ -10,19 +10,24 @@ Nanobot nutzt dabei seine konfigurierten MCP-Tools (email, taskpilot) um
 E-Mails zu lesen, zu klassifizieren und Aktionen auszufuehren.
 Jeder Durchlauf verwendet einen einzigartigen Session-Key (mit Timestamp),
 damit keine alte Konversationshistorie wiederverwendet wird.
+
+Nach der LLM-Klassifikation fuehrt der Worker deterministische Post-Processing-
+Logik aus: JSON-Output parsen, Tasks erstellen, Drafts zuordnen.
 """
 
 import asyncio
+import json
 import logging
+import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from nanobot import Nanobot
 from sqlalchemy import select, update
 
 from app.database import async_session
-from app.models import AgentJob, EmailTriage
+from app.models import AgentJob, BoardColumn, EmailTriage, Project, Task
 
 logger = logging.getLogger("taskpilot.nanobot_worker")
 
@@ -33,6 +38,13 @@ POLL_INTERVAL = 10
 NANOBOT_CONFIG = Path.home() / ".nanobot" / "config.json"
 TRIAGE_SKILL = Path.home() / ".nanobot" / "workspace" / "skills" / "mail-triage.md"
 
+PIPELINE_COLUMNS = {
+    "focus": "a0000000-0000-0000-0000-000000000001",
+    "this_week": "a0000000-0000-0000-0000-000000000002",
+    "next_week": "a0000000-0000-0000-0000-000000000003",
+    "this_month": "a0000000-0000-0000-0000-000000000005",
+}
+
 
 def _load_triage_skill() -> str:
     """Liest den mail-triage.md Skill als Systeminstruktion."""
@@ -42,13 +54,36 @@ def _load_triage_skill() -> str:
     return ""
 
 
-def _build_triage_prompt(job: AgentJob) -> str:
+async def _load_projects_context() -> str:
+    """Laedt alle aktiven Projekte aus der DB und formatiert sie als Prompt-Kontext."""
+    async with async_session() as db:
+        result = await db.execute(
+            select(Project)
+            .where(Project.status != "archived")
+            .order_by(Project.name)
+        )
+        projects = list(result.scalars().all())
+
+    if not projects:
+        return "## VERFUEGBARE PROJEKTE\nKeine aktiven Projekte vorhanden."
+
+    lines = ["## VERFUEGBARE PROJEKTE", ""]
+    for p in projects:
+        lines.append(f'- "{p.name}" (id: {p.id})')
+    lines.append("")
+    lines.append("Waehle bei board_task das passendste Projekt aus dieser Liste fuer das Feld suggested_project.")
+    lines.append("Falls kein Projekt passt, setze suggested_project auf null.")
+    return "\n".join(lines)
+
+
+async def _build_triage_prompt(job: AgentJob) -> str:
     """Baut den Prompt fuer einen email_triage Job aus Metadata.
 
-    Laedt den Triage-Skill bei jedem Aufruf frisch, damit Aenderungen
-    an mail-triage.md sofort wirksam werden.
+    Laedt den Triage-Skill und die Projektliste bei jedem Aufruf frisch,
+    damit Aenderungen sofort wirksam werden.
     """
     skill_text = _load_triage_skill()
+    projects_context = await _load_projects_context()
 
     meta = job.metadata_json or {}
     email_id = meta.get("email_message_id", "")
@@ -61,6 +96,10 @@ def _build_triage_prompt(job: AgentJob) -> str:
     return f"""## TRIAGE-INSTRUKTIONEN (STRIKT befolgen!)
 
 {skill_text}
+
+---
+
+{projects_context}
 
 ---
 
@@ -86,9 +125,189 @@ Fuehre jetzt den Triage-Ablauf durch:
 3. Klassifiziere gemaess der Prioritaetsreihenfolge
 4. Setze die Outlook-Kategorie
 5. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
-6. Erstelle Draft oder Task falls noetig
-7. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
+6. Erstelle Draft falls quick_response (bei board_task uebernimmt das Backend die Task-Erstellung automatisch)
+7. Gib den PFLICHT-JSON-Block aus (Schritt 8 im Skill)
+8. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
 """
+
+
+def _extract_json_block(content: str) -> dict | None:
+    """Extrahiert den JSON-Block aus dem LLM-Output."""
+    pattern = r"```json\s*\n(.*?)\n\s*```"
+    match = re.search(pattern, content, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            logger.warning("JSON-Block gefunden aber nicht parsebar: %s", match.group(1)[:200])
+            return None
+
+    # Fallback: letztes {...} im Text
+    json_pattern = r"\{[^{}]*\"label\"[^{}]*\"triage_class\"[^{}]*\}"
+    matches = list(re.finditer(json_pattern, content, re.DOTALL))
+    if matches:
+        try:
+            return json.loads(matches[-1].group(0))
+        except json.JSONDecodeError:
+            return None
+
+    return None
+
+
+def _match_project(suggested_name: str | None, projects: list) -> tuple | None:
+    """Matched einen Projektnamen gegen die DB-Projekte (case-insensitive contains)."""
+    if not suggested_name or not projects:
+        return None
+    name_lower = suggested_name.lower()
+    for p in projects:
+        if name_lower in p.name.lower() or p.name.lower() in name_lower:
+            return p
+    return None
+
+
+def _determine_pipeline_column(deadline_str: str | None) -> str | None:
+    """Bestimmt die Pipeline-Spalte basierend auf der Deadline."""
+    if not deadline_str:
+        return PIPELINE_COLUMNS["this_week"]
+    try:
+        deadline = date.fromisoformat(deadline_str)
+    except ValueError:
+        return PIPELINE_COLUMNS["this_week"]
+
+    today = date.today()
+    delta = (deadline - today).days
+
+    if delta <= 1:
+        return PIPELINE_COLUMNS["focus"]
+    if delta <= 7:
+        return PIPELINE_COLUMNS["this_week"]
+    if delta <= 14:
+        return PIPELINE_COLUMNS["next_week"]
+    if delta <= 31:
+        return PIPELINE_COLUMNS["this_month"]
+    return PIPELINE_COLUMNS["this_month"]
+
+
+async def _post_process_triage(job_id, content: str, meta: dict) -> str:
+    """Deterministische Post-Processing-Logik nach LLM-Klassifikation.
+
+    Parst den JSON-Block, erstellt Tasks bei board_task, speichert draft_id
+    bei quick_response, und aktualisiert den EmailTriage-Record.
+
+    Returns: finaler Status fuer den AgentJob.
+    """
+    parsed = _extract_json_block(content)
+    if parsed is None:
+        logger.warning("Job %s: Kein JSON-Block im Output gefunden", job_id)
+        return "completed"
+
+    triage_class = parsed.get("triage_class")
+    label = parsed.get("label")
+    draft_id = parsed.get("draft_id")
+    deadline = parsed.get("deadline")
+    task_title = parsed.get("task_title")
+    task_description = parsed.get("task_description")
+    suggested_project = parsed.get("suggested_project")
+    rationale = parsed.get("rationale")
+
+    logger.info(
+        "Job %s: JSON parsed -- label=%s, triage_class=%s, draft_id=%s",
+        job_id, label, triage_class, draft_id,
+    )
+
+    async with async_session() as db:
+        # EmailTriage aktualisieren
+        await db.execute(
+            update(EmailTriage)
+            .where(EmailTriage.agent_job_id == job_id)
+            .values(
+                triage_class=triage_class,
+                suggested_action={
+                    "label": label,
+                    "triage_class": triage_class,
+                    "deadline": deadline,
+                    "task_title": task_title,
+                    "suggested_project": suggested_project,
+                    "draft_id": draft_id,
+                    "rationale": rationale,
+                },
+                status="acted" if triage_class != "quick_response" else "processing",
+            )
+        )
+
+        final_status = "completed"
+
+        if triage_class == "board_task" and task_title:
+            # Projekte laden und matchen
+            proj_result = await db.execute(
+                select(Project).where(Project.status != "archived").order_by(Project.name)
+            )
+            projects = list(proj_result.scalars().all())
+            matched_project = _match_project(suggested_project, projects)
+            if not matched_project and projects:
+                matched_project = projects[0]
+
+            if matched_project:
+                # Erste Board-Spalte des Projekts laden
+                col_result = await db.execute(
+                    select(BoardColumn)
+                    .where(BoardColumn.project_id == matched_project.id)
+                    .order_by(BoardColumn.position)
+                    .limit(1)
+                )
+                first_col = col_result.scalar_one_or_none()
+
+                if first_col:
+                    pipeline_col_id = _determine_pipeline_column(deadline)
+                    email_message_id = meta.get("email_message_id")
+
+                    due_date = None
+                    if deadline:
+                        try:
+                            due_date = date.fromisoformat(deadline)
+                        except ValueError:
+                            pass
+
+                    max_pos_result = await db.execute(
+                        select(Task.board_position)
+                        .where(Task.board_column_id == first_col.id)
+                        .order_by(Task.board_position.desc())
+                        .limit(1)
+                    )
+                    max_pos_row = max_pos_result.scalar_one_or_none()
+                    next_pos = (max_pos_row or 0) + 1
+
+                    new_task = Task(
+                        title=task_title,
+                        description=task_description or f"Erstellt aus E-Mail: {meta.get('subject', '')}",
+                        project_id=matched_project.id,
+                        board_column_id=first_col.id,
+                        board_position=next_pos,
+                        pipeline_column_id=pipeline_col_id,
+                        email_message_id=email_message_id,
+                        due_date=due_date,
+                        needs_review=True,
+                        assignee="me",
+                    )
+                    db.add(new_task)
+                    logger.info(
+                        "Job %s: Task erstellt '%s' in Projekt '%s' (needs_review=True)",
+                        job_id, task_title, matched_project.name,
+                    )
+
+        elif triage_class == "quick_response" and draft_id:
+            # draft_id in AgentJob-Metadata speichern
+            job_result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
+            job = job_result.scalar_one_or_none()
+            if job:
+                existing_meta = dict(job.metadata_json or {})
+                existing_meta["draft_id"] = draft_id
+                job.metadata_json = existing_meta
+            final_status = "awaiting_approval"
+
+        await db.commit()
+
+    return final_status
 
 
 async def _init_bot() -> Nanobot | None:
@@ -108,7 +327,7 @@ async def _init_bot() -> Nanobot | None:
         return None
 
 
-async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str) -> None:
+async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: dict) -> None:
     """Verarbeitet einen einzelnen AgentJob via Nanobot SDK."""
     session_key = f"{job_type}:{job_id}:{int(time.time())}"
     logger.info("Starte Job %s (type=%s, session=%s)", job_id, job_type, session_key)
@@ -126,9 +345,12 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str) -> None
         content = result.content or ""
         logger.info("Job %s abgeschlossen: %s", job_id, content[:200])
 
-        status = "completed"
-        if "awaiting_approval" in content.lower():
-            status = "awaiting_approval"
+        if job_type == "email_triage":
+            status = await _post_process_triage(job_id, content, meta)
+        else:
+            status = "completed"
+            if "awaiting_approval" in content.lower():
+                status = "awaiting_approval"
 
         async with async_session() as db:
             await db.execute(
@@ -140,12 +362,6 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str) -> None
                     completed_at=datetime.now(timezone.utc),
                 )
             )
-            if job_type == "email_triage":
-                await db.execute(
-                    update(EmailTriage)
-                    .where(EmailTriage.agent_job_id == job_id)
-                    .values(status="acted" if status == "completed" else "processing")
-                )
             await db.commit()
 
     except Exception as e:
@@ -192,12 +408,13 @@ async def _worker_loop() -> None:
                 job = result.scalar_one_or_none()
 
             if job is not None:
+                meta = job.metadata_json or {}
                 if job.job_type == "email_triage":
-                    prompt = _build_triage_prompt(job)
+                    prompt = await _build_triage_prompt(job)
                 else:
                     prompt = f"Fuehre den AgentJob {job.id} aus: {job.metadata_json}"
 
-                await _process_job(bot, job.id, job.job_type or "generic", prompt)
+                await _process_job(bot, job.id, job.job_type or "generic", prompt, meta)
             else:
                 await asyncio.sleep(POLL_INTERVAL)
 

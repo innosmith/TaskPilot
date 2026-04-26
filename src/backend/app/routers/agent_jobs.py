@@ -1,5 +1,7 @@
 import uuid
+import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -31,6 +33,33 @@ def _get_email_client() -> GraphClient | None:
         user_email=s.graph_user_email,
     )
     return GraphClient(config)
+
+
+def _extract_draft_id(job: AgentJob) -> str | None:
+    """Extrahiert die draft_id aus Metadata oder LLM-Output."""
+    meta = job.metadata_json or {}
+    draft_id = meta.get("draft_id")
+    if draft_id:
+        return draft_id
+
+    if not job.output:
+        return None
+
+    json_match = re.search(r"```json\s*\n(.*?)\n\s*```", job.output, re.DOTALL)
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group(1))
+            draft_id = parsed.get("draft_id")
+            if draft_id:
+                return draft_id
+        except json.JSONDecodeError:
+            pass
+
+    id_match = re.search(r"AAMk[A-Za-z0-9_-]{20,}", job.output)
+    if id_match:
+        return id_match.group(0)
+
+    return None
 
 
 @router.get("", response_model=list[AgentJobWithTask])
@@ -71,6 +100,53 @@ async def get_agent_job(
         raise HTTPException(status_code=404, detail="Agent job not found")
     job, title = row
     return AgentJobWithTask.model_validate({**job.__dict__, "task_title": title})
+
+
+@router.get("/{job_id}/draft-preview")
+async def get_draft_preview(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> dict:
+    """Lädt den Draft-Inhalt aus Outlook für die Vorschau im Approval-Flow."""
+    result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Agent job not found")
+
+    draft_id = _extract_draft_id(job)
+    if not draft_id:
+        raise HTTPException(status_code=404, detail="Kein Entwurf mit diesem Job verknüpft")
+
+    client = _get_email_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Graph API nicht konfiguriert")
+
+    meta = job.metadata_json or {}
+    try:
+        draft = await client.get_email(draft_id)
+        to_list = [
+            r.get("emailAddress", {}).get("address", "")
+            for r in draft.get("toRecipients", [])
+        ]
+        cc_list = [
+            r.get("emailAddress", {}).get("address", "")
+            for r in draft.get("ccRecipients", [])
+        ]
+        return {
+            "draft_id": draft_id,
+            "subject": draft.get("subject"),
+            "body_html": draft.get("body", {}).get("content"),
+            "body_preview": draft.get("bodyPreview"),
+            "to_recipients": to_list,
+            "cc_recipients": cc_list,
+            "source_subject": meta.get("subject"),
+            "source_from": meta.get("from_address"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Draft konnte nicht geladen werden: {e}")
+    finally:
+        await client.close()
 
 
 @router.post("", response_model=AgentJobOut, status_code=201)
@@ -115,19 +191,35 @@ async def update_agent_job(
     if (
         old_status == "awaiting_approval"
         and body.status == "completed"
-        and job.job_type == "send_email"
+        and job.job_type in ("send_email", "email_triage")
     ):
-        meta = job.metadata_json or {}
-        draft_id = meta.get("draft_id")
+        draft_id = _extract_draft_id(job)
         if draft_id:
             client = _get_email_client()
             if client:
                 try:
                     await client.send_draft(draft_id)
-                    job.output = "E-Mail erfolgreich gesendet"
+                    job.output = (job.output or "") + "\n\nE-Mail erfolgreich gesendet."
                 except Exception as e:
                     job.status = "failed"
                     job.error_message = str(e)
+                finally:
+                    await client.close()
+
+    if (
+        old_status == "awaiting_approval"
+        and body.status == "failed"
+        and job.job_type in ("send_email", "email_triage")
+    ):
+        draft_id = _extract_draft_id(job)
+        if draft_id:
+            client = _get_email_client()
+            if client:
+                try:
+                    await client.delete_message(draft_id)
+                    job.output = (job.output or "") + "\n\nEntwurf gelöscht."
+                except Exception:
+                    pass
                 finally:
                     await client.close()
 
@@ -143,12 +235,12 @@ class BulkDeleteResult(BaseModel):
 
 @router.delete("/bulk", response_model=BulkDeleteResult)
 async def bulk_delete_agent_jobs(
-    status: str = Query(..., description="Status der zu loeschenden Jobs: completed, failed oder both"),
-    older_than_days: int | None = Query(None, ge=0, description="Nur Jobs aelter als X Tage loeschen"),
+    status: str = Query(..., description="Status der zu löschenden Jobs"),
+    older_than_days: int | None = Query(None, ge=0, description="Nur Jobs älter als X Tage löschen"),
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> BulkDeleteResult:
-    """Bulk-Loeschung von abgeschlossenen/fehlgeschlagenen Jobs."""
+    """Bulk-Löschung von abgeschlossenen/fehlgeschlagenen Jobs."""
     if status == "both":
         status_filter = AgentJob.status.in_(list(_DELETABLE_STATUSES))
     elif status in _DELETABLE_STATUSES:
@@ -178,7 +270,7 @@ async def delete_agent_job(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> None:
-    """Einzelnen abgeschlossenen oder fehlgeschlagenen Job loeschen."""
+    """Einzelnen abgeschlossenen oder fehlgeschlagenen Job löschen."""
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:
@@ -186,6 +278,6 @@ async def delete_agent_job(
     if job.status not in _DELETABLE_STATUSES:
         raise HTTPException(
             status_code=409,
-            detail=f"Nur abgeschlossene oder fehlgeschlagene Jobs koennen geloescht werden (aktuell: {job.status})",
+            detail=f"Nur abgeschlossene oder fehlgeschlagene Jobs können gelöscht werden (aktuell: {job.status})",
         )
     await db.delete(job)

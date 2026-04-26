@@ -271,20 +271,12 @@ export function AgentQueuePage() {
                   </div>
 
                   {job.status === 'awaiting_approval' && (
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        onClick={() => handleApprove(job.id)}
-                        className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-700"
-                      >
-                        Akzeptieren
-                      </button>
-                      <button
-                        onClick={() => handleReject(job.id)}
-                        className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700"
-                      >
-                        Ablehnen
-                      </button>
-                    </div>
+                    <DraftPreviewInline
+                      jobId={job.id}
+                      meta={meta}
+                      onApprove={() => handleApprove(job.id)}
+                      onReject={() => handleReject(job.id)}
+                    />
                   )}
 
                   {isExpanded && (
@@ -368,5 +360,106 @@ function TrashIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
     </svg>
+  );
+}
+
+interface DraftPreviewData {
+  draft_id: string;
+  subject: string | null;
+  body_html: string | null;
+  body_preview: string | null;
+  to_recipients: string[];
+  cc_recipients: string[];
+  source_subject: string | null;
+  source_from: string | null;
+}
+
+function DraftPreviewInline({
+  jobId,
+  meta,
+  onApprove,
+  onReject,
+}: {
+  jobId: string;
+  meta: Record<string, string>;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  const [preview, setPreview] = useState<DraftPreviewData | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const hasDraft = !!meta.draft_id;
+
+  useEffect(() => {
+    if (!hasDraft) return;
+    setLoadingPreview(true);
+    api.get<DraftPreviewData>(`/api/agent-jobs/${jobId}/draft-preview`)
+      .then(setPreview)
+      .catch(() => {})
+      .finally(() => setLoadingPreview(false));
+  }, [jobId, hasDraft]);
+
+  const doApprove = async () => {
+    setProcessing(true);
+    try { await onApprove(); } finally { setProcessing(false); }
+  };
+  const doReject = async () => {
+    setProcessing(true);
+    try { await onReject(); } finally { setProcessing(false); }
+  };
+
+  return (
+    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
+      {loadingPreview && (
+        <div className="flex items-center gap-2 text-xs text-gray-400">
+          <div className="h-3 w-3 animate-spin rounded-full border border-gray-400 border-t-transparent" />
+          Entwurf wird geladen...
+        </div>
+      )}
+
+      {preview && (
+        <div className="space-y-1.5">
+          <div className="text-xs">
+            <span className="font-medium text-gray-500 dark:text-gray-400">An: </span>
+            <span className="text-gray-700 dark:text-gray-300">{preview.to_recipients.join(', ') || 'Unbekannt'}</span>
+          </div>
+          <div className="text-xs">
+            <span className="font-medium text-gray-500 dark:text-gray-400">Betreff: </span>
+            <span className="text-gray-700 dark:text-gray-300">{preview.subject || '(kein Betreff)'}</span>
+          </div>
+          {preview.body_html ? (
+            <div className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-900">
+              <div
+                className="prose prose-sm max-w-none dark:prose-invert"
+                dangerouslySetInnerHTML={{ __html: preview.body_html }}
+              />
+            </div>
+          ) : preview.body_preview ? (
+            <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{preview.body_preview}</p>
+          ) : null}
+        </div>
+      )}
+
+      {!preview && !loadingPreview && !hasDraft && (
+        <p className="text-xs text-gray-400 italic">Kein Entwurf verfügbar</p>
+      )}
+
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={doApprove}
+          disabled={processing}
+          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+        >
+          {processing ? 'Wird gesendet...' : 'Freigeben & Senden'}
+        </button>
+        <button
+          onClick={doReject}
+          disabled={processing}
+          className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
+        >
+          Ablehnen & Löschen
+        </button>
+      </div>
+    </div>
   );
 }

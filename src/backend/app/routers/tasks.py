@@ -3,13 +3,14 @@ from datetime import datetime, timezone
 
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.auth.deps import get_current_user
 from app.database import get_db
-from app.models import AgentJob, BoardColumn, ChecklistItem, Task, User
+from app.models import AgentJob, BoardColumn, ChecklistItem, Project, Task, User
 from app.schemas import (
     ChecklistItemCreate,
     ChecklistItemOut,
@@ -58,6 +59,57 @@ async def create_task(
         .where(Task.id == task.id)
     )
     return result.scalar_one()
+
+
+# --- Pending Review (auto-erstellte Tasks aus E-Mail-Triage) ---
+
+class PendingReviewOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    description: str | None
+    project_id: uuid.UUID
+    project_name: str
+    board_column_id: uuid.UUID
+    pipeline_column_id: uuid.UUID | None
+    due_date: str | None
+    email_message_id: str | None
+    created_at: str
+
+
+class TaskConfirmBody(BaseModel):
+    title: str | None = None
+    project_id: uuid.UUID | None = None
+    board_column_id: uuid.UUID | None = None
+
+
+@router.get("/pending-review", response_model=list[PendingReviewOut])
+async def list_pending_review(
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> list[PendingReviewOut]:
+    """Tasks mit needs_review=True laden (auto-erstellte Task-Vorschlaege)."""
+    result = await db.execute(
+        select(Task, Project.name)
+        .join(Project, Task.project_id == Project.id)
+        .where(Task.needs_review == True)  # noqa: E712
+        .order_by(Task.created_at.desc())
+    )
+    rows = result.all()
+    return [
+        PendingReviewOut(
+            id=task.id,
+            title=task.title,
+            description=task.description,
+            project_id=task.project_id,
+            project_name=proj_name,
+            board_column_id=task.board_column_id,
+            pipeline_column_id=task.pipeline_column_id,
+            due_date=task.due_date.isoformat() if task.due_date else None,
+            email_message_id=task.email_message_id,
+            created_at=task.created_at.isoformat(),
+        )
+        for task, proj_name in rows
+    ]
 
 
 @router.get("/{task_id}", response_model=TaskOut)
@@ -114,6 +166,63 @@ async def delete_task(
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    await db.delete(task)
+
+
+@router.post("/{task_id}/confirm", response_model=TaskOut)
+async def confirm_review_task(
+    task_id: uuid.UUID,
+    body: TaskConfirmBody,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> TaskOut:
+    """Task-Vorschlag bestaetigen (setzt needs_review=False, erlaubt Aenderungen)."""
+    result = await db.execute(
+        select(Task)
+        .options(selectinload(Task.tags), selectinload(Task.checklist_items))
+        .where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not task.needs_review:
+        raise HTTPException(status_code=409, detail="Task ist bereits bestaetigt")
+
+    task.needs_review = False
+
+    if body.title is not None:
+        task.title = body.title
+    if body.project_id is not None:
+        task.project_id = body.project_id
+        if body.board_column_id is not None:
+            task.board_column_id = body.board_column_id
+        else:
+            col_result = await db.execute(
+                select(BoardColumn)
+                .where(BoardColumn.project_id == body.project_id)
+                .order_by(BoardColumn.position)
+                .limit(1)
+            )
+            first_col = col_result.scalar_one_or_none()
+            if first_col:
+                task.board_column_id = first_col.id
+
+    return task
+
+
+@router.post("/{task_id}/dismiss-review", status_code=status.HTTP_204_NO_CONTENT)
+async def dismiss_review_task(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> None:
+    """Task-Vorschlag verwerfen (Task loeschen)."""
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not task.needs_review:
+        raise HTTPException(status_code=409, detail="Nur unbestaetigte Vorschlaege koennen verworfen werden")
     await db.delete(task)
 
 

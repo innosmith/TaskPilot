@@ -50,6 +50,7 @@ export interface TaskDetail {
   template_id: string | null;
   calendar_duration_minutes: number | null;
   calendar_preferred_time: string | null;
+  needs_review: boolean;
   tags: Tag[];
   checklist_items: ChecklistItem[];
   created_at: string;

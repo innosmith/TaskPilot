@@ -104,6 +104,7 @@ class Task(Base):
     calendar_event_id: Mapped[str | None] = mapped_column(Text)
     calendar_duration_minutes: Mapped[int | None] = mapped_column(Integer)
     calendar_preferred_time: Mapped[str | None] = mapped_column(Text)
+    needs_review: Mapped[bool] = mapped_column(Boolean, server_default="false")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 

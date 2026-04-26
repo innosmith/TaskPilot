@@ -152,6 +152,7 @@ class TaskOut(TaskBase):
     calendar_event_id: str | None = None
     calendar_duration_minutes: int | None = None
     calendar_preferred_time: str | None = None
+    needs_review: bool = False
     template_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
