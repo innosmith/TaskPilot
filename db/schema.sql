@@ -45,6 +45,7 @@ CREATE TABLE users (
     display_name    TEXT NOT NULL,
     role            TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member', 'viewer')),
     is_active       BOOLEAN DEFAULT true,
+    settings        JSONB DEFAULT '{}'::jsonb,
     created_at      TIMESTAMPTZ DEFAULT now(),
     last_login_at   TIMESTAMPTZ
 );

@@ -1,7 +1,9 @@
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -171,3 +173,55 @@ async def create_column(
     db.add(col)
     await db.flush()
     return col
+
+
+class ProjectMetrics(BaseModel):
+    id: uuid.UUID
+    name: str
+    color: str
+    status: str
+    total_tasks: int
+    open_tasks: int
+    completed_tasks: int
+    overdue_tasks: int
+    progress_pct: float
+
+
+@router.get("/overview/metrics", response_model=list[ProjectMetrics])
+async def project_metrics(
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> list[ProjectMetrics]:
+    projects = (
+        await db.execute(
+            select(Project).order_by(Project.priority.desc(), Project.name)
+        )
+    ).scalars().all()
+
+    result = []
+    today = date.today()
+    for p in projects:
+        counts = await db.execute(
+            select(
+                func.count(Task.id).label("total"),
+                func.count(Task.id).filter(Task.is_completed == False).label("open"),
+                func.count(Task.id).filter(Task.is_completed == True).label("done"),
+                func.count(Task.id).filter(
+                    Task.is_completed == False,
+                    Task.due_date != None,
+                    Task.due_date < today,
+                ).label("overdue"),
+            ).where(Task.project_id == p.id)
+        )
+        row = counts.one()
+        total = row.total or 0
+        done = row.done or 0
+        result.append(
+            ProjectMetrics(
+                id=p.id, name=p.name, color=p.color, status=p.status,
+                total_tasks=total, open_tasks=row.open or 0,
+                completed_tasks=done, overdue_tasks=row.overdue or 0,
+                progress_pct=round((done / total * 100) if total > 0 else 0, 1),
+            )
+        )
+    return result

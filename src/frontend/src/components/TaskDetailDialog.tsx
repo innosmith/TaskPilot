@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api/client';
-import type { TaskDetail, ChecklistItem, TaskUpdatePayload } from '../types';
+import type { TaskDetail, ChecklistItem, TaskUpdatePayload, AgentJob, Tag } from '../types';
 
 interface TaskDetailDialogProps {
   taskId: string | null;
@@ -14,25 +14,35 @@ export function TaskDetailDialog({
   onUpdated,
 }: TaskDetailDialogProps) {
   const [task, setTask] = useState<TaskDetail | null>(null);
+  const [agentJobs, setAgentJobs] = useState<AgentJob[]>([]);
+  const [allTags, setAllTags] = useState<Tag[]>([]);
   const [loading, setLoading] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [titleValue, setTitleValue] = useState('');
   const [descValue, setDescValue] = useState('');
+  const [newChecklistText, setNewChecklistText] = useState('');
+  const [showTagPicker, setShowTagPicker] = useState(false);
   const backdropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!taskId) {
       setTask(null);
+      setAgentJobs([]);
       return;
     }
     setLoading(true);
-    api
-      .get<TaskDetail>(`/api/tasks/${taskId}`)
-      .then((data) => {
-        setTask(data);
-        setTitleValue(data.title);
-        setDescValue(data.description || '');
+    Promise.all([
+      api.get<TaskDetail>(`/api/tasks/${taskId}`),
+      api.get<AgentJob[]>(`/api/agent-jobs?task_id=${taskId}`),
+      api.get<Tag[]>('/api/tags'),
+    ])
+      .then(([taskData, jobsData, tagsData]) => {
+        setTask(taskData);
+        setAgentJobs(jobsData);
+        setAllTags(tagsData);
+        setTitleValue(taskData.title);
+        setDescValue(taskData.description || '');
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -67,13 +77,41 @@ export function TaskDetailDialog({
     async (item: ChecklistItem) => {
       if (!taskId) return;
       await api.patch(`/api/tasks/${taskId}/checklist/${item.id}`, {
-        is_done: !item.is_done,
+        is_checked: !item.is_checked,
       });
       const updated = await api.get<TaskDetail>(`/api/tasks/${taskId}`);
       setTask(updated);
       onUpdated();
     },
     [taskId, onUpdated],
+  );
+
+  const addChecklistItem = useCallback(
+    async (text: string) => {
+      if (!taskId || !text.trim()) return;
+      await api.post(`/api/tasks/${taskId}/checklist`, { text: text.trim() });
+      const updated = await api.get<TaskDetail>(`/api/tasks/${taskId}`);
+      setTask(updated);
+      setNewChecklistText('');
+      onUpdated();
+    },
+    [taskId, onUpdated],
+  );
+
+  const toggleTag = useCallback(
+    async (tag: Tag) => {
+      if (!taskId || !task) return;
+      const hasTag = task.tags.some((t) => t.id === tag.id);
+      if (hasTag) {
+        await api.delete(`/api/tags/tasks/${taskId}/tags/${tag.id}`);
+      } else {
+        await api.post(`/api/tags/tasks/${taskId}/tags/${tag.id}`);
+      }
+      const updated = await api.get<TaskDetail>(`/api/tasks/${taskId}`);
+      setTask(updated);
+      onUpdated();
+    },
+    [taskId, task, onUpdated],
   );
 
   useEffect(() => {
@@ -138,28 +176,70 @@ export function TaskDetailDialog({
               </h1>
             )}
 
-            {/* Metadata */}
-            <div className="flex flex-wrap gap-3">
+            {/* Tags */}
+            <div className="flex flex-wrap items-center gap-2">
               {task.tags.map((tag) => (
-                <span
+                <button
                   key={tag.id}
-                  className="inline-flex rounded-full px-2.5 py-1 text-xs font-medium"
-                  style={{
-                    backgroundColor: tag.color + '20',
-                    color: tag.color,
-                  }}
+                  onClick={() => toggleTag(tag)}
+                  className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-opacity hover:opacity-70"
+                  style={{ backgroundColor: tag.color + '20', color: tag.color }}
+                  title="Tag entfernen"
                 >
                   {tag.name}
-                </span>
+                  <span className="text-[10px]">x</span>
+                </button>
               ))}
+              <div className="relative">
+                <button
+                  onClick={() => setShowTagPicker(!showTagPicker)}
+                  className="rounded-full border border-dashed border-gray-300 px-2 py-0.5 text-xs text-gray-500 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-gray-700 dark:text-gray-500 dark:hover:border-gray-600 dark:hover:text-gray-400"
+                >
+                  + Tag
+                </button>
+                {showTagPicker && (
+                  <div className="absolute left-0 top-8 z-10 w-48 rounded-lg border border-gray-200 bg-white p-2 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                    {allTags.filter((t) => !task.tags.some((tt) => tt.id === t.id)).map((tag) => (
+                      <button
+                        key={tag.id}
+                        onClick={() => { toggleTag(tag); setShowTagPicker(false); }}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-gray-50 dark:hover:bg-gray-800"
+                      >
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tag.color }} />
+                        {tag.name}
+                      </button>
+                    ))}
+                    {allTags.filter((t) => !task.tags.some((tt) => tt.id === t.id)).length === 0 && (
+                      <p className="px-2 py-1 text-xs text-gray-400">Keine weiteren Tags</p>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <span className="text-gray-500 dark:text-gray-400">Zuständig</span>
-                <p className="mt-0.5 font-medium text-gray-900 dark:text-white">
-                  {task.assignee === 'agent' ? 'AI Agent' : 'Ich'}
-                </p>
+                <button
+                  onClick={() => updateTask({ assignee: task.assignee === 'agent' ? 'me' : 'agent' })}
+                  className={`mt-0.5 flex items-center gap-2 rounded-lg px-2 py-1 font-medium transition-colors ${
+                    task.assignee === 'agent'
+                      ? 'bg-violet-50 text-violet-700 hover:bg-violet-100 dark:bg-violet-950 dark:text-violet-300 dark:hover:bg-violet-900'
+                      : 'bg-gray-50 text-gray-900 hover:bg-gray-100 dark:bg-gray-900 dark:text-white dark:hover:bg-gray-800'
+                  }`}
+                >
+                  {task.assignee === 'agent' ? (
+                    <>
+                      <AgentIcon className="h-4 w-4" />
+                      AI Agent
+                    </>
+                  ) : (
+                    <>
+                      <UserIcon className="h-4 w-4" />
+                      Ich
+                    </>
+                  )}
+                </button>
               </div>
               {task.due_date && (
                 <div>
@@ -173,7 +253,80 @@ export function TaskDetailDialog({
                   </p>
                 </div>
               )}
+              <div className="col-span-2">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={task.is_completed}
+                    onChange={() => updateTask({ is_completed: !task.is_completed })}
+                    className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600"
+                  />
+                  <span className={`text-sm font-medium ${task.is_completed ? 'text-green-600 dark:text-green-400' : 'text-gray-700 dark:text-gray-300'}`}>
+                    {task.is_completed ? 'Erledigt' : 'Als erledigt markieren'}
+                  </span>
+                </label>
+              </div>
             </div>
+
+            {/* Agent-Steuerung */}
+            {task.assignee === 'agent' && (
+              <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-4 dark:border-violet-900 dark:bg-violet-950/30">
+                <h3 className="mb-3 text-sm font-semibold text-violet-700 dark:text-violet-300">
+                  Agent-Konfiguration
+                </h3>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <label className="text-xs text-gray-500 dark:text-gray-400">LLM-Override</label>
+                    <select
+                      value={task.llm_override || ''}
+                      onChange={(e) => updateTask({ llm_override: e.target.value || undefined } as TaskUpdatePayload)}
+                      className="mt-0.5 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                    >
+                      <option value="">Standard (qwen3.5:35b)</option>
+                      <option value="qwen3.5:35b">qwen3.5:35b</option>
+                      <option value="qwen3:32b">qwen3:32b</option>
+                      <option value="gemma4:31b">gemma4:31b</option>
+                      <option value="qwen3.5:9b">qwen3.5:9b (schnell)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 dark:text-gray-400">Autonomie</label>
+                    <select
+                      value={task.autonomy_level}
+                      onChange={(e) => updateTask({ autonomy_level: e.target.value } as TaskUpdatePayload)}
+                      className="mt-0.5 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                    >
+                      <option value="L0">L0 — Blockieren</option>
+                      <option value="L1">L1 — Genehmigen</option>
+                      <option value="L2">L2 — Benachrichtigen</option>
+                      <option value="L3">L3 — Vollautonom</option>
+                    </select>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-xs text-gray-500 dark:text-gray-400">Datenklasse</label>
+                    <div className="mt-1 flex gap-2">
+                      {(['internal', 'confidential', 'highly_confidential'] as const).map((dc) => (
+                        <button
+                          key={dc}
+                          onClick={() => updateTask({ data_class: dc } as TaskUpdatePayload)}
+                          className={`rounded-lg px-2 py-1 text-xs font-medium transition-colors ${
+                            task.data_class === dc
+                              ? dc === 'highly_confidential'
+                                ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                : dc === 'confidential'
+                                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                                  : 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                              : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+                          }`}
+                        >
+                          {{ internal: 'Intern', confidential: 'Vertraulich', highly_confidential: 'Streng vertraulich' }[dc]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Description */}
             <div>
@@ -224,51 +377,109 @@ export function TaskDetailDialog({
             </div>
 
             {/* Checklist */}
-            {task.checklist_items.length > 0 && (
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-gray-600 dark:text-gray-400">
+                Checkliste{task.checklist_items.length > 0 && ` (${task.checklist_items.filter((i) => i.is_checked).length}/${task.checklist_items.length})`}
+              </h3>
+              {task.checklist_items.length > 0 && (
+                <>
+                  <div className="mb-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+                    <div
+                      className="h-full rounded-full bg-indigo-500 transition-all"
+                      style={{
+                        width: `${
+                          (task.checklist_items.filter((i) => i.is_checked).length /
+                            task.checklist_items.length) * 100
+                        }%`,
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    {task.checklist_items
+                      .sort((a, b) => a.position - b.position)
+                      .map((item) => (
+                        <label
+                          key={item.id}
+                          className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-gray-50 dark:hover:bg-gray-900"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={item.is_checked}
+                            onChange={() => toggleChecklistItem(item)}
+                            className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600"
+                          />
+                          <span
+                            className={`text-sm ${
+                              item.is_checked
+                                ? 'text-gray-400 line-through dark:text-gray-600'
+                                : 'text-gray-800 dark:text-gray-200'
+                            }`}
+                          >
+                            {item.text}
+                          </span>
+                        </label>
+                      ))}
+                  </div>
+                </>
+              )}
+              <div className="mt-2 flex gap-2">
+                <input
+                  value={newChecklistText}
+                  onChange={(e) => setNewChecklistText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newChecklistText.trim()) {
+                      addChecklistItem(newChecklistText);
+                    }
+                  }}
+                  placeholder="Neuer Eintrag..."
+                  className="flex-1 rounded-lg border border-gray-200 bg-transparent px-3 py-1.5 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300 dark:border-gray-700 dark:text-white dark:placeholder:text-gray-600"
+                />
+                <button
+                  onClick={() => addChecklistItem(newChecklistText)}
+                  disabled={!newChecklistText.trim()}
+                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            {/* Agent Jobs */}
+            {agentJobs.length > 0 && (
               <div>
                 <h3 className="mb-2 text-sm font-semibold text-gray-600 dark:text-gray-400">
-                  Checkliste ({task.checklist_items.filter((i) => i.is_done).length}/
-                  {task.checklist_items.length})
+                  Agent-Aufträge
                 </h3>
-                <div className="mb-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
-                  <div
-                    className="h-full rounded-full bg-indigo-500 transition-all"
-                    style={{
-                      width: `${
-                        task.checklist_items.length > 0
-                          ? (task.checklist_items.filter((i) => i.is_done).length /
-                              task.checklist_items.length) *
-                            100
-                          : 0
-                      }%`,
-                    }}
-                  />
-                </div>
-                <div className="space-y-1">
-                  {task.checklist_items
-                    .sort((a, b) => a.position - b.position)
-                    .map((item) => (
-                      <label
-                        key={item.id}
-                        className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-gray-50 dark:hover:bg-gray-900"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={item.is_done}
-                          onChange={() => toggleChecklistItem(item)}
-                          className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600"
-                        />
-                        <span
-                          className={`text-sm ${
-                            item.is_done
-                              ? 'text-gray-400 line-through dark:text-gray-600'
-                              : 'text-gray-800 dark:text-gray-200'
-                          }`}
-                        >
-                          {item.title}
+                <div className="space-y-2">
+                  {agentJobs.map((job) => (
+                    <div
+                      key={job.id}
+                      className="rounded-lg border border-gray-200 p-3 dark:border-gray-800"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                          job.status === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' :
+                          job.status === 'running' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
+                          job.status === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' :
+                          job.status === 'awaiting_approval' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' :
+                          'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                        }`}>
+                          {job.status}
                         </span>
-                      </label>
-                    ))}
+                        <span className="text-xs text-gray-400">
+                          {new Date(job.created_at).toLocaleString('de-DE')}
+                        </span>
+                      </div>
+                      {job.output && (
+                        <div className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap rounded bg-gray-50 p-2 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                          {job.output}
+                        </div>
+                      )}
+                      {job.error_message && (
+                        <p className="mt-2 text-xs text-red-600 dark:text-red-400">{job.error_message}</p>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -287,6 +498,22 @@ function CloseIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+    </svg>
+  );
+}
+
+function AgentIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" />
+    </svg>
+  );
+}
+
+function UserIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
     </svg>
   );
 }

@@ -23,14 +23,29 @@ export interface TaskCard {
 
 export interface ChecklistItem {
   id: string;
-  task_id: string;
-  title: string;
-  is_done: boolean;
+  text: string;
+  is_checked: boolean;
   position: number;
 }
 
-export interface TaskDetail extends TaskCard {
+export interface TaskDetail {
+  id: string;
+  title: string;
   description: string | null;
+  project_id: string;
+  board_column_id: string;
+  board_position: number;
+  pipeline_column_id: string | null;
+  pipeline_position: number | null;
+  assignee: string;
+  due_date: string | null;
+  is_completed: boolean;
+  is_pinned: boolean;
+  data_class: string;
+  llm_override: string | null;
+  autonomy_level: string;
+  recurrence_rule: string | null;
+  tags: Tag[];
   checklist_items: ChecklistItem[];
   created_at: string;
   updated_at: string;
@@ -87,6 +102,9 @@ export interface TaskUpdatePayload {
   due_date?: string | null;
   is_completed?: boolean;
   is_pinned?: boolean;
+  data_class?: string;
+  llm_override?: string;
+  autonomy_level?: string;
 }
 
 export interface TaskCreatePayload {
@@ -97,4 +115,66 @@ export interface TaskCreatePayload {
   pipeline_column_id?: string;
   assignee?: string;
   due_date?: string;
+}
+
+// --- Agent Jobs ---
+
+export interface AgentJob {
+  id: string;
+  task_id: string;
+  status: 'queued' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
+  llm_model: string | null;
+  tokens_used: number | null;
+  cost_usd: number | null;
+  output: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  task_title: string | null;
+}
+
+// --- Project Metrics ---
+
+export interface ProjectMetrics {
+  id: string;
+  name: string;
+  color: string;
+  status: string;
+  total_tasks: number;
+  open_tasks: number;
+  completed_tasks: number;
+  overdue_tasks: number;
+  progress_pct: number;
+}
+
+// --- Search ---
+
+export interface SearchTaskHit {
+  id: string;
+  title: string;
+  project_id: string;
+  project_name: string;
+  assignee: string;
+  is_completed: boolean;
+  due_date: string | null;
+}
+
+export interface SearchProjectHit {
+  id: string;
+  name: string;
+  color: string;
+  status: string;
+}
+
+export interface SearchTagHit {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export interface SearchResults {
+  tasks: SearchTaskHit[];
+  projects: SearchProjectHit[];
+  tags: SearchTagHit[];
 }

@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { ThemeToggle } from './ThemeToggle';
-import type { Project } from '../types';
+import type { AgentJob, Project } from '../types';
 
 export function Sidebar({
   isOpen,
@@ -13,11 +13,20 @@ export function Sidebar({
   onClose: () => void;
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [activeJobCount, setActiveJobCount] = useState(0);
   const { logout } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
     api.get<Project[]>('/api/projects').then(setProjects).catch(() => {});
+    api
+      .get<AgentJob[]>('/api/agent-jobs')
+      .then((jobs) => {
+        setActiveJobCount(
+          jobs.filter((j) => ['queued', 'running', 'awaiting_approval'].includes(j.status)).length,
+        );
+      })
+      .catch(() => {});
   }, []);
 
   const handleLogout = () => {
@@ -61,8 +70,34 @@ export function Sidebar({
             Agenda
           </NavLink>
 
-          <div className="mt-6 mb-2 px-3 text-xs font-semibold tracking-wider text-gray-400 uppercase dark:text-gray-500">
-            Projekte
+          <NavLink to="/agent-queue" className={linkClasses} onClick={onClose}>
+            <AgentIcon className="h-5 w-5" />
+            <span className="flex-1">Agent Queue</span>
+            {activeJobCount > 0 && (
+              <span className="flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" />
+                {activeJobCount}
+              </span>
+            )}
+          </NavLink>
+
+          <NavLink to="/memory" className={linkClasses} onClick={onClose}>
+            <MemoryIcon className="h-5 w-5" />
+            Memory
+          </NavLink>
+
+          <div className="mt-6 mb-2 flex items-center justify-between px-3">
+            <span className="text-xs font-semibold tracking-wider text-gray-400 uppercase dark:text-gray-500">
+              Projekte
+            </span>
+            <NavLink
+              to="/projects"
+              className="rounded p-0.5 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-300"
+              onClick={onClose}
+              title="Alle Projekte"
+            >
+              <GridIcon className="h-3.5 w-3.5" />
+            </NavLink>
           </div>
 
           {projects.map((project) => (
@@ -99,6 +134,30 @@ export function Sidebar({
 }
 
 function AgendaIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
+    </svg>
+  );
+}
+
+function AgentIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" />
+    </svg>
+  );
+}
+
+function MemoryIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
+    </svg>
+  );
+}
+
+function GridIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />

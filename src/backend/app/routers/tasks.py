@@ -7,10 +7,11 @@ from sqlalchemy.orm import selectinload
 
 from app.auth.deps import get_current_user
 from app.database import get_db
-from app.models import BoardColumn, ChecklistItem, Task, User
+from app.models import AgentJob, BoardColumn, ChecklistItem, Task, User
 from app.schemas import (
     ChecklistItemCreate,
     ChecklistItemOut,
+    ChecklistItemUpdate,
     TaskCreate,
     TaskOut,
     TaskUpdate,
@@ -90,8 +91,14 @@ async def update_task(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    old_assignee = task.assignee
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(task, field, value)
+
+    if body.assignee == "agent" and old_assignee != "agent":
+        job = AgentJob(task_id=task.id, llm_model=task.llm_override)
+        db.add(job)
+
     return task
 
 
@@ -144,4 +151,25 @@ async def add_checklist_item(
     item = ChecklistItem(task_id=task_id, **body.model_dump())
     db.add(item)
     await db.flush()
+    return item
+
+
+@router.patch("/{task_id}/checklist/{item_id}", response_model=ChecklistItemOut)
+async def update_checklist_item(
+    task_id: uuid.UUID,
+    item_id: uuid.UUID,
+    body: ChecklistItemUpdate,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> ChecklistItemOut:
+    result = await db.execute(
+        select(ChecklistItem)
+        .where(ChecklistItem.id == item_id, ChecklistItem.task_id == task_id)
+    )
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Checklist item not found")
+
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(item, field, value)
     return item

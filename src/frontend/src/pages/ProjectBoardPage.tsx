@@ -16,7 +16,8 @@ import { api } from '../api/client';
 import { KanbanColumn } from '../components/KanbanColumn';
 import { TaskCard } from '../components/TaskCard';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
-import type { BoardData, TaskCard as TaskCardType } from '../types';
+import { BackgroundPicker } from '../components/BackgroundPicker';
+import type { BoardData, TaskCard as TaskCardType, TaskCreatePayload } from '../types';
 
 export function ProjectBoardPage() {
   const { id } = useParams<{ id: string }>();
@@ -24,6 +25,7 @@ export function ProjectBoardPage() {
   const [activeTask, setActiveTask] = useState<TaskCardType | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [bgPickerOpen, setBgPickerOpen] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -45,6 +47,19 @@ export function ProjectBoardPage() {
     setLoading(true);
     fetchBoard();
   }, [fetchBoard]);
+
+  const handleCreateTask = useCallback(
+    async (boardColumnId: string, title: string) => {
+      if (!id) return;
+      await api.post<TaskCardType>('/api/tasks', {
+        title,
+        project_id: id,
+        board_column_id: boardColumnId,
+      } satisfies TaskCreatePayload);
+      fetchBoard();
+    },
+    [id, fetchBoard],
+  );
 
   const findColumnByTaskId = (taskId: string) =>
     board?.columns.find((col) => col.tasks.some((t) => t.id === taskId));
@@ -165,22 +180,27 @@ export function ProjectBoardPage() {
   }
 
   const hasBg = !!board.project.background_url;
+  const bgUrl = board.project.background_url || '';
+  const isGradient = bgUrl.startsWith('gradient:');
+  const bgStyle = isGradient
+    ? { background: bgUrl.slice('gradient:'.length) }
+    : hasBg
+      ? { backgroundImage: `url(${bgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+      : undefined;
+
+  const handleBgSelect = async (url: string | null) => {
+    if (!id) return;
+    await api.patch(`/api/projects/${id}`, { background_url: url });
+    fetchBoard();
+  };
 
   return (
-    <div
-      className="relative flex h-full flex-col"
-      style={
-        hasBg
-          ? {
-              backgroundImage: `url(${board.project.background_url})`,
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
-            }
-          : undefined
-      }
-    >
-      {hasBg && (
+    <div className="relative flex h-full flex-col" style={bgStyle}>
+      {hasBg && !isGradient && (
         <div className="absolute inset-0 bg-black/30 dark:bg-black/50" />
+      )}
+      {isGradient && (
+        <div className="absolute inset-0 bg-black/10 dark:bg-black/30" />
       )}
 
       <div
@@ -202,6 +222,17 @@ export function ProjectBoardPage() {
           >
             {board.project.name}
           </h1>
+          <button
+            onClick={() => setBgPickerOpen(true)}
+            className={`ml-auto rounded-lg p-2 transition-colors ${
+              hasBg
+                ? 'text-white/70 hover:bg-white/10 hover:text-white'
+                : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'
+            }`}
+            title="Hintergrundbild ändern"
+          >
+            <CameraIcon className="h-5 w-5" />
+          </button>
         </div>
       </div>
 
@@ -231,6 +262,7 @@ export function ProjectBoardPage() {
                   title={col.name}
                   tasks={col.tasks}
                   onTaskClick={(task) => setSelectedTaskId(task.id)}
+                  onCreateTask={handleCreateTask}
                 />
               </div>
             ))}
@@ -251,6 +283,21 @@ export function ProjectBoardPage() {
         onClose={() => setSelectedTaskId(null)}
         onUpdated={fetchBoard}
       />
+
+      <BackgroundPicker
+        isOpen={bgPickerOpen}
+        onClose={() => setBgPickerOpen(false)}
+        currentUrl={board.project.background_url}
+        onSelect={(url) => handleBgSelect(url)}
+      />
     </div>
+  );
+}
+
+function CameraIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Zm16.5-13.5h.008v.008h-.008V7.5Zm0 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+    </svg>
   );
 }

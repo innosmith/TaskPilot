@@ -215,3 +215,38 @@ class BoardColumnUpdate(BaseModel):
     color: str | None = None
     position: float | None = None
     is_archive: bool | None = None
+
+
+# --- Agent Jobs ---
+
+class AgentJobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    task_id: uuid.UUID
+    status: str
+    llm_model: str | None
+    tokens_used: int | None
+    cost_usd: float | None
+    output: str | None
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class AgentJobCreate(BaseModel):
+    task_id: uuid.UUID
+    llm_model: str | None = None
+
+
+class AgentJobUpdate(BaseModel):
+    status: str | None = None
+    output: str | None = None
+    error_message: str | None = None
+    llm_model: str | None = None
+    tokens_used: int | None = None
+    cost_usd: float | None = None
+
+
+class AgentJobWithTask(AgentJobOut):
+    task_title: str | None = None

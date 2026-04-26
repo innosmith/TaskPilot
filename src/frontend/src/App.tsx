@@ -10,6 +10,9 @@ import { AppLayout } from './layouts/AppLayout';
 import { LoginPage } from './pages/LoginPage';
 import { PipelinePage } from './pages/PipelinePage';
 import { ProjectBoardPage } from './pages/ProjectBoardPage';
+import { ProjectsPage } from './pages/ProjectsPage';
+import { AgentQueuePage } from './pages/AgentQueuePage';
+import { MemoryPage } from './pages/MemoryPage';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -44,7 +47,10 @@ export default function App() {
           }
         >
           <Route path="/pipeline" element={<PipelinePage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectBoardPage />} />
+          <Route path="/agent-queue" element={<AgentQueuePage />} />
+          <Route path="/memory" element={<MemoryPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/pipeline" replace />} />

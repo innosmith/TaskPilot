@@ -69,6 +69,7 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    settings: Mapped[dict] = mapped_column(JSONB, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 

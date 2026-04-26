@@ -1,4 +1,8 @@
 from app.schemas.schemas import (
+    AgentJobCreate,
+    AgentJobOut,
+    AgentJobUpdate,
+    AgentJobWithTask,
     BoardColumnCreate,
     BoardColumnOut,
     BoardColumnUpdate,
@@ -25,6 +29,10 @@ from app.schemas.schemas import (
 )
 
 __all__ = [
+    "AgentJobCreate",
+    "AgentJobOut",
+    "AgentJobUpdate",
+    "AgentJobWithTask",
     "BoardColumnCreate",
     "BoardColumnOut",
     "BoardColumnUpdate",
