@@ -1,11 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { ProjectIcon } from '../components/ProjectIcon';
 
 interface ProjectMetrics {
   id: string;
   name: string;
   color: string;
+  icon_url?: string | null;
+  icon_emoji?: string | null;
   status: 'active' | 'archived';
   total_tasks: number;
   open_tasks: number;
@@ -36,6 +39,7 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectMetrics[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [formName, setFormName] = useState('');
   const [formColor, setFormColor] = useState(PRESET_COLORS[0]);
   const [formDescription, setFormDescription] = useState('');
@@ -85,6 +89,23 @@ export function ProjectsPage() {
     } catch { /* handled by api client */ }
   };
 
+  const handleReactivate = async (e: React.MouseEvent, projectId: string) => {
+    e.stopPropagation();
+    try {
+      await api.patch(`/api/projects/${projectId}`, { status: 'active' });
+      fetchProjects();
+    } catch { /* handled by api client */ }
+  };
+
+  const handleDelete = async (e: React.MouseEvent, projectId: string) => {
+    e.stopPropagation();
+    if (!confirm('Projekt und alle Tasks unwiderruflich löschen?')) return;
+    try {
+      await api.delete(`/api/projects/${projectId}`);
+      fetchProjects();
+    } catch { /* handled by api client */ }
+  };
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -95,6 +116,7 @@ export function ProjectsPage() {
 
   const activeProjects = projects.filter((p) => p.status === 'active');
   const archivedProjects = projects.filter((p) => p.status === 'archived');
+  const displayedProjects = showArchived ? archivedProjects : activeProjects;
 
   return (
     <div className="flex h-full flex-col">
@@ -106,12 +128,28 @@ export function ProjectsPage() {
               {activeProjects.length} aktiv{archivedProjects.length > 0 && ` · ${archivedProjects.length} archiviert`}
             </p>
           </div>
-          <button
-            onClick={() => setShowForm((v) => !v)}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
-          >
-            {showForm ? 'Abbrechen' : 'Neues Projekt'}
-          </button>
+          <div className="flex items-center gap-3">
+            <div className="flex rounded-lg border border-gray-200 dark:border-gray-700">
+              <button
+                onClick={() => setShowArchived(false)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${!showArchived ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'}`}
+              >
+                Aktiv ({activeProjects.length})
+              </button>
+              <button
+                onClick={() => setShowArchived(true)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${showArchived ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'}`}
+              >
+                Archiv ({archivedProjects.length})
+              </button>
+            </div>
+            <button
+              onClick={() => setShowForm((v) => !v)}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
+            >
+              {showForm ? 'Abbrechen' : 'Neues Projekt'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -173,9 +211,9 @@ export function ProjectsPage() {
       )}
 
       <div className="flex-1 overflow-y-auto p-6">
-        {projects.length === 0 ? (
+        {displayedProjects.length === 0 ? (
           <div className="flex h-48 items-center justify-center text-gray-400 dark:text-gray-600">
-            <p>Noch keine Projekte vorhanden</p>
+            <p>{showArchived ? 'Kein archiviertes Projekt vorhanden' : 'Noch keine Projekte vorhanden'}</p>
           </div>
         ) : (
           <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
@@ -192,7 +230,7 @@ export function ProjectsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
-                {projects.map((project) => (
+                {displayedProjects.map((project) => (
                   <tr
                     key={project.id}
                     onClick={() => navigate(`/projects/${project.id}`)}
@@ -200,9 +238,11 @@ export function ProjectsPage() {
                   >
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
-                        <span
-                          className="h-3 w-3 shrink-0 rounded-full"
-                          style={{ backgroundColor: project.color }}
+                        <ProjectIcon
+                          iconUrl={project.icon_url}
+                          iconEmoji={project.icon_emoji}
+                          color={project.color}
+                          size={20}
                         />
                         <span className="font-medium text-gray-900 dark:text-white">
                           {project.name}
@@ -251,14 +291,31 @@ export function ProjectsPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {project.status === 'active' && (
-                        <button
-                          onClick={(e) => handleArchive(e, project.id)}
-                          className="rounded-lg px-2.5 py-1 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-                        >
-                          Archivieren
-                        </button>
-                      )}
+                      <div className="flex items-center justify-end gap-1">
+                        {project.status === 'active' ? (
+                          <button
+                            onClick={(e) => handleArchive(e, project.id)}
+                            className="rounded-lg px-2.5 py-1 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                          >
+                            Archivieren
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={(e) => handleReactivate(e, project.id)}
+                              className="rounded-lg px-2.5 py-1 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950"
+                            >
+                              Reaktivieren
+                            </button>
+                            <button
+                              onClick={(e) => handleDelete(e, project.id)}
+                              className="rounded-lg px-2.5 py-1 text-xs font-medium text-red-500 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                            >
+                              Löschen
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

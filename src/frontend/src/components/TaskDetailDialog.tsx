@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api/client';
-import type { TaskDetail, ChecklistItem, TaskUpdatePayload, AgentJob, Tag } from '../types';
+import type { TaskDetail, ChecklistItem, TaskUpdatePayload, AgentJob, Tag, TaskDetailMode } from '../types';
 
 interface TaskDetailDialogProps {
   taskId: string | null;
@@ -23,7 +23,23 @@ export function TaskDetailDialog({
   const [descValue, setDescValue] = useState('');
   const [newChecklistText, setNewChecklistText] = useState('');
   const [showTagPicker, setShowTagPicker] = useState(false);
+  const [mode, setMode] = useState<TaskDetailMode>('modal');
   const backdropRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.get<{ task_detail_mode?: string }>('/api/settings')
+      .then((s) => {
+        if (s.task_detail_mode === 'panel' || s.task_detail_mode === 'fullscreen') {
+          setMode(s.task_detail_mode);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const persistMode = useCallback((m: TaskDetailMode) => {
+    setMode(m);
+    api.patch('/api/settings', { task_detail_mode: m }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!taskId) {
@@ -124,25 +140,63 @@ export function TaskDetailDialog({
 
   if (!taskId) return null;
 
+  const backdropClass =
+    mode === 'fullscreen'
+      ? 'fixed inset-0 z-50'
+      : mode === 'modal'
+        ? 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm'
+        : 'fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm';
+
+  const panelClass =
+    mode === 'fullscreen'
+      ? 'flex h-full w-full flex-col overflow-hidden bg-white dark:bg-gray-950'
+      : mode === 'modal'
+        ? 'flex w-full max-w-2xl max-h-[85vh] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-950'
+        : 'flex h-full w-full max-w-lg flex-col overflow-hidden bg-white shadow-2xl dark:bg-gray-950';
+
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm"
+      className={backdropClass}
       onClick={(e) => {
         if (e.target === backdropRef.current) onClose();
       }}
     >
-      <div className="flex h-full w-full max-w-lg flex-col overflow-hidden bg-white shadow-2xl dark:bg-gray-950">
+      <div className={panelClass}>
         <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-800">
           <h2 className="text-sm font-medium text-gray-500 dark:text-gray-400">
             Task-Details
           </h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
-          >
-            <CloseIcon className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => persistMode('modal')}
+              className={`rounded-lg p-1.5 transition-colors ${mode === 'modal' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-400' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
+              title="Modal"
+            >
+              <ModalIcon className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => persistMode('panel')}
+              className={`rounded-lg p-1.5 transition-colors ${mode === 'panel' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-400' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
+              title="Seitenpanel"
+            >
+              <PanelIcon className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => persistMode('fullscreen')}
+              className={`rounded-lg p-1.5 transition-colors ${mode === 'fullscreen' ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-400' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
+              title="Vollbild"
+            >
+              <FullscreenIcon className="h-4 w-4" />
+            </button>
+            <div className="mx-1 h-4 w-px bg-gray-200 dark:bg-gray-700" />
+            <button
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+            >
+              <CloseIcon className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -514,6 +568,32 @@ function UserIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+    </svg>
+  );
+}
+
+function ModalIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h12A2.25 2.25 0 0 1 20.25 6v12A2.25 2.25 0 0 1 18 20.25H6A2.25 2.25 0 0 1 3.75 18V6Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9M7.5 12h9M7.5 15.75h5.25" />
+    </svg>
+  );
+}
+
+function PanelIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h12A2.25 2.25 0 0 1 20.25 6v12A2.25 2.25 0 0 1 18 20.25H6A2.25 2.25 0 0 1 3.75 18V6Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 3.75v16.5" />
+    </svg>
+  );
+}
+
+function FullscreenIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9m11.25-5.25v4.5m0-4.5h-4.5m4.5 0L15 9m5.25 11.25v-4.5m0 4.5h-4.5m4.5 0L15 15m-11.25 5.25v-4.5m0 4.5h4.5m-4.5 0L9 15" />
     </svg>
   );
 }

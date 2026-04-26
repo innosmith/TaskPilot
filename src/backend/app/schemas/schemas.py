@@ -11,6 +11,8 @@ class ProjectBase(BaseModel):
     color: str = "#3B82F6"
     description: str | None = None
     background_url: str | None = None
+    icon_url: str | None = None
+    icon_emoji: str | None = None
     status: str = "active"
     priority: int = 0
 
@@ -24,6 +26,8 @@ class ProjectUpdate(BaseModel):
     color: str | None = None
     description: str | None = None
     background_url: str | None = None
+    icon_url: str | None = None
+    icon_emoji: str | None = None
     status: str | None = None
     priority: int | None = None
 
@@ -33,6 +37,7 @@ class BoardColumnOut(BaseModel):
     id: uuid.UUID
     name: str
     color: str | None
+    icon_emoji: str | None = None
     position: float
     is_archive: bool
 
@@ -54,6 +59,8 @@ class PipelineColumnOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     name: str
+    color: str | None = None
+    icon_emoji: str | None = None
     position: float
     column_type: str
 
@@ -199,6 +206,7 @@ class UserOut(BaseModel):
     email: str
     display_name: str
     role: str
+    avatar_url: str | None = None
 
 
 # --- Board Column Management ---
@@ -206,6 +214,7 @@ class UserOut(BaseModel):
 class BoardColumnCreate(BaseModel):
     name: str
     color: str | None = None
+    icon_emoji: str | None = None
     position: float | None = None
     is_archive: bool = False
 
@@ -213,8 +222,16 @@ class BoardColumnCreate(BaseModel):
 class BoardColumnUpdate(BaseModel):
     name: str | None = None
     color: str | None = None
+    icon_emoji: str | None = None
     position: float | None = None
     is_archive: bool | None = None
+
+
+class PipelineColumnUpdate(BaseModel):
+    name: str | None = None
+    color: str | None = None
+    icon_emoji: str | None = None
+    position: float | None = None
 
 
 # --- Agent Jobs ---

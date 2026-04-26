@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { TaskCard as TaskCardType } from '../types';
@@ -6,15 +7,23 @@ interface TaskCardProps {
   task: TaskCardType;
   projectColor?: string;
   showProjectIndicator?: boolean;
+  hasBg?: boolean;
+  userAvatarUrl?: string | null;
   onClick: (task: TaskCardType) => void;
+  onArchive?: (taskId: string) => Promise<void>;
 }
 
 export function TaskCard({
   task,
   projectColor,
   showProjectIndicator = false,
+  hasBg = false,
+  userAvatarUrl,
   onClick,
+  onArchive,
 }: TaskCardProps) {
+  const [fading, setFading] = useState(false);
+
   const {
     attributes,
     listeners,
@@ -33,6 +42,14 @@ export function TaskCard({
   const isOverdue =
     task.due_date && new Date(task.due_date) < new Date() && !task.is_completed;
 
+  const handleArchive = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onArchive) return;
+    setFading(true);
+    await new Promise((r) => setTimeout(r, 250));
+    await onArchive(task.id);
+  };
+
   return (
     <div
       ref={setNodeRef}
@@ -40,10 +57,28 @@ export function TaskCard({
       {...attributes}
       {...listeners}
       onClick={() => onClick(task)}
-      className={`group cursor-pointer rounded-xl border border-gray-200 bg-white p-3 shadow-sm transition-all hover:shadow-md dark:border-gray-700 dark:bg-gray-900 ${
-        isDragging ? 'z-50 rotate-2 scale-105 opacity-50 shadow-xl' : ''
-      } ${task.is_completed ? 'opacity-60' : ''}`}
+      className={`group relative cursor-pointer rounded-xl border p-3 shadow-sm transition-all hover:shadow-md ${
+        fading ? 'scale-95 opacity-0' : ''
+      } ${
+        isOverdue
+          ? 'border-amber-200 bg-amber-50/80 dark:border-amber-900/40 dark:bg-amber-950/20'
+          : hasBg
+            ? 'border-white/10 bg-white/75 backdrop-blur-sm dark:bg-gray-900/75'
+            : 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900'
+      } ${isDragging ? 'z-50 rotate-2 scale-105 opacity-50 shadow-xl' : ''} ${
+        task.is_completed ? 'opacity-60' : ''
+      }`}
     >
+      {onArchive && !task.is_completed && (
+        <button
+          onClick={handleArchive}
+          className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500 text-white opacity-0 shadow-sm transition-all hover:bg-emerald-600 group-hover:opacity-100"
+          title="Archivieren"
+        >
+          <CheckIcon className="h-3.5 w-3.5" />
+        </button>
+      )}
+
       {showProjectIndicator && projectColor && (
         <div
           className="mb-2 h-1 w-8 rounded-full"
@@ -96,6 +131,23 @@ export function TaskCard({
             <PinIcon className="h-3.5 w-3.5" />
           </span>
         )}
+        <span className="ml-auto">
+          {task.assignee === 'agent' ? (
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-violet-100 text-violet-600 dark:bg-violet-900/40 dark:text-violet-300">
+              <AgentBadgeIcon className="h-3 w-3" />
+            </span>
+          ) : userAvatarUrl ? (
+            <img
+              src={userAvatarUrl}
+              alt=""
+              className="h-5 w-5 rounded-full object-cover"
+            />
+          ) : (
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-indigo-100 text-[9px] font-bold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300">
+              Ich
+            </span>
+          )}
+        </span>
       </div>
     </div>
   );
@@ -112,6 +164,14 @@ function formatDate(dateStr: string): string {
   if (days === -1) return 'Gestern';
 
   return date.toLocaleDateString('de-DE', { day: 'numeric', month: 'short' });
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+    </svg>
+  );
 }
 
 function ChecklistIcon({ className }: { className?: string }) {
@@ -134,6 +194,14 @@ function PinIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="currentColor" viewBox="0 0 24 24">
       <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2Z" />
+    </svg>
+  );
+}
+
+function AgentBadgeIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
     </svg>
   );
 }

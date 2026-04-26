@@ -12,6 +12,16 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 class UserSettings(BaseModel):
     agenda_background_url: str | None = None
     agenda_background_type: str | None = None
+    task_detail_mode: str | None = None
+    sidebar_collapsed: bool | None = None
+    app_logo_url: str | None = None
+    sidebar_color: str | None = None
+
+
+SETTINGS_FIELDS = [
+    "agenda_background_url", "agenda_background_type", "task_detail_mode",
+    "sidebar_collapsed", "app_logo_url", "sidebar_color",
+]
 
 
 @router.get("", response_model=UserSettings)
@@ -19,10 +29,7 @@ async def get_settings(
     user: User = Depends(get_current_user),
 ) -> UserSettings:
     s = user.settings or {}
-    return UserSettings(
-        agenda_background_url=s.get("agenda_background_url"),
-        agenda_background_type=s.get("agenda_background_type"),
-    )
+    return UserSettings(**{f: s.get(f) for f in SETTINGS_FIELDS})
 
 
 @router.patch("", response_model=UserSettings)
@@ -39,7 +46,4 @@ async def update_settings(
             current[field] = value
     user.settings = current
     await db.flush()
-    return UserSettings(
-        agenda_background_url=current.get("agenda_background_url"),
-        agenda_background_type=current.get("agenda_background_type"),
-    )
+    return UserSettings(**{f: current.get(f) for f in SETTINGS_FIELDS})

@@ -54,6 +54,8 @@ export interface TaskDetail {
 export interface BoardColumn {
   id: string;
   name: string;
+  color: string | null;
+  icon_emoji: string | null;
   position: number;
   project_id: string;
 }
@@ -63,6 +65,9 @@ export interface Project {
   name: string;
   color: string;
   background_url: string | null;
+  icon_url: string | null;
+  icon_emoji: string | null;
+  status: string;
   board_columns: BoardColumn[];
 }
 
@@ -74,6 +79,8 @@ export interface BoardData {
 export interface PipelineColumn {
   id: string;
   name: string;
+  color: string | null;
+  icon_emoji: string | null;
   position: number;
   tasks: TaskCard[];
 }
@@ -106,6 +113,8 @@ export interface TaskUpdatePayload {
   llm_override?: string;
   autonomy_level?: string;
 }
+
+export type TaskDetailMode = 'modal' | 'panel' | 'fullscreen';
 
 export interface TaskCreatePayload {
   title: string;

@@ -49,6 +49,9 @@ tmp/
 temp/
 .cache/
 
+# Uploads (user-generated content)
+src/backend/uploads/
+
 # Docker (optional lokale Overrides)
 docker-compose.override.yml
 

@@ -62,6 +62,43 @@ async def me(user: User = Depends(get_current_user)) -> UserOut:
     return user
 
 
+class ProfileUpdateBody(BaseModel):
+    display_name: str | None = None
+    avatar_url: str | None = None
+
+
+@router.patch("/me", response_model=UserOut)
+async def update_profile(
+    body: ProfileUpdateBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserOut:
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(user, field, value)
+    await db.flush()
+    return user
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password")
+async def change_password(
+    body: ChangePasswordBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Aktuelles Passwort ist falsch")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Neues Passwort muss mindestens 8 Zeichen haben")
+    user.password_hash = hash_password(body.new_password)
+    await db.flush()
+    return {"ok": True}
+
+
 class UserCreateBody(BaseModel):
     email: str
     display_name: str

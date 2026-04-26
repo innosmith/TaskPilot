@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -10,7 +10,7 @@ import {
   type DragEndEvent,
   type DragOverEvent,
 } from '@dnd-kit/core';
-import { arrayMove } from '@dnd-kit/sortable';
+import { arrayMove, SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { api } from '../api/client';
 import { KanbanColumn } from '../components/KanbanColumn';
 import { TaskCard } from '../components/TaskCard';
@@ -25,7 +25,7 @@ import type {
 
 export function PipelinePage() {
   const [columns, setColumns] = useState<
-    Array<{ id: string; name: string; tasks: TaskCardType[] }>
+    Array<{ id: string; name: string; color: string | null; icon_emoji: string | null; tasks: TaskCardType[] }>
   >([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeTask, setActiveTask] = useState<TaskCardType | null>(null);
@@ -33,6 +33,20 @@ export function PipelinePage() {
   const [loading, setLoading] = useState(true);
   const [agendaBg, setAgendaBg] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
+  const [userAvatarUrl, setUserAvatarUrl] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [settingsOpen]);
 
   const projectColorMap = Object.fromEntries(
     projects.map((p) => [p.id, p.color]),
@@ -44,14 +58,16 @@ export function PipelinePage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [pipelineData, projectData, settingsData] = await Promise.all([
+      const [pipelineData, projectData, settingsData, userData] = await Promise.all([
         api.get<PipelineData>('/api/pipeline'),
         api.get<Project[]>('/api/projects'),
         api.get<{ agenda_background_url: string | null }>('/api/settings'),
+        api.get<{ avatar_url: string | null }>('/api/auth/me'),
       ]);
       setColumns(pipelineData.columns);
       setProjects(projectData);
       setAgendaBg(settingsData.agenda_background_url);
+      setUserAvatarUrl(userData.avatar_url);
     } catch {
       /* handled by api client */
     } finally {
@@ -83,10 +99,14 @@ export function PipelinePage() {
   const findColumnByTaskId = (taskId: string) =>
     columns.find((col) => col.tasks.some((t) => t.id === taskId));
 
+  const isColumnId = (itemId: string) =>
+    columns.some((col) => col.id === itemId);
+
   const handleDragStart = (event: DragStartEvent) => {
-    const taskId = event.active.id as string;
+    const itemId = event.active.id as string;
+    if (isColumnId(itemId)) return;
     for (const col of columns) {
-      const task = col.tasks.find((t) => t.id === taskId);
+      const task = col.tasks.find((t) => t.id === itemId);
       if (task) {
         setActiveTask(task);
         break;
@@ -100,6 +120,8 @@ export function PipelinePage() {
 
     const activeId = active.id as string;
     const overId = over.id as string;
+
+    if (isColumnId(activeId)) return;
 
     const sourceCol = findColumnByTaskId(activeId);
     const overCol =
@@ -141,6 +163,19 @@ export function PipelinePage() {
 
     const activeId = active.id as string;
     const overId = over.id as string;
+
+    if (isColumnId(activeId) && isColumnId(overId) && activeId !== overId) {
+      const oldIndex = columns.findIndex((c) => c.id === activeId);
+      const newIndex = columns.findIndex((c) => c.id === overId);
+      if (oldIndex !== -1 && newIndex !== -1) {
+        const reordered = arrayMove(columns, oldIndex, newIndex);
+        setColumns(reordered);
+        for (let i = 0; i < reordered.length; i++) {
+          api.patch(`/api/pipeline/columns/${reordered[i].id}`, { position: i + 1 }).catch(() => {});
+        }
+      }
+      return;
+    }
 
     const sourceCol = findColumnByTaskId(activeId);
     if (!sourceCol) return;
@@ -199,8 +234,8 @@ export function PipelinePage() {
 
   return (
     <div className="relative flex h-full flex-col" style={bgStyle}>
-      {hasBg && !isGradient && <div className="absolute inset-0 bg-black/30 dark:bg-black/50" />}
-      {isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/30" />}
+      {hasBg && !isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/30" />}
+      {isGradient && <div className="absolute inset-0 bg-black/5 dark:bg-black/20" />}
 
       <div className={`relative z-10 border-b px-6 py-4 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 dark:border-gray-800'}`}>
         <div className="flex items-center justify-between">
@@ -212,17 +247,30 @@ export function PipelinePage() {
               Alle Aufgaben nach Zeithorizont organisiert
             </p>
           </div>
-          <button
-            onClick={() => setBgPickerOpen(true)}
-            className={`rounded-lg p-2 transition-colors ${
-              hasBg
-                ? 'text-white/70 hover:bg-white/10 hover:text-white'
-                : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'
-            }`}
-            title="Hintergrundbild ändern"
-          >
-            <CameraIcon className="h-5 w-5" />
-          </button>
+          <div className="relative" ref={settingsRef}>
+            <button
+              onClick={() => setSettingsOpen(!settingsOpen)}
+              className={`rounded-lg p-2 transition-colors ${
+                hasBg
+                  ? 'text-white/70 hover:bg-white/10 hover:text-white'
+                  : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'
+              }`}
+              title="Agenda-Einstellungen"
+            >
+              <GearIcon className="h-5 w-5" />
+            </button>
+            {settingsOpen && (
+              <div className="absolute right-0 top-10 z-20 w-56 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                <button
+                  onClick={() => { setBgPickerOpen(true); setSettingsOpen(false); }}
+                  className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  <CameraIcon className="h-4 w-4" />
+                  Hintergrundbild
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -235,19 +283,59 @@ export function PipelinePage() {
           onDragEnd={handleDragEnd}
         >
           <div className="flex gap-4" style={{ minHeight: 'calc(100vh - 180px)' }}>
-            {columns.map((col) => (
-              <div key={col.id} className={hasBg ? 'rounded-xl bg-black/20 p-2 backdrop-blur-md' : ''}>
+            <SortableContext
+              items={columns.map((col) => col.id)}
+              strategy={horizontalListSortingStrategy}
+            >
+              {columns.map((col) => (
                 <KanbanColumn
+                  key={col.id}
                   id={col.id}
                   title={col.name}
                   tasks={col.tasks}
                   projectColorMap={projectColorMap}
                   showProjectIndicator
+                  hasBg={hasBg}
+                  userAvatarUrl={userAvatarUrl}
+                  columnColor={col.color}
+                  columnIcon={col.icon_emoji}
                   onTaskClick={(task) => setSelectedTaskId(task.id)}
                   onCreateTask={handleCreateTask}
+                  onRenameColumn={async (colId, name) => {
+                    await api.patch(`/api/pipeline/columns/${colId}`, { name });
+                    fetchData();
+                  }}
+                  onUpdateColumn={async (colId, updates) => {
+                    await api.patch(`/api/pipeline/columns/${colId}`, updates);
+                    fetchData();
+                  }}
+                  onDeleteColumn={async (colId) => {
+                    await api.delete(`/api/pipeline/columns/${colId}`);
+                    fetchData();
+                  }}
+                  onArchiveTask={async (taskId) => {
+                    await api.patch(`/api/tasks/${taskId}`, { is_completed: true });
+                    fetchData();
+                  }}
                 />
-              </div>
-            ))}
+              ))}
+            </SortableContext>
+            <div className="flex w-72 shrink-0 flex-col">
+              <button
+                onClick={async () => {
+                  await api.post('/api/pipeline/columns', { name: 'Neue Spalte' });
+                  fetchData();
+                }}
+                className={`flex items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-3 text-sm font-medium transition-colors ${
+                  hasBg
+                    ? 'border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
+                    : 'border-gray-200 text-gray-400 hover:border-gray-300 hover:text-gray-600 dark:border-gray-700 dark:text-gray-500 dark:hover:border-gray-600 dark:hover:text-gray-400'
+                }`}
+              >
+                <AddColIcon className="h-4 w-4" />
+                Spalte hinzufügen
+              </button>
+            </div>
           </div>
 
           <DragOverlay>
@@ -285,6 +373,23 @@ function CameraIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Zm16.5-13.5h.008v.008h-.008V7.5Zm0 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+    </svg>
+  );
+}
+
+function AddColIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+    </svg>
+  );
+}
+
+function GearIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.431.992a7.723 7.723 0 0 1 0 .255c-.007.378.138.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
     </svg>
   );
 }

@@ -13,6 +13,8 @@ CREATE TABLE projects (
     color           TEXT NOT NULL DEFAULT '#3B82F6',
     description     TEXT,
     background_url  TEXT,
+    icon_url        TEXT,
+    icon_emoji      TEXT,
     status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'paused')),
     priority        INT DEFAULT 0,
     created_at      TIMESTAMPTZ DEFAULT now(),
@@ -25,6 +27,7 @@ CREATE TABLE board_columns (
     project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     color           TEXT,
+    icon_emoji      TEXT,
     position        FLOAT NOT NULL,
     is_archive      BOOLEAN DEFAULT false
 );
@@ -33,6 +36,8 @@ CREATE TABLE board_columns (
 CREATE TABLE pipeline_columns (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name            TEXT NOT NULL,
+    color           TEXT,
+    icon_emoji      TEXT,
     position        FLOAT NOT NULL,
     column_type     TEXT NOT NULL DEFAULT 'horizon' CHECK (column_type IN ('active', 'planned', 'parked', 'horizon'))
 );
@@ -43,6 +48,7 @@ CREATE TABLE users (
     email           TEXT UNIQUE NOT NULL,
     password_hash   TEXT NOT NULL,
     display_name    TEXT NOT NULL,
+    avatar_url      TEXT,
     role            TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member', 'viewer')),
     is_active       BOOLEAN DEFAULT true,
     settings        JSONB DEFAULT '{}'::jsonb,

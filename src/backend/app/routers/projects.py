@@ -1,7 +1,7 @@
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,8 @@ from app.database import get_db
 from app.models import BoardColumn, Project, Task, User
 from app.schemas import (
     BoardColumnCreate,
+    BoardColumnOut,
+    BoardColumnUpdate,
     BoardColumnWithTasks,
     BoardOut,
     ProjectCreate,
@@ -26,15 +28,14 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 @router.get("", response_model=list[ProjectWithColumns])
 async def list_projects(
+    include_archived: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> list[ProjectWithColumns]:
-    result = await db.execute(
-        select(Project)
-        .options(selectinload(Project.board_columns))
-        .where(Project.status != "archived")
-        .order_by(Project.priority.desc(), Project.name)
-    )
+    q = select(Project).options(selectinload(Project.board_columns))
+    if not include_archived:
+        q = q.where(Project.status != "archived")
+    result = await db.execute(q.order_by(Project.priority.desc(), Project.name))
     return result.scalars().all()
 
 
@@ -49,9 +50,9 @@ async def create_project(
     await db.flush()
 
     defaults = [
-        BoardColumn(project_id=project.id, name="Open", color="#6B7280", position=1.0),
-        BoardColumn(project_id=project.id, name="In Progress", color="#3B82F6", position=2.0),
-        BoardColumn(project_id=project.id, name="Done", color="#10B981", position=3.0, is_archive=True),
+        BoardColumn(project_id=project.id, name="Open", position=1.0),
+        BoardColumn(project_id=project.id, name="In Progress", position=2.0),
+        BoardColumn(project_id=project.id, name="Done", position=3.0, is_archive=True),
     ]
     db.add_all(defaults)
     return project
@@ -89,6 +90,19 @@ async def update_project(
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(project, field, value)
     return project
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> None:
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await db.delete(project)
 
 
 @router.get("/{project_id}/board", response_model=BoardOut)
@@ -140,6 +154,7 @@ async def get_board(
             id=col.id,
             name=col.name,
             color=col.color,
+            icon_emoji=col.icon_emoji,
             position=col.position,
             is_archive=col.is_archive,
             tasks=task_cards,
@@ -175,10 +190,47 @@ async def create_column(
     return col
 
 
+@router.patch("/{project_id}/columns/{col_id}", response_model=BoardColumnOut)
+async def update_column(
+    project_id: uuid.UUID,
+    col_id: uuid.UUID,
+    body: BoardColumnUpdate,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> BoardColumn:
+    result = await db.execute(
+        select(BoardColumn).where(BoardColumn.id == col_id, BoardColumn.project_id == project_id)
+    )
+    col = result.scalar_one_or_none()
+    if col is None:
+        raise HTTPException(status_code=404, detail="Column not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(col, field, value)
+    return col
+
+
+@router.delete("/{project_id}/columns/{col_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_column(
+    project_id: uuid.UUID,
+    col_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> None:
+    result = await db.execute(
+        select(BoardColumn).where(BoardColumn.id == col_id, BoardColumn.project_id == project_id)
+    )
+    col = result.scalar_one_or_none()
+    if col is None:
+        raise HTTPException(status_code=404, detail="Column not found")
+    await db.delete(col)
+
+
 class ProjectMetrics(BaseModel):
     id: uuid.UUID
     name: str
     color: str
+    icon_url: str | None = None
+    icon_emoji: str | None = None
     status: str
     total_tasks: int
     open_tasks: int
@@ -219,6 +271,7 @@ async def project_metrics(
         result.append(
             ProjectMetrics(
                 id=p.id, name=p.name, color=p.color, status=p.status,
+                icon_url=p.icon_url, icon_emoji=p.icon_emoji,
                 total_tasks=total, open_tasks=row.open or 0,
                 completed_tasks=done, overdue_tasks=row.overdue or 0,
                 progress_pct=round((done / total * 100) if total > 0 else 0, 1),

@@ -26,6 +26,8 @@ class Project(Base):
     color: Mapped[str] = mapped_column(Text, nullable=False, server_default="#3B82F6")
     description: Mapped[str | None] = mapped_column(Text)
     background_url: Mapped[str | None] = mapped_column(Text)
+    icon_url: Mapped[str | None] = mapped_column(Text)
+    icon_emoji: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
     priority: Mapped[int] = mapped_column(Integer, server_default="0")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
@@ -42,6 +44,7 @@ class BoardColumn(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     color: Mapped[str | None] = mapped_column(Text)
+    icon_emoji: Mapped[str | None] = mapped_column(Text)
     position: Mapped[float] = mapped_column(Float, nullable=False)
     is_archive: Mapped[bool] = mapped_column(Boolean, server_default="false")
 
@@ -54,6 +57,8 @@ class PipelineColumn(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    color: Mapped[str | None] = mapped_column(Text)
+    icon_emoji: Mapped[str | None] = mapped_column(Text)
     position: Mapped[float] = mapped_column(Float, nullable=False)
     column_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="horizon")
 
@@ -67,6 +72,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    avatar_url: Mapped[str | None] = mapped_column(Text)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true")
     settings: Mapped[dict] = mapped_column(JSONB, server_default="{}")
