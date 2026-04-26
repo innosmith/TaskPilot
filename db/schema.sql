@@ -76,6 +76,10 @@ CREATE TABLE tasks (
     recurrence_rule TEXT,
     template_id     UUID REFERENCES tasks(id),
     email_message_id TEXT,
+    calendar_event_id TEXT,
+    calendar_duration_minutes INT,
+    calendar_preferred_time TEXT,
+    needs_review    BOOLEAN DEFAULT false,
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now()
 );

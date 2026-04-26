@@ -1,0 +1,81 @@
+---
+description: Startbefehle und Ports aller TaskPilot-Dienste nach Server-Neustart
+alwaysApply: false
+---
+
+# TaskPilot Dienste starten
+
+## Voraussetzungen
+
+- Python-venv: `/home/innosmith/dev/github/TaskPilot/.venv/`
+- Docker Compose Config: `docker/docker-compose.dev.yml`
+- Nanobot Config: `~/.nanobot/config.json`
+
+## Startreihenfolge
+
+### 1. Docker-Container (PostgreSQL + LiteLLM)
+
+```bash
+cd /home/innosmith/dev/github/TaskPilot
+docker compose -f docker/docker-compose.dev.yml up -d
+```
+
+Prüfen ob sie laufen: `docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"`
+
+| Container | Image | Port |
+|---|---|---|
+| taskpilot-postgres | pgvector/pgvector:pg16 | 127.0.0.1:**5435**→5432 |
+| taskpilot-litellm | ghcr.io/berriai/litellm | 127.0.0.1:**4000**→4000 |
+
+### 2. Ollama (LLM-Inference)
+
+Ollama läuft als systemd-Service und startet automatisch. Prüfen:
+`curl -s http://localhost:11434/api/tags | head -c 200`
+
+### 3. FastAPI Backend (Port 8000)
+
+**Working Directory MUSS das Projekt-Root sein** (dort liegt `.env.dev` — Pydantic Settings löst den Pfad relativ zum CWD auf). `PYTHONPATH=src/backend` sorgt dafür, dass `app.main:app` trotzdem importiert werden kann.
+
+```bash
+cd /home/innosmith/dev/github/TaskPilot
+source .venv/bin/activate
+PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src/backend
+```
+
+Wenn stattdessen aus `src/backend/` gestartet wird, findet Pydantic die `.env.dev` nicht → Unsplash, Graph API, etc. bleiben unkonfiguriert.
+
+Health-Check: `curl http://localhost:8000/api/health`
+
+Startet automatisch im Lifespan:
+- **Nanobot Worker** (pollt alle 10s nach queued AgentJobs via Python SDK)
+- **Recurring Scheduler** (wiederkehrende Tasks, Intervall 300s)
+- **Triage Service** (E-Mail-Triage, nur wenn Graph-API-Credentials konfiguriert)
+
+### 4. Vite Frontend Dev-Server (Port 5173)
+
+```bash
+cd /home/innosmith/dev/github/TaskPilot/src/frontend
+npm run dev
+```
+
+Proxy-Config in `vite.config.ts`: `/api` und `/uploads` → `http://localhost:8000`
+
+## Port-Übersicht
+
+| Dienst | Port | Typ |
+|---|---|---|
+| PostgreSQL (pgvector) | 5435 | Docker |
+| LiteLLM Proxy | 4000 | Docker |
+| Ollama | 11434 | systemd |
+| FastAPI Backend | 8000 | uvicorn (venv) |
+| Vite Frontend | 5173 | npm (node) |
+| Nanobot WebSocket | 8765 | (innerhalb Backend) |
+
+## Schnell-Check: Läuft alles?
+
+```bash
+curl -s http://localhost:8000/api/health        # Backend
+curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/  # Frontend
+curl -s http://localhost:11434/api/tags | head -c 100          # Ollama
+docker ps --format "{{.Names}}: {{.Status}}" | grep taskpilot  # Docker
+```

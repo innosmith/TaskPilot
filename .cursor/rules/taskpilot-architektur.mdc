@@ -19,7 +19,7 @@ alwaysApply: true
 ```
 src/
   backend/app/       → FastAPI (routers, models, schemas, services)
-  cockpit/src/       → React Frontend
+  frontend/src/      → React Frontend (Vite)
   mcp-taskpilot/     → MCP-Server für DB
   mcp-email/         → MCP-Server für E-Mail + Kalender
   email-graph/       → Shared Graph API Client
