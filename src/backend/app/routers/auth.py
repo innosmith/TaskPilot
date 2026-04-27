@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import time
 import uuid
 from collections import defaultdict
@@ -159,17 +161,35 @@ async def update_user(
     return user
 
 
-async def ensure_owner_exists(db: AsyncSession) -> None:
-    settings = get_settings()
-    result = await db.execute(select(User).where(User.role == "owner"))
-    if result.scalar_one_or_none() is not None:
-        return
+logger = logging.getLogger("taskpilot.auth")
 
-    owner = User(
-        email=settings.owner_email,
-        password_hash=hash_password(settings.owner_password),
-        display_name=settings.owner_display_name,
-        role="owner",
-    )
-    db.add(owner)
-    await db.commit()
+
+async def ensure_owner_exists(db: AsyncSession, retries: int = 5) -> None:
+    settings = get_settings()
+    for attempt in range(retries):
+        try:
+            result = await db.execute(select(User).where(User.role == "owner"))
+            if result.scalar_one_or_none() is not None:
+                return
+
+            owner = User(
+                email=settings.owner_email,
+                password_hash=hash_password(settings.owner_password),
+                display_name=settings.owner_display_name,
+                role="owner",
+            )
+            db.add(owner)
+            await db.commit()
+            logger.info("Owner-User angelegt: %s", settings.owner_email)
+            return
+        except Exception:
+            if attempt < retries - 1:
+                wait = 2 ** attempt
+                logger.warning(
+                    "ensure_owner_exists fehlgeschlagen (Versuch %d/%d), Retry in %ds",
+                    attempt + 1, retries, wait,
+                )
+                await asyncio.sleep(wait)
+            else:
+                logger.exception("ensure_owner_exists endgueltig fehlgeschlagen")
+                raise

@@ -4,7 +4,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
 from app.config import get_settings
 from app.database import async_session
@@ -89,4 +91,12 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "app": app_settings.app_name}
+    try:
+        async with async_session() as db:
+            await db.execute(text("SELECT 1"))
+        return {"status": "ok", "db": "ok", "app": app_settings.app_name}
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "db": "unreachable", "app": app_settings.app_name},
+        )

@@ -11,6 +11,15 @@ alwaysApply: false
 - Docker Compose Config: `docker/docker-compose.dev.yml`
 - Nanobot Config: `~/.nanobot/config.json`
 
+## WICHTIG: Snap-Docker und Volume-Pfade
+
+Docker ist als **Snap** installiert. Snap-Docker kann nur auf Pfade unter `$HOME` zugreifen.
+Postgres-Volume liegt daher unter `~/.local/share/taskpilot/postgres/dev/` (nicht unter `/data/`).
+
+Verifizieren, dass der Mount kein tmpfs ist:
+`docker exec taskpilot-postgres sh -c 'mount | grep postgresql'`
+→ Muss `ext4` (o.ä.) zeigen, **nicht** `tmpfs`. Bei tmpfs gehen alle DB-Daten bei jedem Restart verloren.
+
 ## Startreihenfolge
 
 ### 1. Docker-Container (PostgreSQL + LiteLLM)
@@ -44,7 +53,8 @@ PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload 
 
 Wenn stattdessen aus `src/backend/` gestartet wird, findet Pydantic die `.env.dev` nicht → Unsplash, Graph API, etc. bleiben unkonfiguriert.
 
-Health-Check: `curl http://localhost:8000/api/health`
+Health-Check (prüft auch DB-Verbindung): `curl http://localhost:8000/api/health`
+→ `"db": "ok"` = Postgres erreichbar, `"db": "unreachable"` + Status 503 = Problem.
 
 Startet automatisch im Lifespan:
 - **Nanobot Worker** (pollt alle 10s nach queued AgentJobs via Python SDK)

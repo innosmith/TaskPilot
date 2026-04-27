@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: ${TP_DB_PASSWORD:-taskpilot_dev_2026}
       POSTGRES_DB: ${TP_DB_NAME:-taskpilot_dev}
     volumes:
-      - /data/taskpilot/postgres/dev:/var/lib/postgresql/data
+      - ${HOME}/.local/share/taskpilot/postgres/dev:/var/lib/postgresql/data
       - ${PWD}/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ${PWD}/db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
     healthcheck:
