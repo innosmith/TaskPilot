@@ -9,6 +9,7 @@ from app.models.models import (
     EmailTriage,
     PipelineColumn,
     Project,
+    SenderProfile,
     Tag,
     Task,
     TaskTag,
@@ -30,4 +31,5 @@ __all__ = [
     "ActivityLog",
     "BoardMember",
     "EmailTriage",
+    "SenderProfile",
 ]

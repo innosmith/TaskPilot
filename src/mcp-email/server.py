@@ -167,6 +167,43 @@ TOOLS = [
     ),
     # ── Outlook-Kategorie & Ordner-Tools ─────────────────────
     Tool(
+        name="get_thread",
+        description="Alle Nachrichten eines E-Mail-Threads (Konversation) chronologisch laden. Gibt den gesamten Verlauf zurueck.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "conversation_id": {"type": "string", "description": "conversationId der E-Mail (aus get_email)"},
+                "top": {"type": "integer", "default": 10, "description": "Max. Anzahl Nachrichten"},
+            },
+            "required": ["conversation_id"],
+        },
+    ),
+    Tool(
+        name="search_sender_history",
+        description="Letzte E-Mails eines bestimmten Absenders abrufen (neueste zuerst). Nuetzlich fuer Kontext ueber die bisherige Kommunikation.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "sender_email": {"type": "string", "description": "E-Mail-Adresse des Absenders"},
+                "top": {"type": "integer", "default": 5, "description": "Max. Anzahl E-Mails"},
+            },
+            "required": ["sender_email"],
+        },
+    ),
+    Tool(
+        name="search_emails",
+        description="Volltextsuche ueber alle E-Mails. Findet relevante Nachrichten zu einem Thema.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Suchbegriff(e)"},
+                "top": {"type": "integer", "default": 5},
+            },
+            "required": ["query"],
+        },
+    ),
+    # ── Outlook-Kategorie & Ordner-Tools (original) ──────────
+    Tool(
         name="set_email_categories",
         description="Outlook-Kategorien auf einer E-Mail setzen (z.B. 'Wichtig', 'Newsletter'). Ersetzt bestehende Kategorien.",
         inputSchema={
@@ -347,6 +384,57 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 duration_minutes=arguments.get("duration_minutes", 60),
             )
             return [TextContent(type="text", text=json.dumps(slots, indent=2, ensure_ascii=False))]
+
+        elif name == "get_thread":
+            msgs = await client.get_conversation_messages(
+                conversation_id=arguments["conversation_id"],
+                top=arguments.get("top", 10),
+            )
+            thread = []
+            for msg in msgs:
+                sender = msg.get("from", {}).get("emailAddress", {})
+                thread.append({
+                    "id": msg.get("id"),
+                    "from": sender.get("address"),
+                    "from_name": sender.get("name"),
+                    "subject": msg.get("subject"),
+                    "receivedDateTime": msg.get("receivedDateTime"),
+                    "bodyPreview": msg.get("bodyPreview", "")[:500],
+                })
+            return [TextContent(type="text", text=json.dumps(thread, indent=2, ensure_ascii=False))]
+
+        elif name == "search_sender_history":
+            msgs = await client.search_sender_emails(
+                sender_email=arguments["sender_email"],
+                top=arguments.get("top", 5),
+            )
+            history = []
+            for msg in msgs:
+                history.append({
+                    "id": msg.get("id"),
+                    "subject": msg.get("subject"),
+                    "receivedDateTime": msg.get("receivedDateTime"),
+                    "bodyPreview": msg.get("bodyPreview", "")[:300],
+                    "conversationId": msg.get("conversationId"),
+                })
+            return [TextContent(type="text", text=json.dumps(history, indent=2, ensure_ascii=False))]
+
+        elif name == "search_emails":
+            msgs = await client.search_emails(
+                query=arguments["query"],
+                top=arguments.get("top", 5),
+            )
+            results = []
+            for msg in msgs:
+                sender = msg.get("from", {}).get("emailAddress", {})
+                results.append({
+                    "id": msg.get("id"),
+                    "from": sender.get("address"),
+                    "subject": msg.get("subject"),
+                    "receivedDateTime": msg.get("receivedDateTime"),
+                    "bodyPreview": msg.get("bodyPreview", "")[:300],
+                })
+            return [TextContent(type="text", text=json.dumps(results, indent=2, ensure_ascii=False))]
 
         elif name == "set_email_categories":
             result = await client.set_categories(

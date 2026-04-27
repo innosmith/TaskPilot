@@ -170,6 +170,22 @@ CREATE TABLE email_triage (
     created_at      TIMESTAMPTZ DEFAULT now()
 );
 
+-- Absender-Profile (Beziehungsgedaechtnis)
+CREATE TABLE sender_profiles (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email           TEXT NOT NULL UNIQUE,
+    display_name    TEXT,
+    organization    TEXT,
+    relationship    TEXT CHECK (relationship IN ('kunde', 'partner', 'lieferant', 'intern', 'hochschule', 'behoerde', 'unbekannt')),
+    tone            TEXT CHECK (tone IN ('formell', 'informell', 'neutral')),
+    language        TEXT DEFAULT 'de' CHECK (language IN ('de', 'en', 'fr', 'it')),
+    notes           TEXT,
+    email_count     INT DEFAULT 0,
+    last_contact_at TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
 -- Indizes
 CREATE INDEX idx_tasks_project ON tasks(project_id);
 CREATE INDEX idx_tasks_board_column ON tasks(board_column_id);
@@ -187,6 +203,7 @@ CREATE INDEX idx_board_members_user ON board_members(user_id);
 CREATE INDEX idx_email_triage_status ON email_triage(status);
 CREATE INDEX idx_email_triage_message_id ON email_triage(message_id);
 CREATE INDEX idx_tasks_email_message ON tasks(email_message_id);
+CREATE INDEX idx_sender_profiles_email ON sender_profiles(email);
 
 -- NOTIFY-Trigger fuer Real-Time-Updates
 CREATE OR REPLACE FUNCTION notify_change() RETURNS trigger AS $$
@@ -219,4 +236,7 @@ CREATE TRIGGER projects_updated_at BEFORE UPDATE ON projects
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 CREATE TRIGGER tasks_updated_at BEFORE UPDATE ON tasks
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER sender_profiles_updated_at BEFORE UPDATE ON sender_profiles
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();

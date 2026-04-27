@@ -166,7 +166,8 @@ class GraphClient:
             "$skip": str(skip),
             "$orderby": "receivedDateTime desc",
             "$select": "id,subject,from,toRecipients,receivedDateTime,isRead,"
-                       "bodyPreview,categories,inferenceClassification,hasAttachments,importance",
+                       "bodyPreview,categories,inferenceClassification,hasAttachments,"
+                       "importance,conversationId",
         }
         if filter_str:
             params["$filter"] = filter_str
@@ -178,7 +179,7 @@ class GraphClient:
             f"{self._user_path}/messages/{message_id}",
             {"$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,"
                         "body,bodyPreview,categories,inferenceClassification,"
-                        "hasAttachments,importance,isRead"},
+                        "hasAttachments,importance,isRead,conversationId"},
         )
 
     async def get_email_categories(self, message_id: str) -> dict:
@@ -289,6 +290,49 @@ class GraphClient:
             f"{self._user_path}/messages/{message_id}/move",
             {"destinationId": folder["id"]},
         )
+
+    async def get_conversation_messages(
+        self, conversation_id: str, top: int = 10
+    ) -> list[dict]:
+        """Alle Nachrichten einer Konversation (Thread) chronologisch."""
+        data = await self._get(
+            f"{self._user_path}/messages",
+            {
+                "$filter": f"conversationId eq '{conversation_id}'",
+                "$orderby": "receivedDateTime asc",
+                "$top": str(top),
+                "$select": "id,subject,from,toRecipients,receivedDateTime,"
+                           "bodyPreview,body,conversationId",
+            },
+        )
+        return data.get("value", [])
+
+    async def search_sender_emails(
+        self, sender_email: str, top: int = 5
+    ) -> list[dict]:
+        """Letzte E-Mails eines bestimmten Absenders (neueste zuerst)."""
+        data = await self._get(
+            f"{self._user_path}/messages",
+            {
+                "$filter": f"from/emailAddress/address eq '{sender_email}'",
+                "$orderby": "receivedDateTime desc",
+                "$top": str(top),
+                "$select": "id,subject,from,receivedDateTime,bodyPreview,conversationId",
+            },
+        )
+        return data.get("value", [])
+
+    async def search_emails(self, query: str, top: int = 5) -> list[dict]:
+        """Volltextsuche ueber alle E-Mails (Graph $search)."""
+        data = await self._get(
+            f"{self._user_path}/messages",
+            {
+                "$search": f'"{query}"',
+                "$top": str(top),
+                "$select": "id,subject,from,receivedDateTime,bodyPreview,conversationId",
+            },
+        )
+        return data.get("value", [])
 
     # ── Kalender CRUD ────────────────────────────────────────────
 

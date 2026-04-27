@@ -100,6 +100,7 @@ async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
             "inference_classification": inference,
             "body_preview": email_data.get("bodyPreview", "")[:500],
             "categories": email_data.get("categories", []),
+            "conversation_id": email_data.get("conversationId", ""),
         },
     )
     db.add(agent_job)

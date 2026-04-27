@@ -126,6 +126,34 @@ TOOLS = [
             "required": ["job_id"],
         },
     ),
+    Tool(
+        name="get_sender_profile",
+        description="Absender-Profil laden. Gibt gespeicherte Beziehungsinformationen zurueck (Ton, Sprache, Beziehungstyp, Organisation). Falls kein Profil existiert, wird ein leeres Profil mit Defaults zurueckgegeben.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "E-Mail-Adresse des Absenders"},
+            },
+            "required": ["email"],
+        },
+    ),
+    Tool(
+        name="update_sender_profile",
+        description="Absender-Profil aktualisieren oder neu anlegen. Wird nach jeder Triage aufgerufen, um das Beziehungsgedaechtnis zu pflegen.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "E-Mail-Adresse des Absenders"},
+                "display_name": {"type": "string"},
+                "organization": {"type": "string", "description": "Firma/Organisation des Absenders"},
+                "relationship": {"type": "string", "enum": ["kunde", "partner", "lieferant", "intern", "hochschule", "behoerde", "unbekannt"]},
+                "tone": {"type": "string", "enum": ["formell", "informell", "neutral"]},
+                "language": {"type": "string", "enum": ["de", "en", "fr", "it"]},
+                "notes": {"type": "string", "description": "Freitext-Notizen zum Absender"},
+            },
+            "required": ["email"],
+        },
+    ),
 ]
 
 server = Server("taskpilot")
@@ -319,6 +347,66 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             *params,
         )
         return [TextContent(type="text", text=json.dumps(_row_to_dict(row), indent=2))]
+
+    elif name == "get_sender_profile":
+        email = arguments["email"].lower().strip()
+        row = await p.fetchrow(
+            "SELECT * FROM sender_profiles WHERE email = $1", email
+        )
+        if row is None:
+            return [TextContent(type="text", text=json.dumps({
+                "email": email,
+                "exists": False,
+                "display_name": None,
+                "organization": None,
+                "relationship": "unbekannt",
+                "tone": "neutral",
+                "language": "de",
+                "notes": None,
+                "email_count": 0,
+                "last_contact_at": None,
+            }, indent=2, ensure_ascii=False))]
+        result = _row_to_dict(row)
+        result["exists"] = True
+        return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+    elif name == "update_sender_profile":
+        email = arguments["email"].lower().strip()
+        row = await p.fetchrow(
+            "SELECT id FROM sender_profiles WHERE email = $1", email
+        )
+        if row is None:
+            new_row = await p.fetchrow(
+                "INSERT INTO sender_profiles (email, display_name, organization, relationship, tone, language, notes, email_count, last_contact_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, 1, now()) RETURNING *",
+                email,
+                arguments.get("display_name"),
+                arguments.get("organization"),
+                arguments.get("relationship", "unbekannt"),
+                arguments.get("tone", "neutral"),
+                arguments.get("language", "de"),
+                arguments.get("notes"),
+            )
+            result = _row_to_dict(new_row)
+            result["action"] = "created"
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+        else:
+            sets = ["email_count = email_count + 1", "last_contact_at = now()"]
+            params = []
+            idx = 1
+            for key in ("display_name", "organization", "relationship", "tone", "language", "notes"):
+                if key in arguments:
+                    sets.append(f"{key} = ${idx}")
+                    params.append(arguments[key])
+                    idx += 1
+            params.append(email)
+            updated = await p.fetchrow(
+                f"UPDATE sender_profiles SET {', '.join(sets)} WHERE email = ${idx} RETURNING *",
+                *params,
+            )
+            result = _row_to_dict(updated)
+            result["action"] = "updated"
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
 
     return [TextContent(type="text", text=f"Unbekanntes Tool: {name}")]
 

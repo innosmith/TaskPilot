@@ -92,6 +92,15 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     from_name = meta.get("from_name", "")
     preview = meta.get("body_preview", "")
     inference = meta.get("inference_classification", "")
+    conversation_id = meta.get("conversation_id", "")
+
+    thread_hint = ""
+    if conversation_id:
+        thread_hint = f"""
+**Konversations-ID:** {conversation_id}
+→ Lade den Thread mit get_thread("{conversation_id}") fuer vollstaendigen Kontext.
+→ Lade die Absender-History mit search_sender_history("{from_addr}") um Kommunikationsmuster zu erkennen.
+"""
 
     return f"""## TRIAGE-INSTRUKTIONEN (STRIKT befolgen!)
 
@@ -113,6 +122,7 @@ Du hast einen email_triage Job erhalten. Fuehre den kompletten Triage-Ablauf gem
 **Von:** {from_name} <{from_addr}>
 **Microsoft Inference:** {inference}
 **Body-Vorschau:** {preview[:300]}
+{thread_hint}
 
 WICHTIG: Befolge die Prioritaetsreihenfolge (Stufe 1 → Stufe 2 → Stufe 3) STRIKT.
 - Pruefe ZUERST ob Stufe 1 (Signale) zutrifft.
@@ -127,7 +137,8 @@ Fuehre jetzt den Triage-Ablauf durch:
 5. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
 6. Erstelle Draft falls quick_response (bei board_task uebernimmt das Backend die Task-Erstellung automatisch)
 7. Gib den PFLICHT-JSON-Block aus (Schritt 8 im Skill)
-8. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
+8. Aktualisiere das Absender-Profil (Schritt 9 im Skill)
+9. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
 """
 
 
