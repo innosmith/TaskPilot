@@ -1,17 +1,17 @@
 """Nanobot SDK Worker: Verarbeitet queued AgentJobs direkt via Python SDK.
 
-Laeuft als Hintergrund-Task beim Backend-Start. Pollt alle 10 Sekunden nach
+Läuft als Hintergrund-Task beim Backend-Start. Pollt alle 10 Sekunden nach
 queued AgentJobs und verarbeitet sie sequentiell mit dem Nanobot SDK:
 
     bot = Nanobot.from_config()
     result = await bot.run(prompt, session_key=f"triage:{job_id}:{ts}")
 
 Nanobot nutzt dabei seine konfigurierten MCP-Tools (email, taskpilot) um
-E-Mails zu lesen, zu klassifizieren und Aktionen auszufuehren.
+E-Mails zu lesen, zu klassifizieren und Aktionen auszuführen.
 Jeder Durchlauf verwendet einen einzigartigen Session-Key (mit Timestamp),
 damit keine alte Konversationshistorie wiederverwendet wird.
 
-Nach der LLM-Klassifikation fuehrt der Worker deterministische Post-Processing-
+Nach der LLM-Klassifikation führt der Worker deterministische Post-Processing-
 Logik aus: JSON-Output parsen, Tasks erstellen, Drafts zuordnen.
 """
 
@@ -57,7 +57,7 @@ def _load_triage_skill() -> str:
 
 
 async def _load_projects_context() -> str:
-    """Laedt alle aktiven Projekte aus der DB und formatiert sie als Prompt-Kontext."""
+    """Lädt alle aktiven Projekte aus der DB und formatiert sie als Prompt-Kontext."""
     async with async_session() as db:
         result = await db.execute(
             select(Project)
@@ -67,22 +67,22 @@ async def _load_projects_context() -> str:
         projects = list(result.scalars().all())
 
     if not projects:
-        return "## VERFUEGBARE PROJEKTE\nKeine aktiven Projekte vorhanden."
+        return "## VERFÜGBARE PROJEKTE\nKeine aktiven Projekte vorhanden."
 
-    lines = ["## VERFUEGBARE PROJEKTE", ""]
+    lines = ["## VERFÜGBARE PROJEKTE", ""]
     for p in projects:
         lines.append(f'- "{p.name}" (id: {p.id})')
     lines.append("")
-    lines.append("Waehle bei board_task das passendste Projekt aus dieser Liste fuer das Feld suggested_project.")
+    lines.append("Wähle bei board_task das passendste Projekt aus dieser Liste für das Feld suggested_project.")
     lines.append("Falls kein Projekt passt, setze suggested_project auf null.")
     return "\n".join(lines)
 
 
 async def _build_triage_prompt(job: AgentJob) -> str:
-    """Baut den Prompt fuer einen email_triage Job aus Metadata.
+    """Baut den Prompt für einen email_triage Job aus Metadata.
 
-    Laedt den Triage-Skill und die Projektliste bei jedem Aufruf frisch,
-    damit Aenderungen sofort wirksam werden.
+    Lädt den Triage-Skill und die Projektliste bei jedem Aufruf frisch,
+    damit Änderungen sofort wirksam werden.
     """
     skill_text = _load_triage_skill()
     projects_context = await _load_projects_context()
@@ -100,7 +100,7 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     if conversation_id:
         thread_hint = f"""
 **Konversations-ID:** {conversation_id}
-→ Lade den Thread mit get_thread("{conversation_id}") fuer vollstaendigen Kontext.
+→ Lade den Thread mit get_thread("{conversation_id}") für vollständigen Kontext.
 → Lade die Absender-History mit search_sender_history("{from_addr}") um Kommunikationsmuster zu erkennen.
 """
 
@@ -116,7 +116,7 @@ async def _build_triage_prompt(job: AgentJob) -> str:
 
 ## AKTUELLER JOB
 
-Du hast einen email_triage Job erhalten. Fuehre den kompletten Triage-Ablauf gemaess den obigen Instruktionen durch.
+Du hast einen email_triage Job erhalten. Führe den kompletten Triage-Ablauf gemäss den obigen Instruktionen durch.
 
 **Job-ID:** {job.id}
 **E-Mail Message-ID:** {email_id}
@@ -126,21 +126,33 @@ Du hast einen email_triage Job erhalten. Fuehre den kompletten Triage-Ablauf gem
 **Body-Vorschau:** {preview[:300]}
 {thread_hint}
 
-WICHTIG: Befolge die Prioritaetsreihenfolge (Stufe 1 → Stufe 2 → Stufe 3) STRIKT.
-- Pruefe ZUERST ob Stufe 1 (Signale) zutrifft.
-- Pruefe DANN ob Stufe 2 (System) zutrifft.
+## PFLICHT-AUFRUFE VOR JEDER KLASSIFIKATION UND DRAFT-ERSTELLUNG
+
+Du MUSST die folgenden drei Kontext-Quellen laden, BEVOR du klassifizierst oder einen Draft erstellst:
+1. **get_thread("{conversation_id or ''}")** -- Thread-Kontext laden (PFLICHT falls conversation_id vorhanden)
+2. **search_sender_history("{from_addr}")** -- Absender-History laden (IMMER PFLICHT)
+3. **get_sender_profile("{from_addr}")** -- Absender-Profil laden (IMMER PFLICHT)
+
+Erstelle NIEMALS einen Draft ohne diese drei Kontext-Quellen geladen zu haben!
+
+---
+
+WICHTIG: Befolge die Prioritätsreihenfolge (Stufe 1 → Stufe 2 → Stufe 3) STRIKT.
+- Prüfe ZUERST ob Stufe 1 (Signale) zutrifft.
+- Prüfe DANN ob Stufe 2 (System) zutrifft.
 - Nur wenn weder Stufe 1 noch 2 passen, wende Stufe 3 (Standardregeln) an.
 
-Fuehre jetzt den Triage-Ablauf durch:
+Führe jetzt den Triage-Ablauf durch:
 1. Lies die E-Mail mit get_email("{email_id}")
 2. Lies die Kategorien mit get_email_categories("{email_id}")
-3. Klassifiziere gemaess der Prioritaetsreihenfolge
-4. Setze die Outlook-Kategorie
-5. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
-6. Erstelle Draft falls quick_response (bei board_task uebernimmt das Backend die Task-Erstellung automatisch)
-7. Gib den PFLICHT-JSON-Block aus (Schritt 8 im Skill)
-8. Aktualisiere das Absender-Profil (Schritt 9 im Skill)
-9. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
+3. Lade Thread-Kontext, Absender-History und Absender-Profil (PFLICHT!)
+4. Klassifiziere gemäss der Prioritätsreihenfolge
+5. Setze die Outlook-Kategorie
+6. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
+7. Erstelle Draft falls quick_response (bei board_task übernimmt das Backend die Task-Erstellung automatisch)
+8. Gib den PFLICHT-JSON-Block aus (Schritt 8 im Skill)
+9. Aktualisiere das Absender-Profil (Schritt 9 im Skill)
+10. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
 """
 
 
@@ -206,8 +218,7 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
 
     Parst den JSON-Block, erstellt Tasks bei board_task, speichert draft_id
     bei quick_response, und aktualisiert den EmailTriage-Record.
-
-    Returns: finaler Status fuer den AgentJob.
+    Returns: finaler Status für den AgentJob.
     """
     parsed = _extract_json_block(content)
     if parsed is None:
@@ -399,7 +410,7 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
 
 
 async def _reap_stale_jobs() -> int:
-    """Setzt running-Jobs, die laenger als STALE_TIMEOUT_MINUTES laufen, auf failed."""
+    """Setzt running-Jobs, die länger als STALE_TIMEOUT_MINUTES laufen, auf failed."""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=STALE_TIMEOUT_MINUTES)
     async with async_session() as db:
         result = await db.execute(
@@ -432,7 +443,7 @@ async def _worker_loop() -> None:
 
     bot = await _init_bot()
     if bot is None:
-        logger.error("Nanobot-Worker kann nicht starten (SDK nicht verfuegbar)")
+        logger.error("Nanobot-Worker kann nicht starten (SDK nicht verfügbar)")
         return
 
     logger.info("Nanobot-Worker gestartet -- pollt alle %ds nach queued Jobs", POLL_INTERVAL)
@@ -441,7 +452,7 @@ async def _worker_loop() -> None:
 
     while True:
         try:
-            # Reaper periodisch ausfuehren
+            # Reaper periodisch ausführen
             if time.monotonic() - last_reap >= REAP_INTERVAL:
                 await _reap_stale_jobs()
                 last_reap = time.monotonic()
@@ -460,7 +471,7 @@ async def _worker_loop() -> None:
                 if job.job_type == "email_triage":
                     prompt = await _build_triage_prompt(job)
                 else:
-                    prompt = f"Fuehre den AgentJob {job.id} aus: {job.metadata_json}"
+                    prompt = f"Führe den AgentJob {job.id} aus: {job.metadata_json}"
 
                 await _process_job(bot, job.id, job.job_type or "generic", prompt, meta)
             else:

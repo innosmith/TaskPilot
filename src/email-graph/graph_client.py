@@ -295,32 +295,69 @@ class GraphClient:
         self, conversation_id: str, top: int = 10
     ) -> list[dict]:
         """Alle Nachrichten einer Konversation (Thread) chronologisch."""
-        data = await self._get(
-            f"{self._user_path}/messages",
-            {
-                "$filter": f"conversationId eq '{conversation_id}'",
-                "$orderby": "receivedDateTime asc",
-                "$top": str(top),
-                "$select": "id,subject,from,toRecipients,receivedDateTime,"
-                           "bodyPreview,body,conversationId",
-            },
-        )
-        return data.get("value", [])
+        try:
+            data = await self._get(
+                f"{self._user_path}/messages",
+                {
+                    "$filter": f"conversationId eq '{conversation_id}'",
+                    "$top": str(top),
+                    "$select": "id,subject,from,toRecipients,receivedDateTime,"
+                               "bodyPreview,body,conversationId",
+                },
+            )
+            msgs = data.get("value", [])
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400:
+                logger.warning(
+                    "get_conversation_messages $filter fehlgeschlagen (400), Fallback auf $search"
+                )
+                data = await self._get(
+                    f"{self._user_path}/messages",
+                    {
+                        "$search": f'"conversationId:{conversation_id}"',
+                        "$top": str(top),
+                        "$select": "id,subject,from,toRecipients,receivedDateTime,"
+                                   "bodyPreview,body,conversationId",
+                    },
+                )
+                msgs = data.get("value", [])
+            else:
+                raise
+        msgs.sort(key=lambda m: m.get("receivedDateTime", ""))
+        return msgs
 
     async def search_sender_emails(
         self, sender_email: str, top: int = 5
     ) -> list[dict]:
         """Letzte E-Mails eines bestimmten Absenders (neueste zuerst)."""
-        data = await self._get(
-            f"{self._user_path}/messages",
-            {
-                "$filter": f"from/emailAddress/address eq '{sender_email}'",
-                "$orderby": "receivedDateTime desc",
-                "$top": str(top),
-                "$select": "id,subject,from,receivedDateTime,bodyPreview,conversationId",
-            },
-        )
-        return data.get("value", [])
+        try:
+            data = await self._get(
+                f"{self._user_path}/messages",
+                {
+                    "$filter": f"from/emailAddress/address eq '{sender_email}'",
+                    "$top": str(top),
+                    "$select": "id,subject,from,receivedDateTime,bodyPreview,body,conversationId",
+                },
+            )
+            msgs = data.get("value", [])
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400:
+                logger.warning(
+                    "search_sender_emails $filter fehlgeschlagen (400), Fallback auf $search"
+                )
+                data = await self._get(
+                    f"{self._user_path}/messages",
+                    {
+                        "$search": f'"from:{sender_email}"',
+                        "$top": str(top),
+                        "$select": "id,subject,from,receivedDateTime,bodyPreview,body,conversationId",
+                    },
+                )
+                msgs = data.get("value", [])
+            else:
+                raise
+        msgs.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)
+        return msgs
 
     async def search_emails(self, query: str, top: int = 5) -> list[dict]:
         """Volltextsuche ueber alle E-Mails (Graph $search)."""

@@ -6,8 +6,11 @@ Entwürfe zu erstellen und (nach Approval) zu versenden.
 
 import asyncio
 import json
+import logging
 import os
+import re
 import sys
+import time
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -15,6 +18,23 @@ from mcp.types import TextContent, Tool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "email-graph"))
 from graph_client import GraphClient, GraphConfig  # noqa: E402
+
+logger = logging.getLogger("mcp_email")
+
+
+def _html_to_text(html: str) -> str:
+    """HTML in lesbaren Plain-Text konvertieren."""
+    if not html:
+        return ""
+    text = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</(p|div|tr|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 TOOLS = [
     Tool(
@@ -258,9 +278,12 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    t0 = time.monotonic()
+    logger.info("Tool %s aufgerufen: %s", name, {k: str(v)[:100] for k, v in arguments.items()})
     try:
         client = _get_client()
     except RuntimeError as e:
+        logger.error("Client-Fehler: %s", e)
         return [TextContent(type="text", text=str(e))]
 
     try:
@@ -391,17 +414,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 top=arguments.get("top", 10),
             )
             thread = []
+            total_chars = 0
+            max_total = 15000
             for msg in msgs:
+                if total_chars >= max_total:
+                    break
                 sender = msg.get("from", {}).get("emailAddress", {})
+                body_html = msg.get("body", {}).get("content", "")
+                body_text = _html_to_text(body_html)[:3000]
+                total_chars += len(body_text)
                 thread.append({
                     "id": msg.get("id"),
                     "from": sender.get("address"),
                     "from_name": sender.get("name"),
                     "subject": msg.get("subject"),
                     "receivedDateTime": msg.get("receivedDateTime"),
-                    "bodyPreview": msg.get("bodyPreview", "")[:500],
+                    "body_text": body_text,
                 })
-            return [TextContent(type="text", text=json.dumps(thread, indent=2, ensure_ascii=False))]
+            logger.info("get_thread: %d Nachrichten, %d Zeichen Kontext", len(thread), total_chars)
+            result_text = json.dumps(thread, indent=2, ensure_ascii=False)
+            return [TextContent(type="text", text=result_text)]
 
         elif name == "search_sender_history":
             msgs = await client.search_sender_emails(
@@ -410,14 +442,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
             history = []
             for msg in msgs:
+                sender = msg.get("from", {}).get("emailAddress", {})
+                body_html = msg.get("body", {}).get("content", "")
+                body_text = _html_to_text(body_html)[:1500]
                 history.append({
                     "id": msg.get("id"),
+                    "from": sender.get("address"),
+                    "from_name": sender.get("name"),
                     "subject": msg.get("subject"),
                     "receivedDateTime": msg.get("receivedDateTime"),
-                    "bodyPreview": msg.get("bodyPreview", "")[:300],
+                    "body_text": body_text,
                     "conversationId": msg.get("conversationId"),
                 })
-            return [TextContent(type="text", text=json.dumps(history, indent=2, ensure_ascii=False))]
+            logger.info("search_sender_history(%s): %d Ergebnisse", arguments["sender_email"], len(history))
+            result_text = json.dumps(history, indent=2, ensure_ascii=False)
+            return [TextContent(type="text", text=result_text)]
 
         elif name == "search_emails":
             msgs = await client.search_emails(
@@ -469,6 +508,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Unbekanntes Tool: {name}")]
 
     except Exception as e:
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.error("Tool %s fehlgeschlagen nach %.0fms: %s: %s", name, elapsed, type(e).__name__, e)
         return [TextContent(type="text", text=f"Fehler: {type(e).__name__}: {e}")]
 
 

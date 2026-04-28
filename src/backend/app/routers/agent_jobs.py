@@ -309,3 +309,133 @@ async def delete_agent_job(
             status_code=409,
             detail=f"Job im Status '{job.status}' kann nicht gelöscht/abgebrochen werden",
         )
+
+
+@router.get("/{job_id}/trace")
+async def get_agent_job_trace(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> dict:
+    """Session-Trace eines Agent-Jobs: Tool-Aufrufe, Reasoning, Fehler."""
+    from pathlib import Path
+
+    result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Agent job not found")
+
+    sessions_dir = Path.home() / ".nanobot" / "workspace" / "sessions"
+    prefix = f"{job.job_type or 'generic'}_{job_id}_"
+    session_file = None
+    if sessions_dir.exists():
+        for f in sorted(sessions_dir.glob(f"{prefix}*.jsonl"), reverse=True):
+            session_file = f
+            break
+
+    if not session_file or not session_file.exists():
+        return {
+            "job_id": str(job_id),
+            "status": job.status,
+            "session_found": False,
+            "steps": [],
+        }
+
+    steps = []
+    metadata = {}
+    try:
+        with open(session_file, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if entry.get("_type") == "metadata":
+                    metadata = entry
+                    continue
+
+                role = entry.get("role")
+                if role == "assistant":
+                    tool_calls = entry.get("tool_calls", [])
+                    if tool_calls:
+                        for tc in tool_calls:
+                            fn = tc.get("function", {})
+                            args_str = fn.get("arguments", "{}")
+                            try:
+                                args = json.loads(args_str)
+                                args_summary = {k: str(v)[:120] for k, v in args.items()}
+                            except (json.JSONDecodeError, AttributeError):
+                                args_summary = {"raw": args_str[:200]}
+                            steps.append({
+                                "type": "tool_call",
+                                "tool": fn.get("name", "?"),
+                                "call_id": tc.get("id"),
+                                "arguments": args_summary,
+                            })
+                    reasoning = entry.get("reasoning_content")
+                    content = entry.get("content", "")
+                    if reasoning:
+                        steps.append({
+                            "type": "reasoning",
+                            "text": reasoning[:500],
+                        })
+                    if content and not tool_calls:
+                        steps.append({
+                            "type": "assistant_message",
+                            "text": content[:800],
+                        })
+
+                elif role == "tool":
+                    tool_content = entry.get("content", "")
+                    is_error = "Fehler:" in tool_content or "Error" in tool_content[:50]
+                    steps.append({
+                        "type": "tool_result",
+                        "call_id": entry.get("tool_call_id"),
+                        "tool_name": entry.get("name", "?"),
+                        "chars": len(tool_content),
+                        "is_error": is_error,
+                        "preview": tool_content[:300] if is_error else tool_content[:150],
+                    })
+    except Exception as e:
+        return {
+            "job_id": str(job_id),
+            "status": job.status,
+            "session_found": True,
+            "parse_error": str(e),
+            "steps": [],
+        }
+
+    created = metadata.get("created_at")
+    updated = metadata.get("updated_at")
+    duration_s = None
+    if created and updated:
+        try:
+            from datetime import datetime as _dt
+            t0 = _dt.fromisoformat(created)
+            t1 = _dt.fromisoformat(updated)
+            duration_s = round((t1 - t0).total_seconds(), 1)
+        except Exception:
+            pass
+
+    tool_calls = [s for s in steps if s["type"] == "tool_call"]
+    tool_results = [s for s in steps if s["type"] == "tool_result"]
+    errors = [s for s in tool_results if s.get("is_error")]
+
+    return {
+        "job_id": str(job_id),
+        "status": job.status,
+        "session_found": True,
+        "session_file": session_file.name,
+        "duration_seconds": duration_s,
+        "summary": {
+            "total_tool_calls": len(tool_calls),
+            "total_tool_results": len(tool_results),
+            "errors": len(errors),
+            "tools_used": list(dict.fromkeys(tc["tool"] for tc in tool_calls)),
+        },
+        "steps": steps,
+    }
