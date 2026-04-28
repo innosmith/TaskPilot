@@ -55,6 +55,12 @@ export function AgentQueuePage() {
     fetchJobs();
   };
 
+  const handleCancel = async (jobId: string) => {
+    await api.patch(`/api/agent-jobs/${jobId}`, { status: 'failed', error_message: 'Manuell abgebrochen' });
+    setConfirmDeleteId(null);
+    fetchJobs();
+  };
+
   const handleBulkDelete = async (status: string, olderThanDays?: number) => {
     const params = new URLSearchParams({ status });
     if (olderThanDays != null) params.set('older_than_days', String(olderThanDays));
@@ -81,6 +87,7 @@ export function AgentQueuePage() {
   });
 
   const activeCount = jobs.filter((j) => ['queued', 'running', 'awaiting_approval'].includes(j.status)).length;
+  const runningCount = jobs.filter((j) => j.status === 'running').length;
   const completedCount = jobs.filter((j) => j.status === 'completed').length;
   const failedCount = jobs.filter((j) => j.status === 'failed').length;
 
@@ -94,10 +101,10 @@ export function AgentQueuePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-gray-200 px-6 py-4 dark:border-gray-800">
+      <div className="border-b border-white/40 bg-white/50 px-6 py-4 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-gray-900 dark:text-white">
-            Agent Queue
+            Agenten
           </h1>
           {activeCount > 0 && (
             <span className="flex items-center gap-1.5 rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
@@ -111,7 +118,7 @@ export function AgentQueuePage() {
         </p>
       </div>
 
-      <div className="border-b border-gray-200 px-6 py-3 dark:border-gray-800">
+      <div className="border-b border-white/40 bg-white/50 px-6 py-3 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
         <div className="flex items-center justify-between">
           <div className="flex gap-2">
             {(['all', 'active', 'completed', 'failed'] as FilterStatus[]).map((f) => (
@@ -128,7 +135,7 @@ export function AgentQueuePage() {
               </button>
             ))}
           </div>
-          {(completedCount > 0 || failedCount > 0) && (
+          {(completedCount > 0 || failedCount > 0 || runningCount > 0) && (
             <div className="relative" ref={cleanupRef}>
               <button
                 onClick={() => setCleanupOpen(!cleanupOpen)}
@@ -139,6 +146,20 @@ export function AgentQueuePage() {
               </button>
               {cleanupOpen && (
                 <div className="absolute right-0 top-9 z-30 w-72 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                  {runningCount > 0 && (
+                    <>
+                      <button
+                        onClick={() => handleBulkDelete('stale')}
+                        className="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm text-amber-700 transition-colors hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30"
+                      >
+                        <span>Hängende Jobs abbrechen</span>
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                          {runningCount}
+                        </span>
+                      </button>
+                      <div className="mx-3 my-1 border-t border-gray-100 dark:border-gray-800" />
+                    </>
+                  )}
                   {completedCount > 0 && (
                     <button
                       onClick={() => handleBulkDelete('completed')}
@@ -207,7 +228,7 @@ export function AgentQueuePage() {
               return (
                 <div
                   key={job.id}
-                  className="rounded-xl border border-gray-200 bg-white p-4 transition-shadow hover:shadow-md dark:border-gray-800 dark:bg-gray-900"
+                  className="rounded-xl border border-white/60 bg-white/70 p-4 shadow-sm backdrop-blur-sm transition-shadow hover:shadow-md dark:border-gray-800 dark:bg-gray-900/70"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
@@ -264,6 +285,33 @@ export function AgentQueuePage() {
                             title="Job löschen"
                           >
                             <TrashIcon className="h-3.5 w-3.5" />
+                          </button>
+                        )
+                      )}
+                      {(job.status === 'running' || job.status === 'queued') && (
+                        confirmDeleteId === job.id ? (
+                          <span className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleCancel(job.id)}
+                              className="rounded px-1.5 py-0.5 text-[10px] font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                              title="Abbrechen bestätigen"
+                            >
+                              Ja
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="rounded px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                            >
+                              Nein
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmDeleteId(job.id)}
+                            className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-amber-600 dark:hover:bg-gray-800 dark:hover:text-amber-400"
+                            title="Job abbrechen"
+                          >
+                            <StopIcon className="h-3.5 w-3.5" />
                           </button>
                         )
                       )}
@@ -359,6 +407,14 @@ function TrashIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+    </svg>
+  );
+}
+
+function StopIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 0 1 7.5 5.25h9a2.25 2.25 0 0 1 2.25 2.25v9a2.25 2.25 0 0 1-2.25 2.25h-9a2.25 2.25 0 0 1-2.25-2.25v-9Z" />
     </svg>
   );
 }

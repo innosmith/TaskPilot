@@ -68,7 +68,7 @@ export function AppLayout() {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-950">
+    <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 via-indigo-50/30 to-sky-50/40 dark:from-gray-950 dark:via-indigo-950/20 dark:to-gray-950">
       <Sidebar
         isOpen={sidebarOpen}
         collapsed={sidebarCollapsed}

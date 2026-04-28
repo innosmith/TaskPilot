@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useOutletContext, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type { TaskDetailMode } from '../types';
 
@@ -17,6 +17,8 @@ interface UserSettingsData {
   sidebar_collapsed?: boolean | null;
   app_logo_url?: string | null;
   sidebar_color?: string | null;
+  show_column_count?: boolean | null;
+  cockpit_background_url?: string | null;
 }
 
 interface ManagedUser {
@@ -41,8 +43,24 @@ interface TriageTestResult {
   triage_class: string | null;
 }
 
+interface MemoryFile {
+  name: string;
+  content: string;
+  size: number;
+}
+
+interface HeartbeatStatus {
+  content: string;
+  skills: string[];
+  agents_md: string;
+}
+
+type SettingsTab = 'profile' | 'display' | 'triage' | 'team' | 'memory';
+
 export function SettingsPage() {
-  const [tab, setTab] = useState<'profile' | 'display' | 'triage' | 'admin'>('profile');
+  const [searchParams] = useSearchParams();
+  const initialTab = (searchParams.get('tab') as SettingsTab) || 'profile';
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [settings, setSettings] = useState<UserSettingsData>({});
   const [users, setUsers] = useState<ManagedUser[]>([]);
@@ -69,6 +87,11 @@ export function SettingsPage() {
   const [triageTestResults, setTriageTestResults] = useState<TriageTestResult[] | null>(null);
   const [triageTesting, setTriageTesting] = useState(false);
 
+  const [memFiles, setMemFiles] = useState<MemoryFile[]>([]);
+  const [heartbeat, setHeartbeat] = useState<HeartbeatStatus | null>(null);
+  const [memExpanded, setMemExpanded] = useState<Set<string>>(new Set());
+  const [memLoading, setMemLoading] = useState(false);
+
   const fetchData = useCallback(async () => {
     try {
       const [p, s] = await Promise.all([
@@ -93,6 +116,18 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    if (tab !== 'memory') return;
+    setMemLoading(true);
+    Promise.all([
+      api.get<HeartbeatStatus>('/api/memory/status/heartbeat').catch(() => null),
+      api.get<MemoryFile[]>('/api/memory').catch(() => []),
+    ]).then(([hb, files]) => {
+      setHeartbeat(hb);
+      setMemFiles(files ?? []);
+    }).finally(() => setMemLoading(false));
+  }, [tab]);
 
   const saveProfile = async () => {
     if (!displayName.trim()) return;
@@ -136,7 +171,7 @@ export function SettingsPage() {
     }
   };
 
-  const updateSetting = async (key: string, value: string | null) => {
+  const updateSetting = async (key: string, value: string | boolean | null) => {
     const updated = await api.patch<UserSettingsData>('/api/settings', { [key]: value });
     setSettings(updated);
     if (key === 'app_logo_url' || key === 'sidebar_color') {
@@ -190,6 +225,15 @@ export function SettingsPage() {
     }
   };
 
+  const toggleMemFile = (name: string) => {
+    setMemExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -199,20 +243,21 @@ export function SettingsPage() {
   }
 
   const isOwner = profile?.role === 'owner';
-  const tabs = [
-    { id: 'profile' as const, label: 'Profil' },
-    { id: 'display' as const, label: 'Darstellung' },
+  const tabs: { id: SettingsTab; label: string }[] = [
+    { id: 'profile', label: 'Profil' },
+    { id: 'display', label: 'Erscheinungsbild' },
     ...(isOwner ? [{ id: 'triage' as const, label: 'E-Mail-Triage' }] : []),
-    ...(isOwner ? [{ id: 'admin' as const, label: 'Admin' }] : []),
+    ...(isOwner ? [{ id: 'team' as const, label: 'Team' }] : []),
+    { id: 'memory', label: 'Memory' },
   ];
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-gray-200 px-6 py-4 dark:border-gray-800">
+      <div className="border-b border-white/40 bg-white/50 px-6 py-4 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
         <h1 className="text-xl font-bold text-gray-900 dark:text-white">Einstellungen</h1>
       </div>
 
-      <div className="border-b border-gray-200 px-6 dark:border-gray-800">
+      <div className="border-b border-white/40 bg-white/50 px-6 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
         <div className="flex gap-4">
           {tabs.map((t) => (
             <button
@@ -231,8 +276,9 @@ export function SettingsPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="mx-auto max-w-2xl space-y-8">
+        <div className="mx-auto max-w-2xl space-y-8 rounded-2xl border border-white/40 bg-white/60 p-6 shadow-sm backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/60">
 
+          {/* ── Profil ── */}
           {tab === 'profile' && profile && (
             <>
               <section>
@@ -343,10 +389,83 @@ export function SettingsPage() {
             </>
           )}
 
+          {/* ── Erscheinungsbild ── */}
           {tab === 'display' && (
             <section>
-              <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Darstellung</h2>
+              <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Erscheinungsbild</h2>
               <div className="space-y-6">
+
+                {/* Firmenlogo - jetzt prominenter */}
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-900 dark:bg-indigo-950/30">
+                  <label className="mb-1 block text-sm font-semibold text-gray-900 dark:text-white">Firmenlogo / App-Icon</label>
+                  <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                    Wird oben links in der Sidebar als App-Logo angezeigt. Ideal: quadratisches Bild (z.B. 128×128 px).
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="group relative flex h-14 w-14 cursor-pointer items-center justify-center overflow-hidden rounded-xl border-2 border-dashed border-indigo-300 bg-white dark:border-indigo-700 dark:bg-gray-800"
+                      onClick={() => logoInput.current?.click()}
+                    >
+                      {settings.app_logo_url ? (
+                        <img src={settings.app_logo_url} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <span className="text-2xl font-bold text-gray-300 dark:text-gray-600">T</span>
+                      )}
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                        <CameraIcon className="h-5 w-5 text-white" />
+                      </div>
+                    </div>
+                    <input ref={logoInput} type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const form = new FormData();
+                      form.append('file', file);
+                      try {
+                        const res = await fetch('/api/uploads/icons', {
+                          method: 'POST',
+                          headers: { Authorization: `Bearer ${localStorage.getItem('taskpilot_token')}` },
+                          body: form,
+                        });
+                        if (!res.ok) return;
+                        const { url } = await res.json();
+                        await updateSetting('app_logo_url', url);
+                      } catch { /* */ }
+                    }} />
+                    <div className="flex flex-col gap-1">
+                      <button
+                        onClick={() => logoInput.current?.click()}
+                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-700"
+                      >
+                        Logo hochladen
+                      </button>
+                      {settings.app_logo_url && (
+                        <button
+                          onClick={() => updateSetting('app_logo_url', null)}
+                          className="rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                        >
+                          Entfernen
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Task-Anzahl in Spalten */}
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <div>
+                    <p className="font-medium text-gray-900 dark:text-white">Task-Anzahl in Spalten</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Zeigt die Anzahl Aufgaben pro Spalte in Agenda und Projekt-Boards an
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => updateSetting('show_column_count', !(settings.show_column_count ?? false))}
+                    className={`relative h-6 w-11 rounded-full transition-colors ${(settings.show_column_count ?? false) ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                  >
+                    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${(settings.show_column_count ?? false) ? 'left-[22px]' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
                 <div>
                   <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Task-Detail Ansicht</label>
                   <div className="flex gap-2">
@@ -372,55 +491,9 @@ export function SettingsPage() {
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">App-Logo</label>
-                  <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
-                    Wird oben links in der Sidebar angezeigt (z.B. Firmenlogo).
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="group relative flex h-12 w-12 cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800"
-                      onClick={() => logoInput.current?.click()}
-                    >
-                      {settings.app_logo_url ? (
-                        <img src={settings.app_logo_url} alt="" className="h-full w-full object-cover" />
-                      ) : (
-                        <span className="text-xl font-bold text-gray-400">T</span>
-                      )}
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
-                        <CameraIcon className="h-4 w-4 text-white" />
-                      </div>
-                    </div>
-                    <input ref={logoInput} type="file" accept="image/*" className="hidden" onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      const form = new FormData();
-                      form.append('file', file);
-                      try {
-                        const res = await fetch('/api/uploads/icons', {
-                          method: 'POST',
-                          headers: { Authorization: `Bearer ${localStorage.getItem('taskpilot_token')}` },
-                          body: form,
-                        });
-                        if (!res.ok) return;
-                        const { url } = await res.json();
-                        await updateSetting('app_logo_url', url);
-                      } catch { /* */ }
-                    }} />
-                    {settings.app_logo_url && (
-                      <button
-                        onClick={() => updateSetting('app_logo_url', null)}
-                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
-                      >
-                        Entfernen
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div>
                   <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Sidebar-Farbe</label>
                   <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
-                    Wähle eine Hintergrundfarbe für die Sidebar (passt sich an Light/Dark an).
+                    Hintergrundfarbe für die Sidebar (passt sich an Light/Dark an).
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {SIDEBAR_PALETTE.map((c) => (
@@ -454,10 +527,26 @@ export function SettingsPage() {
                     </button>
                   )}
                 </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Cockpit-Hintergrund</label>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {settings.cockpit_background_url ? 'Hintergrund gesetzt' : 'Kein Hintergrund gesetzt'} — kann in der Cockpit-Ansicht geändert werden.
+                  </p>
+                  {settings.cockpit_background_url && (
+                    <button
+                      onClick={() => updateSetting('cockpit_background_url', null)}
+                      className="mt-2 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                    >
+                      Hintergrund entfernen
+                    </button>
+                  )}
+                </div>
               </div>
             </section>
           )}
 
+          {/* ── E-Mail-Triage ── */}
           {tab === 'triage' && isOwner && (
             <section>
               <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">E-Mail-Triage</h2>
@@ -557,9 +646,10 @@ export function SettingsPage() {
             </section>
           )}
 
-          {tab === 'admin' && isOwner && (
+          {/* ── Team (ehemals Admin) ── */}
+          {tab === 'team' && isOwner && (
             <section>
-              <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Benutzerverwaltung</h2>
+              <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Team & Benutzerverwaltung</h2>
 
               <div className="mb-6 rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-900/50">
                 <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">Neuen Benutzer einladen</h3>
@@ -582,8 +672,8 @@ export function SettingsPage() {
                     onChange={(e) => setInviteRole(e.target.value)}
                     className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
                   >
-                    <option value="member">Member</option>
-                    <option value="viewer">Viewer</option>
+                    <option value="member">Mitglied</option>
+                    <option value="viewer">Betrachter</option>
                   </select>
                   <button
                     onClick={createUser}
@@ -627,7 +717,7 @@ export function SettingsPage() {
                             u.role === 'member' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
                             'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
                           }`}>
-                            {u.role}
+                            {u.role === 'owner' ? 'Inhaber' : u.role === 'member' ? 'Mitglied' : 'Betrachter'}
                           </span>
                         </td>
                         <td className="px-4 py-3 text-right">
@@ -647,6 +737,84 @@ export function SettingsPage() {
               </div>
             </section>
           )}
+
+          {/* ── Memory ── */}
+          {tab === 'memory' && (
+            <section>
+              <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Memory</h2>
+              <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+                Nanobot-Zustand — Heartbeat, Skills und Memory-Dateien (nur lesen)
+              </p>
+
+              {memLoading ? (
+                <div className="flex h-32 items-center justify-center">
+                  <div className="h-8 w-8 animate-spin rounded-full border-3 border-indigo-500 border-t-transparent" />
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {heartbeat && (
+                    <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
+                      <div className="mb-2 flex items-center gap-2">
+                        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Heartbeat</h3>
+                        <span className="flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300">
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
+                          Aktiv
+                        </span>
+                      </div>
+                      <div className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
+                        {heartbeat.content}
+                      </div>
+                      {heartbeat.skills.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {heartbeat.skills.map((skill) => (
+                            <span key={skill} className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {memFiles.length === 0 ? (
+                    <div className="flex h-24 items-center justify-center rounded-xl border border-gray-200 text-sm text-gray-400 dark:border-gray-800 dark:text-gray-600">
+                      Keine Memory-Dateien vorhanden
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {memFiles.map((file) => {
+                        const isExpanded = memExpanded.has(file.name);
+                        return (
+                          <div key={file.name} className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+                            <button
+                              onClick={() => toggleMemFile(file.name)}
+                              className="flex w-full items-center justify-between px-4 py-3 text-left"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <ChevronIcon className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                                <span className="truncate text-sm font-medium text-gray-900 dark:text-white">{file.name}</span>
+                              </div>
+                              <span className="ml-3 shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                {file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`}
+                              </span>
+                            </button>
+                            {isExpanded && (
+                              <div className="border-t border-gray-100 px-4 py-3 dark:border-gray-800">
+                                <div className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+                                  {file.content || <span className="italic text-gray-400">Leer</span>}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+
         </div>
       </div>
     </div>
@@ -669,6 +837,14 @@ function CameraIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Z" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
     </svg>
   );
 }

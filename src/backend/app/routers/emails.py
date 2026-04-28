@@ -98,6 +98,7 @@ class FolderInfo(BaseModel):
     id: str
     display_name: str
     total_count: int = 0
+    unread_count: int = 0
 
 
 class DraftCreateRequest(BaseModel):
@@ -132,9 +133,32 @@ async def list_folders(
             id=f.get("id", ""),
             display_name=f.get("displayName", ""),
             total_count=f.get("totalItemCount", 0),
+            unread_count=f.get("unreadItemCount", 0),
         )
         for f in folders
     ]
+
+
+class UnreadCountResponse(BaseModel):
+    unread_count: int = 0
+
+
+@router.get("/unread-count", response_model=UnreadCountResponse)
+async def get_unread_count(
+    user: User = Depends(get_current_user),
+) -> UnreadCountResponse:
+    _require_owner(user)
+    _check_configured()
+    client = _get_graph_client()
+    try:
+        folders = await client.list_folders()
+        inbox = next((f for f in folders if f.get("displayName", "").lower() == "inbox"), None)
+        count = inbox.get("unreadItemCount", 0) if inbox else 0
+        return UnreadCountResponse(unread_count=count)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception:
+        return UnreadCountResponse(unread_count=0)
 
 
 @router.get("", response_model=EmailListResponse)

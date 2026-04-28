@@ -123,6 +123,7 @@ class TaskCreate(TaskBase):
 class TaskUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
+    project_id: uuid.UUID | None = None
     board_column_id: uuid.UUID | None = None
     board_position: float | None = None
     pipeline_column_id: uuid.UUID | None = None

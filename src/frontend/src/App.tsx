@@ -8,11 +8,11 @@ import {
 import { useAuth } from './contexts/AuthContext';
 import { AppLayout } from './layouts/AppLayout';
 import { LoginPage } from './pages/LoginPage';
+import { CockpitPage } from './pages/CockpitPage';
 import { PipelinePage } from './pages/PipelinePage';
 import { ProjectBoardPage } from './pages/ProjectBoardPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { AgentQueuePage } from './pages/AgentQueuePage';
-import { MemoryPage } from './pages/MemoryPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { InboxPage } from './pages/InboxPage';
 
@@ -24,7 +24,7 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
 
 function PublicRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuth();
-  if (isAuthenticated) return <Navigate to="/pipeline" replace />;
+  if (isAuthenticated) return <Navigate to="/cockpit" replace />;
   return <>{children}</>;
 }
 
@@ -48,16 +48,19 @@ export default function App() {
             </ProtectedRoute>
           }
         >
+          <Route path="/cockpit" element={<CockpitPage />} />
           <Route path="/pipeline" element={<PipelinePage />} />
-          <Route path="/inbox" element={<InboxPage />} />
+          <Route path="/agenten" element={<AgentQueuePage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectBoardPage />} />
-          <Route path="/agent-queue" element={<AgentQueuePage />} />
-          <Route path="/memory" element={<MemoryPage />} />
+          <Route path="/inbox" element={<InboxPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/pipeline" replace />} />
+        {/* Redirects für alte Routen und Default */}
+        <Route path="/agent-queue" element={<Navigate to="/agenten" replace />} />
+        <Route path="/memory" element={<Navigate to="/settings?tab=memory" replace />} />
+        <Route path="*" element={<Navigate to="/cockpit" replace />} />
       </Routes>
     </BrowserRouter>
   );

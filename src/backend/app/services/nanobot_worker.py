@@ -20,7 +20,7 @@ import json
 import logging
 import re
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from nanobot import Nanobot
@@ -35,6 +35,8 @@ _worker_task: asyncio.Task | None = None
 _bot: Nanobot | None = None
 
 POLL_INTERVAL = 10
+REAP_INTERVAL = 60
+STALE_TIMEOUT_MINUTES = 30
 NANOBOT_CONFIG = Path.home() / ".nanobot" / "config.json"
 TRIAGE_SKILL = Path.home() / ".nanobot" / "workspace" / "skills" / "mail-triage.md"
 
@@ -396,6 +398,34 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
             await db.commit()
 
 
+async def _reap_stale_jobs() -> int:
+    """Setzt running-Jobs, die laenger als STALE_TIMEOUT_MINUTES laufen, auf failed."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=STALE_TIMEOUT_MINUTES)
+    async with async_session() as db:
+        result = await db.execute(
+            update(AgentJob)
+            .where(
+                AgentJob.status == "running",
+                AgentJob.started_at < cutoff,
+            )
+            .values(
+                status="failed",
+                error_message=f"Timeout: Job lief über {STALE_TIMEOUT_MINUTES} Minuten ohne Abschluss",
+                completed_at=datetime.now(timezone.utc),
+            )
+            .returning(AgentJob.id)
+        )
+        reaped_ids = result.scalars().all()
+        if reaped_ids:
+            logger.warning(
+                "Reaper: %d stale running-Jobs auf failed gesetzt: %s",
+                len(reaped_ids),
+                [str(i) for i in reaped_ids],
+            )
+        await db.commit()
+    return len(reaped_ids)
+
+
 async def _worker_loop() -> None:
     """Pollt nach queued Jobs und verarbeitet sie sequentiell."""
     await asyncio.sleep(3)
@@ -407,8 +437,15 @@ async def _worker_loop() -> None:
 
     logger.info("Nanobot-Worker gestartet -- pollt alle %ds nach queued Jobs", POLL_INTERVAL)
 
+    last_reap = time.monotonic()
+
     while True:
         try:
+            # Reaper periodisch ausfuehren
+            if time.monotonic() - last_reap >= REAP_INTERVAL:
+                await _reap_stale_jobs()
+                last_reap = time.monotonic()
+
             async with async_session() as db:
                 result = await db.execute(
                     select(AgentJob)

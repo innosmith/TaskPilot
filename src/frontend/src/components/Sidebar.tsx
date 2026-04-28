@@ -41,18 +41,26 @@ export function Sidebar({
 }: SidebarProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeJobCount, setActiveJobCount] = useState(0);
+  const [unreadMailCount, setUnreadMailCount] = useState(0);
+  const [pendingDecisions, setPendingDecisions] = useState(0);
   const { logout } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
     api.get<Project[]>('/api/projects').then(setProjects).catch(() => {});
+
     api
       .get<AgentJob[]>('/api/agent-jobs')
       .then((jobs) => {
-        setActiveJobCount(
-          jobs.filter((j) => ['queued', 'running', 'awaiting_approval'].includes(j.status)).length,
-        );
+        const active = jobs.filter((j) => ['queued', 'running', 'awaiting_approval'].includes(j.status));
+        setActiveJobCount(active.length);
+        setPendingDecisions(active.filter((j) => j.status === 'awaiting_approval').length);
       })
+      .catch(() => {});
+
+    api
+      .get<{ unread_count?: number }>('/api/emails/unread-count')
+      .then((r) => setUnreadMailCount(r.unread_count ?? 0))
       .catch(() => {});
   }, [refreshKey]);
 
@@ -93,23 +101,40 @@ export function Sidebar({
           isOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        {/* Logo area */}
+        {/* Logo + Collapse Toggle */}
         <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-3 dark:border-gray-800">
-          {appLogoUrl ? (
-            <img src={appLogoUrl} alt="" className="h-8 w-8 shrink-0 rounded-lg object-cover" />
+          {collapsed ? (
+            <button
+              onClick={onToggleCollapse}
+              className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200 lg:flex"
+              title="Sidebar ausklappen"
+            >
+              <MenuIcon className="h-5 w-5" />
+            </button>
           ) : (
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">
-              T
-            </div>
-          )}
-          {!collapsed && (
-            <span className="flex-1 text-lg font-semibold text-gray-900 dark:text-white">
-              TaskPilot
-            </span>
+            <>
+              {appLogoUrl ? (
+                <img src={appLogoUrl} alt="" className="h-8 w-8 shrink-0 rounded-lg object-cover" />
+              ) : (
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">
+                  T
+                </div>
+              )}
+              <span className="flex-1 text-lg font-semibold text-gray-900 dark:text-white">
+                TaskPilot
+              </span>
+              <button
+                onClick={onToggleCollapse}
+                className="hidden shrink-0 rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300 lg:flex"
+                title="Sidebar einklappen"
+              >
+                <CollapseIcon className="h-4 w-4" />
+              </button>
+            </>
           )}
         </div>
 
-        {/* Search button */}
+        {/* Suche */}
         {!collapsed ? (
           <div className="px-3 pt-3">
             <button
@@ -139,13 +164,20 @@ export function Sidebar({
         <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
           {collapsed ? (
             <>
+              <NavLink to="/cockpit" className={collapsedLinkClasses} onClick={onClose} title="Cockpit">
+                <span className="relative">
+                  <CockpitIcon className="h-5 w-5" />
+                  {pendingDecisions > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-rose-500 text-[9px] font-bold text-white">
+                      {pendingDecisions}
+                    </span>
+                  )}
+                </span>
+              </NavLink>
               <NavLink to="/pipeline" className={collapsedLinkClasses} onClick={onClose} title="Agenda">
                 <AgendaIcon className="h-5 w-5" />
               </NavLink>
-              <NavLink to="/inbox" className={collapsedLinkClasses} onClick={onClose} title="Posteingang">
-                <MailIcon className="h-5 w-5" />
-              </NavLink>
-              <NavLink to="/agent-queue" className={collapsedLinkClasses} onClick={onClose} title="Agent Queue">
+              <NavLink to="/agenten" className={collapsedLinkClasses} onClick={onClose} title="Agenten">
                 <span className="relative">
                   <AgentIcon className="h-5 w-5" />
                   {activeJobCount > 0 && (
@@ -154,9 +186,6 @@ export function Sidebar({
                     </span>
                   )}
                 </span>
-              </NavLink>
-              <NavLink to="/memory" className={collapsedLinkClasses} onClick={onClose} title="Memory">
-                <MemoryIcon className="h-5 w-5" />
               </NavLink>
 
               <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
@@ -177,33 +206,46 @@ export function Sidebar({
                   />
                 </NavLink>
               ))}
+
+              <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
+
+              <NavLink to="/inbox" className={collapsedLinkClasses} onClick={onClose} title="Posteingang">
+                <span className="relative">
+                  <MailIcon className="h-5 w-5" />
+                  {unreadMailCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-500 text-[9px] font-bold text-white">
+                      {unreadMailCount > 9 ? '9+' : unreadMailCount}
+                    </span>
+                  )}
+                </span>
+              </NavLink>
             </>
           ) : (
             <>
+              <NavLink to="/cockpit" className={linkClasses} onClick={onClose}>
+                <CockpitIcon className="h-5 w-5" />
+                <span className="flex-1">Cockpit</span>
+                {pendingDecisions > 0 && (
+                  <span className="flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+                    {pendingDecisions}
+                  </span>
+                )}
+              </NavLink>
+
               <NavLink to="/pipeline" className={linkClasses} onClick={onClose}>
                 <AgendaIcon className="h-5 w-5" />
                 Agenda
               </NavLink>
 
-              <NavLink to="/inbox" className={linkClasses} onClick={onClose}>
-                <MailIcon className="h-5 w-5" />
-                Posteingang
-              </NavLink>
-
-              <NavLink to="/agent-queue" className={linkClasses} onClick={onClose}>
+              <NavLink to="/agenten" className={linkClasses} onClick={onClose}>
                 <AgentIcon className="h-5 w-5" />
-                <span className="flex-1">Agent Queue</span>
+                <span className="flex-1">Agenten</span>
                 {activeJobCount > 0 && (
                   <span className="flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" />
                     {activeJobCount}
                   </span>
                 )}
-              </NavLink>
-
-              <NavLink to="/memory" className={linkClasses} onClick={onClose}>
-                <MemoryIcon className="h-5 w-5" />
-                Memory
               </NavLink>
 
               <div className="mt-6 mb-2 flex items-center justify-between px-3">
@@ -236,6 +278,18 @@ export function Sidebar({
                   {project.name}
                 </NavLink>
               ))}
+
+              <div className="mt-4 mb-2 border-t border-gray-200 pt-2 dark:border-gray-800" />
+
+              <NavLink to="/inbox" className={linkClasses} onClick={onClose}>
+                <MailIcon className="h-5 w-5" />
+                <span className="flex-1">Posteingang</span>
+                {unreadMailCount > 0 && (
+                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                    {unreadMailCount}
+                  </span>
+                )}
+              </NavLink>
             </>
           )}
         </nav>
@@ -249,13 +303,6 @@ export function Sidebar({
               </NavLink>
               <ThemeCycleButton />
               <LogoutButton onLogout={handleLogout} collapsed />
-              <button
-                onClick={onToggleCollapse}
-                className="hidden rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300 lg:flex"
-                title="Sidebar ausklappen"
-              >
-                <ChevronRightIcon className="h-4 w-4" />
-              </button>
             </div>
           ) : (
             <>
@@ -265,16 +312,7 @@ export function Sidebar({
               </NavLink>
               <div className="mt-2 flex items-center justify-between px-1">
                 <ThemeToggle />
-                <div className="flex items-center gap-1">
-                  <LogoutButton onLogout={handleLogout} />
-                  <button
-                    onClick={onToggleCollapse}
-                    className="hidden rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300 lg:flex"
-                    title="Sidebar einklappen"
-                  >
-                    <ChevronLeftIcon className="h-4 w-4" />
-                  </button>
-                </div>
+                <LogoutButton onLogout={handleLogout} />
               </div>
             </>
           )}
@@ -284,7 +322,7 @@ export function Sidebar({
   );
 }
 
-/* ── ThemeCycleButton (single icon that cycles light→dark→system) ── */
+/* ── ThemeCycleButton ── */
 
 function ThemeCycleButton() {
   const { mode, setMode } = useTheme();
@@ -303,7 +341,7 @@ function ThemeCycleButton() {
   );
 }
 
-/* ── LogoutButton with double-click safety ── */
+/* ── LogoutButton ── */
 
 function LogoutButton({ onLogout, collapsed = false }: { onLogout: () => void; collapsed?: boolean }) {
   const [confirm, setConfirm] = useState(false);
@@ -354,6 +392,14 @@ function SearchIcon({ className }: { className?: string }) {
   );
 }
 
+function CockpitIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v11.25A2.25 2.25 0 0 0 6 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0 1 18 16.5h-2.25m-7.5 0h7.5m-7.5 0-1 3m8.5-3 1 3m0 0 .5 1.5m-.5-1.5h-9.5m0 0-.5 1.5m.75-9 3-3 2.148 2.148A12.061 12.061 0 0 1 16.5 7.605" />
+    </svg>
+  );
+}
+
 function AgendaIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -366,14 +412,6 @@ function AgentIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" />
-    </svg>
-  );
-}
-
-function MemoryIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
     </svg>
   );
 }
@@ -415,6 +453,22 @@ function ChevronLeftIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
+    </svg>
+  );
+}
+
+function MenuIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+    </svg>
+  );
+}
+
+function CollapseIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M12 17.25h8.25" />
     </svg>
   );
 }

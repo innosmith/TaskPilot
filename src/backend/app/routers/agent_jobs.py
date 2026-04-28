@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
@@ -240,13 +240,36 @@ async def bulk_delete_agent_jobs(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> BulkDeleteResult:
-    """Bulk-Löschung von abgeschlossenen/fehlgeschlagenen Jobs."""
+    """Bulk-Löschung von abgeschlossenen/fehlgeschlagenen Jobs.
+    
+    status=stale setzt running-Jobs > 30 Min auf failed und gibt die Anzahl zurück.
+    """
+    if status == "stale":
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        count_result = await db.execute(
+            select(func.count())
+            .where(and_(AgentJob.status == "running", AgentJob.started_at < cutoff))
+            .select_from(AgentJob)
+        )
+        count = count_result.scalar_one()
+        if count > 0:
+            await db.execute(
+                update(AgentJob)
+                .where(and_(AgentJob.status == "running", AgentJob.started_at < cutoff))
+                .values(
+                    status="failed",
+                    error_message="Manuell als hängend markiert",
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+        return BulkDeleteResult(deleted=count)
+
     if status == "both":
         status_filter = AgentJob.status.in_(list(_DELETABLE_STATUSES))
     elif status in _DELETABLE_STATUSES:
         status_filter = AgentJob.status == status
     else:
-        raise HTTPException(status_code=400, detail="status muss 'completed', 'failed' oder 'both' sein")
+        raise HTTPException(status_code=400, detail="status muss 'completed', 'failed', 'both' oder 'stale' sein")
 
     conditions = [status_filter]
     if older_than_days is not None:
@@ -270,14 +293,19 @@ async def delete_agent_job(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> None:
-    """Einzelnen abgeschlossenen oder fehlgeschlagenen Job löschen."""
+    """Einzelnen Job löschen (completed/failed) oder abbrechen (running/queued)."""
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Agent job not found")
-    if job.status not in _DELETABLE_STATUSES:
+    if job.status in _DELETABLE_STATUSES:
+        await db.delete(job)
+    elif job.status in ("running", "queued"):
+        job.status = "failed"
+        job.error_message = "Manuell abgebrochen"
+        job.completed_at = datetime.now(timezone.utc)
+    else:
         raise HTTPException(
             status_code=409,
-            detail=f"Nur abgeschlossene oder fehlgeschlagene Jobs können gelöscht werden (aktuell: {job.status})",
+            detail=f"Job im Status '{job.status}' kann nicht gelöscht/abgebrochen werden",
         )
-    await db.delete(job)

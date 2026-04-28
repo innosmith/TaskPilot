@@ -34,6 +34,7 @@ export function PipelinePage() {
   const [agendaBg, setAgendaBg] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const [userAvatarUrl, setUserAvatarUrl] = useState<string | null>(null);
+  const [showColCount, setShowColCount] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
@@ -61,12 +62,13 @@ export function PipelinePage() {
       const [pipelineData, projectData, settingsData, userData] = await Promise.all([
         api.get<PipelineData>('/api/pipeline'),
         api.get<Project[]>('/api/projects'),
-        api.get<{ agenda_background_url: string | null }>('/api/settings'),
+        api.get<{ agenda_background_url: string | null; show_column_count: boolean | null }>('/api/settings'),
         api.get<{ avatar_url: string | null }>('/api/auth/me'),
       ]);
       setColumns(pipelineData.columns);
       setProjects(projectData);
       setAgendaBg(settingsData.agenda_background_url);
+      setShowColCount(settingsData.show_column_count ?? false);
       setUserAvatarUrl(userData.avatar_url);
     } catch {
       /* handled by api client */
@@ -295,6 +297,7 @@ export function PipelinePage() {
                   tasks={col.tasks}
                   projectColorMap={projectColorMap}
                   showProjectIndicator
+                  showColumnCount={showColCount}
                   hasBg={hasBg}
                   userAvatarUrl={userAvatarUrl}
                   columnColor={col.color}

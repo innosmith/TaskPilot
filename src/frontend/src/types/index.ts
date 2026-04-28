@@ -107,6 +107,7 @@ export interface LoginResponse {
 export interface TaskUpdatePayload {
   title?: string;
   description?: string;
+  project_id?: string;
   board_column_id?: string;
   board_position?: number;
   pipeline_column_id?: string | null;
@@ -121,7 +122,9 @@ export interface TaskUpdatePayload {
   recurrence_rule?: string | null;
   calendar_duration_minutes?: number | null;
   calendar_preferred_time?: string | null;
-} = 'modal' | 'panel' | 'fullscreen';
+}
+
+export type TaskDetailMode = 'modal' | 'panel' | 'fullscreen';
 
 export interface TaskCreatePayload {
   title: string;

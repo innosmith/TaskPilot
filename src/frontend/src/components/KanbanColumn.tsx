@@ -32,6 +32,7 @@ interface KanbanColumnProps {
   tasks: TaskCardType[];
   projectColorMap?: Record<string, string>;
   showProjectIndicator?: boolean;
+  showColumnCount?: boolean;
   hasBg?: boolean;
   userAvatarUrl?: string | null;
   columnColor?: string | null;
@@ -50,6 +51,7 @@ export function KanbanColumn({
   tasks,
   projectColorMap,
   showProjectIndicator = false,
+  showColumnCount = false,
   hasBg = false,
   userAvatarUrl,
   columnColor,
@@ -240,9 +242,11 @@ export function KanbanColumn({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badgeClasses}`}>
-            {tasks.length}
-          </span>
+          {showColumnCount && (
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badgeClasses}`}>
+              {tasks.length}
+            </span>
+          )}
           {onCreateTask && (
             <button
               onClick={() => setAdding(true)}

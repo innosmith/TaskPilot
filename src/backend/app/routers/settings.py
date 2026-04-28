@@ -16,11 +16,15 @@ class UserSettings(BaseModel):
     sidebar_collapsed: bool | None = None
     app_logo_url: str | None = None
     sidebar_color: str | None = None
+    show_column_count: bool | None = None
+    cockpit_background_url: str | None = None
+    cockpit_background_type: str | None = None
 
 
 SETTINGS_FIELDS = [
     "agenda_background_url", "agenda_background_type", "task_detail_mode",
     "sidebar_collapsed", "app_logo_url", "sidebar_color",
+    "show_column_count", "cockpit_background_url", "cockpit_background_type",
 ]
 
 

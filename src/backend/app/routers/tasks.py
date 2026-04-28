@@ -1,8 +1,9 @@
+import pathlib
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from croniter import croniter
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth.deps import get_current_user
 from app.database import get_db
-from app.models import AgentJob, BoardColumn, ChecklistItem, Project, Task, User
+from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, ChecklistItem, Project, Task, User
 from app.schemas import (
     ChecklistItemCreate,
     ChecklistItemOut,
@@ -80,6 +81,58 @@ class TaskConfirmBody(BaseModel):
     title: str | None = None
     project_id: uuid.UUID | None = None
     board_column_id: uuid.UUID | None = None
+
+
+@router.get("/due-today")
+async def list_due_today(
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    today = date.today()
+    stmt = (
+        select(Task)
+        .where(
+            Task.is_completed.is_(False),
+            Task.due_date.isnot(None),
+            Task.due_date <= str(today),
+        )
+        .options(selectinload(Task.tags))
+        .order_by(Task.due_date)
+        .limit(20)
+    )
+    result = await db.execute(stmt)
+    tasks = result.scalars().all()
+
+    project_ids = {t.project_id for t in tasks if t.project_id}
+    project_names: dict[str, str] = {}
+    if project_ids:
+        pstmt = select(Project).where(Project.id.in_(project_ids))
+        presult = await db.execute(pstmt)
+        for p in presult.scalars().all():
+            project_names[str(p.id)] = p.name
+
+    return [
+        {
+            "id": str(t.id),
+            "title": t.title,
+            "project_id": str(t.project_id),
+            "project_name": project_names.get(str(t.project_id), ""),
+            "board_column_id": str(t.board_column_id),
+            "board_position": t.board_position,
+            "pipeline_column_id": str(t.pipeline_column_id) if t.pipeline_column_id else None,
+            "pipeline_position": t.pipeline_position,
+            "assignee": t.assignee,
+            "due_date": t.due_date,
+            "is_completed": t.is_completed,
+            "is_pinned": t.is_pinned,
+            "recurrence_rule": t.recurrence_rule,
+            "template_id": str(t.template_id) if t.template_id else None,
+            "tags": [{"id": str(tag.id), "name": tag.name, "color": tag.color} for tag in t.tags],
+            "checklist_total": 0,
+            "checklist_done": 0,
+        }
+        for t in tasks
+    ]
 
 
 @router.get("/pending-review", response_model=list[PendingReviewOut])
@@ -286,6 +339,23 @@ async def update_checklist_item(
     return item
 
 
+@router.delete("/{task_id}/checklist/{item_id}", status_code=204)
+async def delete_checklist_item(
+    task_id: uuid.UUID,
+    item_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> None:
+    result = await db.execute(
+        select(ChecklistItem)
+        .where(ChecklistItem.id == item_id, ChecklistItem.task_id == task_id)
+    )
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Checklist item not found")
+    await db.delete(item)
+
+
 @router.get("/{task_id}/recurrence")
 async def get_recurrence_info(
     task_id: uuid.UUID,
@@ -372,3 +442,178 @@ def _cron_to_human(cron_expr: str) -> str:
         return f"Monatlich am {dom}.{time_str}"
 
     return cron_expr
+
+
+# --- Activity Log ---
+
+class ActivityLogOut(BaseModel):
+    id: str
+    task_id: str
+    event_type: str
+    actor: str
+    details: dict | None
+    created_at: str
+
+class CommentCreate(BaseModel):
+    text: str
+
+@router.get("/{task_id}/activity", response_model=list[ActivityLogOut])
+async def list_activity(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> list[ActivityLogOut]:
+    result = await db.execute(
+        select(ActivityLog)
+        .where(ActivityLog.task_id == task_id)
+        .order_by(ActivityLog.created_at.desc())
+        .limit(50)
+    )
+    logs = result.scalars().all()
+    return [
+        ActivityLogOut(
+            id=str(log.id),
+            task_id=str(log.task_id),
+            event_type=log.event_type,
+            actor=log.actor,
+            details=log.details,
+            created_at=log.created_at.isoformat(),
+        )
+        for log in logs
+    ]
+
+
+@router.post("/{task_id}/activity", response_model=ActivityLogOut, status_code=201)
+async def add_comment(
+    task_id: uuid.UUID,
+    body: CommentCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ActivityLogOut:
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    log = ActivityLog(
+        task_id=task_id,
+        event_type="comment",
+        actor=user.email,
+        details={"text": body.text},
+    )
+    db.add(log)
+    await db.flush()
+    return ActivityLogOut(
+        id=str(log.id),
+        task_id=str(log.task_id),
+        event_type=log.event_type,
+        actor=log.actor,
+        details=log.details,
+        created_at=log.created_at.isoformat(),
+    )
+
+
+# --- Attachments ---
+
+TASK_UPLOADS_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "uploads" / "tasks"
+MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
+
+class AttachmentOut(BaseModel):
+    id: str
+    task_id: str
+    filename: str
+    filepath: str
+    mime_type: str | None
+    size: int
+    uploaded_at: str
+
+
+@router.get("/{task_id}/attachments", response_model=list[AttachmentOut])
+async def list_attachments(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> list[AttachmentOut]:
+    result = await db.execute(
+        select(Attachment)
+        .where(Attachment.task_id == task_id)
+        .order_by(Attachment.uploaded_at.desc())
+    )
+    attachments = result.scalars().all()
+    base = pathlib.Path(__file__).resolve().parent.parent.parent / "uploads"
+    out = []
+    for a in attachments:
+        full_path = base / a.filepath.lstrip("/").removeprefix("uploads/")
+        size = full_path.stat().st_size if full_path.exists() else 0
+        out.append(AttachmentOut(
+            id=str(a.id), task_id=str(a.task_id), filename=a.filename,
+            filepath=a.filepath, mime_type=a.mime_type, size=size,
+            uploaded_at=a.uploaded_at.isoformat(),
+        ))
+    return out
+
+
+@router.post("/{task_id}/attachments", response_model=AttachmentOut, status_code=201)
+async def upload_attachment(
+    task_id: uuid.UUID,
+    file: UploadFile,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> AttachmentOut:
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    data = await file.read()
+    if len(data) > MAX_ATTACHMENT_SIZE:
+        raise HTTPException(status_code=400, detail="Datei zu gross (max 10 MB)")
+
+    task_dir = TASK_UPLOADS_DIR / str(task_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = (file.filename or "datei").replace("/", "_").replace("\\", "_")
+    ext = pathlib.Path(safe_name).suffix
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    dest = task_dir / stored_name
+    dest.write_bytes(data)
+
+    relative_path = f"/uploads/tasks/{task_id}/{stored_name}"
+    attachment = Attachment(
+        task_id=task_id,
+        filename=safe_name,
+        filepath=relative_path,
+        mime_type=file.content_type,
+    )
+    db.add(attachment)
+    await db.flush()
+
+    return AttachmentOut(
+        id=str(attachment.id), task_id=str(attachment.task_id),
+        filename=attachment.filename, filepath=attachment.filepath,
+        mime_type=attachment.mime_type, size=len(data),
+        uploaded_at=attachment.uploaded_at.isoformat(),
+    )
+
+
+@router.delete("/{task_id}/attachments/{attachment_id}", status_code=204)
+async def delete_attachment(
+    task_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> None:
+    result = await db.execute(
+        select(Attachment)
+        .where(Attachment.id == attachment_id, Attachment.task_id == task_id)
+    )
+    attachment = result.scalar_one_or_none()
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    base = pathlib.Path(__file__).resolve().parent.parent.parent / "uploads"
+    full_path = base / attachment.filepath.lstrip("/").removeprefix("uploads/")
+    if full_path.exists():
+        full_path.unlink()
+
+    await db.delete(attachment)

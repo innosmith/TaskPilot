@@ -81,4 +81,15 @@ export const api = {
 
   delete: <T>(path: string) =>
     request<T>(path, { method: 'DELETE' }),
+
+  upload: async <T>(path: string, formData: FormData): Promise<T> => {
+    const token = getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const response = await fetch(path, { method: 'POST', headers, body: formData });
+    if (response.status === 401) { clearToken(); window.location.href = '/login'; throw new ApiError(401, 'Nicht autorisiert'); }
+    if (!response.ok) { const body = await response.text(); throw new ApiError(response.status, body || response.statusText); }
+    if (response.status === 204) return undefined as T;
+    return response.json();
+  },
 };

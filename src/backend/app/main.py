@@ -46,6 +46,28 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 async def lifespan(app: FastAPI):
     async with async_session() as db:
         await ensure_owner_exists(db)
+
+    # Verwaiste "running"-Jobs nach Server-Neustart bereinigen
+    async with async_session() as db:
+        result = await db.execute(
+            text(
+                "UPDATE agent_jobs "
+                "SET status = 'failed', "
+                "    error_message = 'Durch Server-Neustart abgebrochen', "
+                "    completed_at = NOW() "
+                "WHERE status = 'running' "
+                "RETURNING id"
+            )
+        )
+        stale_ids = result.scalars().all()
+        if stale_ids:
+            logging.getLogger("taskpilot.lifespan").warning(
+                "Startup-Cleanup: %d verwaiste running-Jobs auf failed gesetzt: %s",
+                len(stale_ids),
+                [str(i) for i in stale_ids],
+            )
+        await db.commit()
+
     await start_nanobot_worker()
     await start_recurring_scheduler()
     await start_triage_service()

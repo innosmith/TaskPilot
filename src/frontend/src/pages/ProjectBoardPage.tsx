@@ -35,6 +35,7 @@ export function ProjectBoardPage() {
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [iconMenuOpen, setIconMenuOpen] = useState(false);
   const [userAvatarUrl, setUserAvatarUrl] = useState<string | null>(null);
+  const [showColCount, setShowColCount] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const iconUploadRef = useRef<HTMLInputElement>(null);
 
@@ -45,12 +46,14 @@ export function ProjectBoardPage() {
   const fetchBoard = useCallback(async () => {
     if (!id) return;
     try {
-      const [data, userData] = await Promise.all([
+      const [data, userData, settingsData] = await Promise.all([
         api.get<BoardData>(`/api/projects/${id}/board`),
         api.get<{ avatar_url: string | null }>('/api/auth/me'),
+        api.get<{ show_column_count: boolean | null }>('/api/settings'),
       ]);
       setBoard(data);
       setUserAvatarUrl(userData.avatar_url);
+      setShowColCount(settingsData.show_column_count ?? false);
     } catch {
       /* handled by api client */
     } finally {
@@ -470,6 +473,7 @@ export function ProjectBoardPage() {
                   id={col.id}
                   title={col.name}
                   tasks={col.tasks}
+                  showColumnCount={showColCount}
                   hasBg={hasBg}
                   userAvatarUrl={userAvatarUrl}
                   columnColor={col.color}

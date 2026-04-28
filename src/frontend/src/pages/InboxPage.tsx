@@ -337,182 +337,46 @@ export function InboxPage() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header mit Tab-Navigation */}
-      <div className="border-b border-gray-200 px-6 pt-4 dark:border-gray-800">
-        <div className="flex items-center justify-between mb-3">
+      {/* Header */}
+      <div className="border-b border-white/40 bg-white/50 px-6 py-4 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
+        <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">E-Mail Intelligence</h1>
+            <h1 className="text-xl font-bold text-gray-900 dark:text-white">Posteingang</h1>
             <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-              {activeTab === 'dashboard' ? 'Steuerungszentrale' : activeTab === 'inbox' ? 'Posteingang' : 'Agent-Entwürfe prüfen'}
+              E-Mails verwalten und beantworten
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {activeTab === 'inbox' && (
-              <>
-                <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                  <input
-                    type="checkbox"
-                    checked={unreadOnly}
-                    onChange={(e) => setUnreadOnly(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600"
-                  />
-                  Nur ungelesen
-                </label>
-                <button
-                  onClick={fetchEmails}
-                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-700"
-                >
-                  Aktualisieren
-                </button>
-                <button
-                  onClick={() => { setComposeReplyTo(undefined); setShowCompose(true); }}
-                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700"
-                >
-                  Entwurf schreiben
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-        {/* Tab-Leiste */}
-        <div className="flex gap-1">
-          {([
-            { id: 'dashboard' as const, label: 'Dashboard', count: activityFeed?.summary.drafts_pending },
-            { id: 'inbox' as const, label: 'Inbox', count: triageStats?.total_pending },
-            { id: 'approvals' as const, label: 'Freigaben', count: approvalJobs.length || undefined },
-          ]).map(tab => (
+            <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <input
+                type="checkbox"
+                checked={unreadOnly}
+                onChange={(e) => setUnreadOnly(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600"
+              />
+              Nur ungelesen
+            </label>
             <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`relative rounded-t-lg px-4 py-2 text-sm font-medium transition-colors ${
-                activeTab === tab.id
-                  ? 'bg-white text-indigo-700 dark:bg-gray-900 dark:text-indigo-400'
-                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
-              }`}
+              onClick={fetchEmails}
+              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-700"
             >
-              {tab.label}
-              {(tab.count ?? 0) > 0 && (
-                <span className="ml-1.5 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-indigo-100 px-1.5 text-[10px] font-bold text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">
-                  {tab.count}
-                </span>
-              )}
+              Aktualisieren
             </button>
-          ))}
+            <button
+              onClick={() => { setComposeReplyTo(undefined); setShowCompose(true); }}
+              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700"
+            >
+              Entwurf schreiben
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Tab-Inhalt */}
-      {activeTab === 'dashboard' && (
-        <div className="flex-1 overflow-y-auto p-6">
-          {/* Zusammenfassung */}
-          <div className="mb-6 grid grid-cols-3 gap-4">
-            <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
-              <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">
-                {activityFeed?.summary.classified_today || 0}
-              </div>
-              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">Heute klassifiziert</div>
-            </div>
-            <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
-              <div className="text-2xl font-bold text-amber-600 dark:text-amber-400">
-                {activityFeed?.summary.drafts_pending || 0}
-              </div>
-              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">Entwürfe zur Freigabe</div>
-            </div>
-            <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
-              <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-                {triageStats ? Object.values(triageStats.by_class).reduce((a, b) => a + b, 0) : 0}
-              </div>
-              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">E-Mails in Triage</div>
-            </div>
-          </div>
-
-          {/* Triage-Klassen-Übersicht */}
-          {triageStats && triageStats.total_pending > 0 && (
-            <div className="mb-6 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
-              <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">Triage-Übersicht</h3>
-              <div className="flex gap-4">
-                {Object.entries(triageStats.by_class).map(([cls, count]) => {
-                  const cfg = TRIAGE_CONFIG[cls];
-                  return (
-                    <div key={cls} className="flex items-center gap-2 text-sm">
-                      {cfg && <span className={`inline-block h-3 w-3 rounded-full ${cfg.dot}`} />}
-                      <span className="font-medium text-gray-700 dark:text-gray-300">{count}</span>
-                      <span className="text-gray-500 dark:text-gray-400">{cfg?.label || cls}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Aufgaben-Vorschläge */}
-          {pendingReviewTasks.length > 0 && (
-            <TaskSuggestionsSection
-              tasks={pendingReviewTasks}
-              onAction={() => { fetchPendingReview(); fetchActivity(); }}
-            />
-          )}
-
-          {/* Activity-Feed */}
-          <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-            <h3 className="border-b border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 dark:border-gray-700 dark:text-gray-300">
-              Agent-Aktivitäten
-            </h3>
-            {activityFeed && activityFeed.activities.length > 0 ? (
-              <div className="divide-y divide-gray-100 dark:divide-gray-800">
-                {activityFeed.activities.map(act => (
-                  <div key={act.id} className="flex items-center gap-3 px-4 py-3">
-                    <div className={`h-2 w-2 rounded-full shrink-0 ${
-                      act.status === 'awaiting_approval' ? 'bg-amber-500' :
-                      act.status === 'completed' ? 'bg-emerald-500' :
-                      act.status === 'queued' ? 'bg-blue-500' :
-                      'bg-gray-400'
-                    }`} />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm text-gray-700 dark:text-gray-300 truncate">
-                        {act.job_type === 'email_triage' && 'Triage: '}
-                        {act.job_type === 'draft_email_reply' && 'Entwurf: '}
-                        {act.job_type === 'create_task_from_email' && 'Task: '}
-                        {act.subject || 'Unbekannt'}
-                      </div>
-                      {act.output && (
-                        <div className="text-xs text-gray-500 dark:text-gray-400 truncate">{act.output}</div>
-                      )}
-                    </div>
-                    <div className="shrink-0 text-xs text-gray-400 dark:text-gray-500">
-                      {act.created_at ? new Date(act.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : ''}
-                    </div>
-                    {act.status === 'awaiting_approval' && (
-                      <button
-                        onClick={() => setActiveTab('approvals')}
-                        className="shrink-0 rounded bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-                      >
-                        Prüfen
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="p-8 text-center text-sm text-gray-400 dark:text-gray-600">
-                Der Agent prüft automatisch alle 2 Minuten auf neue E-Mails. Aktivitäten erscheinen hier, sobald nanobot E-Mails verarbeitet hat.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'approvals' && (
-        <ApprovalsTab
-          approvalJobs={approvalJobs}
-          onAction={() => { fetchApprovals(); fetchActivity(); }}
-        />
-      )}
-
-      {activeTab === 'inbox' && (<>
+      {/* E-Mail-Inhalt (direkt, ohne Tabs) */}
+      <>
       {/* Triage-Statistik-Leiste */}
       {triageStats && triageStats.total_pending > 0 && (
-        <div className="flex items-center gap-4 border-b border-gray-200 bg-gray-50 px-6 py-2 text-xs dark:border-gray-800 dark:bg-gray-900/50">
+        <div className="flex items-center gap-4 border-b border-white/40 bg-white/50 px-6 py-2 text-xs backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
           <span className="font-medium text-gray-700 dark:text-gray-300">Triage:</span>
           {Object.entries(triageStats.by_class).map(([cls, count]) => {
             const cfg = TRIAGE_CONFIG[cls];
@@ -537,7 +401,7 @@ export function InboxPage() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Folder sidebar */}
-        <div className="hidden w-48 shrink-0 border-r border-gray-200 p-3 dark:border-gray-800 md:block">
+        <div className="hidden w-48 shrink-0 border-r border-white/40 bg-white/30 p-3 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/30 md:block">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
             Ordner
           </h3>
@@ -566,7 +430,7 @@ export function InboxPage() {
         </div>
 
         {/* Email list */}
-        <div className={`${selectedEmail ? 'hidden md:block md:w-1/3' : 'w-full'} shrink-0 overflow-y-auto border-r border-gray-200 dark:border-gray-800`}>
+        <div className={`${selectedEmail ? 'hidden md:block md:w-1/3' : 'w-full'} shrink-0 overflow-y-auto border-r border-white/40 dark:border-gray-800`}>
           {loading ? (
             <div className="flex h-full items-center justify-center">
               <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
@@ -631,7 +495,7 @@ export function InboxPage() {
           ) : selectedEmail ? (
             <div className="p-6">
               {/* Aktionsleiste */}
-              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/60">
+              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-white/50 bg-white/60 p-3 backdrop-blur-sm dark:border-gray-700 dark:bg-gray-900/60">
                 {selectedTriage && selectedTriage.status === 'pending' && (
                   <TriageBadge triageClass={selectedTriage.triage_class} />
                 )}
@@ -763,7 +627,7 @@ export function InboxPage() {
 
       {/* CreateTaskFromEmail dialog */}
       <CreateTaskFromEmailListener onTaskCreated={fetchTriage} />
-      </>)}
+      </>
     </div>
   );
 }
