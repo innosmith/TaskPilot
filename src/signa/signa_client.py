@@ -28,11 +28,11 @@ class SignaConfig:
     @classmethod
     def from_env(cls) -> "SignaConfig":
         return cls(
-            host=os.environ.get("ISI_HOST", ""),
-            database=os.environ.get("ISI_DB", ""),
-            user=os.environ.get("ISI_USER", ""),
-            password=os.environ.get("ISI_SECRET", ""),
-            port=int(os.environ.get("ISI_PORT", "5432")),
+            host=os.environ.get("TP_ISI_HOST", os.environ.get("ISI_HOST", "")),
+            database=os.environ.get("TP_ISI_DB", os.environ.get("ISI_DB", "")),
+            user=os.environ.get("TP_ISI_USER", os.environ.get("ISI_USER", "")),
+            password=os.environ.get("TP_ISI_SECRET", os.environ.get("ISI_SECRET", "")),
+            port=int(os.environ.get("TP_ISI_PORT", os.environ.get("ISI_PORT", "5432"))),
         )
 
     @property
@@ -84,7 +84,7 @@ class SignaClient:
         type_filter: str | None = None,
         topic: str | None = None,
         persona: str | None = None,
-        since: str | None = None,
+        since: "str | datetime | None" = None,
         status_filter: str | None = None,
         search_term: str | None = None,
     ) -> list[dict]:
@@ -110,8 +110,9 @@ class SignaClient:
             params.append(persona)
             idx += 1
         if since:
+            since_val = since if isinstance(since, datetime) else datetime.fromisoformat(str(since))
             conditions.append(f"published_at >= ${idx}::timestamptz")
-            params.append(since)
+            params.append(since_val)
             idx += 1
         if status_filter:
             conditions.append(f"status = ${idx}")
@@ -146,7 +147,7 @@ class SignaClient:
         type_filter: str | None = None,
         topic: str | None = None,
         persona: str | None = None,
-        since: str | None = None,
+        since: "str | datetime | None" = None,
         status_filter: str | None = None,
         search_term: str | None = None,
     ) -> int:
@@ -172,8 +173,9 @@ class SignaClient:
             params.append(persona)
             idx += 1
         if since:
+            since_val = since if isinstance(since, datetime) else datetime.fromisoformat(str(since))
             conditions.append(f"published_at >= ${idx}::timestamptz")
-            params.append(since)
+            params.append(since_val)
             idx += 1
         if status_filter:
             conditions.append(f"status = ${idx}")

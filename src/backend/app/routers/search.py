@@ -229,7 +229,12 @@ async def _search_signa(term: str) -> list[SignaHit]:
         sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "signa"))
         from signa_client import SignaClient, SignaConfig
 
-        cfg = SignaConfig.from_env()
+        from app.config import get_settings
+        s = get_settings()
+        cfg = SignaConfig(
+            host=s.isi_host, database=s.isi_db,
+            user=s.isi_user, password=s.isi_secret, port=s.isi_port,
+        )
         if not cfg.is_configured:
             return []
 

@@ -19,12 +19,41 @@ logger = logging.getLogger("taskpilot.signa")
 _client: SignaClient | None = None
 
 
+def _resolve_since(since: str | None):
+    """Wandelt Shortcuts wie 'today', 'week', '2weeks' in datetime-Objekte um."""
+    if not since:
+        return None
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    shortcuts = {
+        "today": now.replace(hour=0, minute=0, second=0, microsecond=0),
+        "week": now - timedelta(days=7),
+        "2weeks": now - timedelta(days=14),
+    }
+    dt = shortcuts.get(since)
+    if dt:
+        return dt
+    from datetime import datetime as dt_cls
+    try:
+        return dt_cls.fromisoformat(since)
+    except ValueError:
+        return since
+
+
 def _get_signa_client() -> SignaClient:
     global _client
     if _client is None:
-        cfg = SignaConfig.from_env()
+        from app.config import get_settings
+        s = get_settings()
+        cfg = SignaConfig(
+            host=s.isi_host,
+            database=s.isi_db,
+            user=s.isi_user,
+            password=s.isi_secret,
+            port=s.isi_port,
+        )
         if not cfg.is_configured:
-            raise HTTPException(status_code=400, detail="SIGNA-Datenbank nicht konfiguriert (ISI_* Env-Vars fehlen)")
+            raise HTTPException(status_code=400, detail="SIGNA-Datenbank nicht konfiguriert (TP_ISI_* Env-Vars fehlen)")
         _client = SignaClient(cfg)
     return _client
 
@@ -78,19 +107,20 @@ async def list_signals(
     topic: str | None = None,
     persona: str | None = None,
     since: str | None = None,
-    status: str | None = None,
+    status: str | None = Query(default="relevant"),
     search: str | None = None,
     user: User = Depends(get_current_user),
 ):
+    resolved_since = _resolve_since(since)
     client = _get_signa_client()
     signals = await client.list_signals(
         limit=limit, offset=offset, min_score=min_score,
         type_filter=type, topic=topic, persona=persona,
-        since=since, status_filter=status, search_term=search,
+        since=resolved_since, status_filter=status, search_term=search,
     )
     total = await client.count_signals(
         min_score=min_score, type_filter=type, topic=topic,
-        persona=persona, since=since, status_filter=status, search_term=search,
+        persona=persona, since=resolved_since, status_filter=status, search_term=search,
     )
     return SignalListResponse(
         signals=[SignalSummary(**_serialize(s)) for s in signals],
@@ -115,7 +145,8 @@ async def list_briefings(
     user: User = Depends(get_current_user),
 ):
     client = _get_signa_client()
-    return await client.list_briefings(limit)
+    raw = await client.list_briefings(limit)
+    return [_serialize(b) for b in raw]
 
 
 @router.get("/briefings/{briefing_id}")
@@ -136,7 +167,8 @@ async def list_deep_dives(
     user: User = Depends(get_current_user),
 ):
     client = _get_signa_client()
-    return await client.list_deep_dives(persona=persona, limit=limit)
+    raw = await client.list_deep_dives(persona=persona, limit=limit)
+    return [_serialize(dd) for dd in raw]
 
 
 @router.get("/deep-dives/{dd_id}")
@@ -153,13 +185,15 @@ async def get_deep_dive(dd_id: int, user: User = Depends(get_current_user)):
 @router.get("/personas")
 async def list_personas(user: User = Depends(get_current_user)):
     client = _get_signa_client()
-    return await client.list_personas()
+    raw = await client.list_personas()
+    return [_serialize(p) for p in raw]
 
 
 @router.get("/topics")
 async def list_topics(user: User = Depends(get_current_user)):
     client = _get_signa_client()
-    return await client.list_topics()
+    raw = await client.list_topics()
+    return [_serialize(t) for t in raw]
 
 
 # ── Stats ────────────────────────────────────────────
@@ -167,7 +201,8 @@ async def list_topics(user: User = Depends(get_current_user)):
 @router.get("/stats")
 async def get_stats(user: User = Depends(get_current_user)):
     client = _get_signa_client()
-    return await client.get_stats()
+    raw = await client.get_stats()
+    return _serialize(raw)
 
 
 # ── Helpers ──────────────────────────────────────────

@@ -396,9 +396,8 @@ async def _populate_env_from_db() -> None:
                     os.environ[env_key] = ""
                     logger.debug("Env-Var %s auf leer gesetzt (kein DB-Wert)", env_key)
 
-        # SIGNA-Env-Vars werden direkt aus .env gelesen (nicht DB),
-        # aber müssen als Env-Vars existieren für Nanobot Config Loader
-        for key in ("ISI_HOST", "ISI_DB", "ISI_USER", "ISI_SECRET"):
+        # SIGNA-Env-Vars: TP_ISI_* wird von Pydantic geladen, MCP braucht sie auch
+        for key in ("TP_ISI_HOST", "TP_ISI_DB", "TP_ISI_USER", "TP_ISI_SECRET"):
             if not os.environ.get(key):
                 os.environ[key] = ""
                 logger.debug("Env-Var %s auf leer gesetzt (nicht in Umgebung)", key)
