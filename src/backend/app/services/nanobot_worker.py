@@ -18,6 +18,7 @@ Logik aus: JSON-Output parsen, Tasks erstellen, Drafts zuordnen.
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -73,7 +74,7 @@ async def _load_projects_context() -> str:
     for p in projects:
         lines.append(f'- "{p.name}" (id: {p.id})')
     lines.append("")
-    lines.append("Wähle bei board_task das passendste Projekt aus dieser Liste für das Feld suggested_project.")
+    lines.append("Wähle bei triage_class='task' das passendste Projekt aus dieser Liste für das Feld suggested_project.")
     lines.append("Falls kein Projekt passt, setze suggested_project auf null.")
     return "\n".join(lines)
 
@@ -149,7 +150,7 @@ Führe jetzt den Triage-Ablauf durch:
 4. Klassifiziere gemäss der Prioritätsreihenfolge
 5. Setze die Outlook-Kategorie
 6. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
-7. Erstelle Draft falls quick_response (bei board_task übernimmt das Backend die Task-Erstellung automatisch)
+7. Erstelle Draft falls auto_reply (bei task übernimmt das Backend die Task-Erstellung automatisch)
 8. Gib den PFLICHT-JSON-Block aus (Schritt 8 im Skill)
 9. Aktualisiere das Absender-Profil (Schritt 9 im Skill)
 10. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
@@ -216,8 +217,8 @@ def _determine_pipeline_column(deadline_str: str | None) -> str | None:
 async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     """Deterministische Post-Processing-Logik nach LLM-Klassifikation.
 
-    Parst den JSON-Block, erstellt Tasks bei board_task, speichert draft_id
-    bei quick_response, und aktualisiert den EmailTriage-Record.
+    Parst den JSON-Block, erstellt Tasks bei 'task', speichert draft_id
+    bei 'auto_reply', und aktualisiert den EmailTriage-Record.
     Returns: finaler Status für den AgentJob.
     """
     parsed = _extract_json_block(content)
@@ -233,36 +234,46 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     task_description = parsed.get("task_description")
     suggested_project = parsed.get("suggested_project")
     rationale = parsed.get("rationale")
+    reply_expected = bool(parsed.get("reply_expected", False))
+
+    # Legacy-Werte migrieren
+    if triage_class == "quick_response":
+        triage_class = "auto_reply"
+    elif triage_class == "board_task":
+        triage_class = "task"
+        reply_expected = True
+    elif triage_class == "bedenkzeit":
+        triage_class = "task"
 
     logger.info(
-        "Job %s: JSON parsed -- label=%s, triage_class=%s, draft_id=%s",
-        job_id, label, triage_class, draft_id,
+        "Job %s: JSON parsed -- label=%s, triage_class=%s, reply_expected=%s, draft_id=%s",
+        job_id, label, triage_class, reply_expected, draft_id,
     )
 
     async with async_session() as db:
-        # EmailTriage aktualisieren
         await db.execute(
             update(EmailTriage)
             .where(EmailTriage.agent_job_id == job_id)
             .values(
                 triage_class=triage_class,
+                reply_expected=reply_expected,
                 suggested_action={
                     "label": label,
                     "triage_class": triage_class,
+                    "reply_expected": reply_expected,
                     "deadline": deadline,
                     "task_title": task_title,
                     "suggested_project": suggested_project,
                     "draft_id": draft_id,
                     "rationale": rationale,
                 },
-                status="acted" if triage_class != "quick_response" else "processing",
+                status="acted" if triage_class != "auto_reply" else "processing",
             )
         )
 
         final_status = "completed"
 
-        if triage_class == "board_task" and task_title:
-            # Projekte laden und matchen
+        if triage_class == "task" and task_title:
             proj_result = await db.execute(
                 select(Project).where(Project.status != "archived").order_by(Project.name)
             )
@@ -272,7 +283,6 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
                 matched_project = projects[0]
 
             if matched_project:
-                # Erste Board-Spalte des Projekts laden
                 col_result = await db.execute(
                     select(BoardColumn)
                     .where(BoardColumn.project_id == matched_project.id)
@@ -315,12 +325,11 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
                     )
                     db.add(new_task)
                     logger.info(
-                        "Job %s: Task erstellt '%s' in Projekt '%s' (needs_review=True)",
-                        job_id, task_title, matched_project.name,
+                        "Job %s: Task erstellt '%s' in Projekt '%s' (reply_expected=%s)",
+                        job_id, task_title, matched_project.name, reply_expected,
                     )
 
-        elif triage_class == "quick_response" and draft_id:
-            # draft_id in AgentJob-Metadata speichern
+        elif triage_class == "auto_reply" and draft_id:
             job_result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
             job = job_result.scalar_one_or_none()
             if job:
@@ -335,13 +344,21 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
 
 
 async def _init_bot() -> Nanobot | None:
-    """Initialisiert den Nanobot einmalig."""
+    """Initialisiert den Nanobot einmalig.
+
+    Liest fehlende Env-Vars (z.B. Pipedrive-Token) aus der DB (User-Settings),
+    damit die Nanobot-Config ${VAR}-Platzhalter auflösen kann.
+    DB ist Single Source of Truth -- .env.dev dient nur als Fallback.
+    """
     global _bot
     if _bot is not None:
         return _bot
     if not NANOBOT_CONFIG.exists():
         logger.error("Nanobot-Config nicht gefunden: %s", NANOBOT_CONFIG)
         return None
+
+    await _populate_env_from_db()
+
     try:
         _bot = Nanobot.from_config(config_path=str(NANOBOT_CONFIG))
         logger.info("Nanobot SDK initialisiert (Config: %s)", NANOBOT_CONFIG)
@@ -349,6 +366,31 @@ async def _init_bot() -> Nanobot | None:
     except Exception:
         logger.exception("Nanobot SDK Initialisierung fehlgeschlagen")
         return None
+
+
+async def _populate_env_from_db() -> None:
+    """Liest API-Tokens aus den User-Settings (Owner) und setzt sie als Env-Vars,
+    falls sie noch nicht gesetzt sind. So bleibt die DB die einzige Quelle."""
+    _ENV_KEYS = {
+        "pipedrive_api_token": "TP_PIPEDRIVE_API_TOKEN",
+        "pipedrive_domain": "TP_PIPEDRIVE_DOMAIN",
+    }
+    try:
+        async with async_session() as db:
+            from app.models import User
+            result = await db.execute(
+                select(User.settings).where(User.role == "owner").limit(1)
+            )
+            settings = result.scalar_one_or_none() or {}
+
+        for db_key, env_key in _ENV_KEYS.items():
+            if not os.environ.get(env_key):
+                value = settings.get(db_key, "")
+                if value:
+                    os.environ[env_key] = str(value)
+                    logger.info("Env-Var %s aus DB-Settings gesetzt", env_key)
+    except Exception:
+        logger.warning("DB-Settings konnten nicht gelesen werden -- Env-Vars bleiben wie sie sind")
 
 
 async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: dict) -> None:

@@ -109,7 +109,7 @@ const JOB_TYPE_LABELS: Record<string, string> = {
   email_triage: 'E-Mail-Triage',
   draft_email_reply: 'Antwort-Entwurf',
   create_task_from_email: 'Aufgabe erstellen',
-  quick_response: 'Schnellantwort',
+  auto_reply: 'Auto-Antwort',
 };
 
 function FormattedOutput({ output }: { output: string }) {

@@ -129,23 +129,17 @@ interface ProjectOption {
 /* ---------- Triage-Farben & Labels ---------- */
 
 const TRIAGE_CONFIG: Record<string, { label: string; bg: string; text: string; dot: string }> = {
-  quick_response: {
-    label: 'Schnellantwort',
+  auto_reply: {
+    label: 'Auto-Antwort',
     bg: 'bg-emerald-100 dark:bg-emerald-900/40',
     text: 'text-emerald-700 dark:text-emerald-300',
     dot: 'bg-emerald-500',
   },
-  board_task: {
+  task: {
     label: 'Aufgabe',
     bg: 'bg-blue-100 dark:bg-blue-900/40',
     text: 'text-blue-700 dark:text-blue-300',
     dot: 'bg-blue-500',
-  },
-  bedenkzeit: {
-    label: 'Prüfen',
-    bg: 'bg-amber-100 dark:bg-amber-900/40',
-    text: 'text-amber-700 dark:text-amber-300',
-    dot: 'bg-amber-500',
   },
   fyi: {
     label: 'Zur Kenntnis',
@@ -953,7 +947,7 @@ function CalendarContext({
         <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
           Heutige Termine
         </h4>
-        {selectedTriage?.triage_class === 'board_task' && (
+        {selectedTriage?.triage_class === 'task' && (
           <button
             onClick={createTimeBlocker}
             disabled={creating}

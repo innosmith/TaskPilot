@@ -813,9 +813,8 @@ export function SettingsPage() {
                       {triageTestResults.map((r) => (
                         <div key={r.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
                           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                            r.triage_class === 'quick_response' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' :
-                            r.triage_class === 'board_task' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
-                            r.triage_class === 'bedenkzeit' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' :
+                            r.triage_class === 'auto_reply' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' :
+                            r.triage_class === 'task' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
                             'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
                           }`}>
                             {r.triage_class}

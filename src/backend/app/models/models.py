@@ -216,6 +216,7 @@ class EmailTriage(Base):
     received_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     inference_class: Mapped[str | None] = mapped_column(Text)
     triage_class: Mapped[str | None] = mapped_column(Text)
+    reply_expected: Mapped[bool] = mapped_column(Boolean, server_default="false")
     confidence: Mapped[float | None] = mapped_column(Float)
     suggested_action: Mapped[dict | None] = mapped_column(JSONB)
     agent_job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_jobs.id"))

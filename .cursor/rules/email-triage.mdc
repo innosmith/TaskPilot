@@ -6,21 +6,34 @@ alwaysApply: false
 
 # E-Mail-Triage Regeln
 
-## 4 Triage-Klassen
-| Klasse | Aktion | HITL |
-|--------|--------|------|
-| `quick_response` | Antwort-Entwurf erstellen | L1 |
-| `board_task` | Task im Kanban Board erstellen | L1 |
-| `fyi` | Archivieren, zur Kenntnis | L2 |
-| `bedenkzeit` | Komplex, menschliches Review | L1 |
+## 3 Triage-Klassen
 
-## Kategorisierungs-Logik (aus CoPilot-Prompt)
+| Klasse | Aktion | HITL | Wann? |
+|--------|--------|------|-------|
+| `auto_reply` | Draft erstellen, Mensch gibt frei | L1 | NUR wenn alle 5 Schwellen-Bedingungen erfüllt |
+| `task` | Task erstellen mit Kontext-Briefing | L1 | Alles was Arbeit erfordert (Antwort, Aktion oder beides) |
+| `fyi` | Archivieren, zur Kenntnis | L2 | Kein Handlungsbedarf |
+
+### auto_reply-Schwelle (alle 5 müssen zutreffen)
+1. Information vollständig im Kontext vorhanden
+2. Keine Geschäftsentscheidung, kein Commitment
+3. Geringes Schadenpotenzial bei suboptimalem Wortlaut
+4. Kein Domainwissen oder Recherche nötig
+5. Formelhafter Antworttyp (Bestätigung, Dank, einfache Rückfrage)
+
+**Leitprinzip: Im Zweifel IMMER `task`.**
+
+### task mit reply_expected-Flag
+- `reply_expected: true` — Aufgabe endet mit E-Mail-Antwort (Kundenanfrage, Offerte)
+- `reply_expected: false` — Keine Antwort nötig (Rechnung verbuchen, Dokument prüfen)
+
+## Kategorisierungs-Logik (Labels)
 - **Signale:** Interne Intelligence-Reports (anthony@innosmith.ch → anthony@innosmith.ch)
 - **Wichtig:** Echte Mensch-zu-Mensch Kommunikation, BFH-E-Mails
-- **Offerten/Verträge:** Formelle Dokumente → `bedenkzeit`
-- **Networking/Leads:** LinkedIn-Einladungen, Erstkontakte → `board_task`
-- **Finanzen:** QR-Rechnungen, Mahnungen, Treuhand → `board_task`
-- **Kalender:** Termineinladungen → je nach Kontext
+- **Offerten/Verträge:** Formelle Dokumente → `task` (reply_expected: true)
+- **Networking/Leads:** LinkedIn-Einladungen, Erstkontakte → `task` (reply_expected: true)
+- **Finanzen:** QR-Rechnungen, Mahnungen, Treuhand → `task` (reply_expected: false)
+- **Kalender:** Termineinladungen → Kalender prüfen, dann `auto_reply` oder `task`
 - **System:** Auto-generierte Mails → `fyi`
 - **Newsletter:** Marketing → `fyi`
 - **Junk:** Phishing, Spam, Cold Outreach → `fyi`
@@ -29,5 +42,6 @@ alwaysApply: false
 - `inferenceClassification: "other"` → tendiert zu `fyi`
 - `inferenceClassification: "focused"` → genauer prüfen
 - Schweizer `.ch`-Domains → höhere Relevanz
-- Selbst-E-Mails (anthony@...) → `board_task`
-- Im Zweifel → `bedenkzeit`
+- Selbst-E-Mails (anthony@...) → `task`
+- Terminanfragen → Kalender via `list_calendar_events` / `find_free_slots` prüfen
+- Im Zweifel → `task`
