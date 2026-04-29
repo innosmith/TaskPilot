@@ -60,6 +60,10 @@ class CalendarEvent(BaseModel):
     show_as: str | None = None
     body_preview: str | None = None
     organizer: str | None = None
+    categories: list[str] = []
+    sensitivity: str | None = None
+    attendees_count: int = 0
+    is_organizer: bool = False
 
 
 class EventCreateRequest(BaseModel):
@@ -84,6 +88,9 @@ async def list_events(
     start: str = Query(..., description="Start ISO 8601"),
     end: str = Query(..., description="End ISO 8601"),
     top: int = Query(50, ge=1, le=100),
+    exclude_categories: str | None = Query(None, description="Kommagetrennte Kategorien zum Ausblenden"),
+    hide_private: bool = Query(True, description="Termine mit sensitivity=private ausblenden"),
+    hide_free: bool = Query(True, description="Termine mit showAs=free ausblenden"),
     user: User = Depends(get_current_user),
 ) -> list[CalendarEvent]:
     _require_owner(user)
@@ -93,9 +100,27 @@ async def list_events(
         events = await client.list_events(start, end, top)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    excluded = set()
+    if exclude_categories:
+        excluded = {c.strip().lower() for c in exclude_categories.split(",") if c.strip()}
+
     result = []
     for ev in events:
+        if ev.get("isCancelled", False):
+            continue
+        if hide_free and ev.get("showAs") == "free":
+            continue
+        if hide_private and ev.get("sensitivity") == "private":
+            continue
+
+        cats = ev.get("categories", []) or []
+        cats_lower = {c.lower() for c in cats}
+        if excluded and cats_lower & excluded:
+            continue
+
         org = ev.get("organizer", {}).get("emailAddress", {})
+        attendees = ev.get("attendees", []) or []
         result.append(CalendarEvent(
             id=ev.get("id", ""),
             subject=ev.get("subject"),
@@ -106,6 +131,10 @@ async def list_events(
             show_as=ev.get("showAs"),
             body_preview=ev.get("bodyPreview", "")[:200],
             organizer=org.get("name") or org.get("address"),
+            categories=cats,
+            sensitivity=ev.get("sensitivity"),
+            attendees_count=len(attendees),
+            is_organizer=ev.get("isOrganizer", False),
         ))
     return result
 

@@ -70,6 +70,7 @@ class EmailSummary(BaseModel):
     inference_classification: str | None = None
     importance: str | None = None
     has_attachments: bool = False
+    flag_status: str | None = None
 
 
 class EmailListResponse(BaseModel):
@@ -117,6 +118,41 @@ class DraftResponse(BaseModel):
 
 # ── Endpoints ────────────────────────────────────────────────
 
+@router.get("/search", response_model=EmailListResponse)
+async def search_emails(
+    q: str = Query(..., min_length=1, description="Suchbegriff"),
+    top: int = Query(10, ge=1, le=50),
+    user: User = Depends(get_current_user),
+) -> EmailListResponse:
+    """Volltextsuche über alle E-Mails (ordnerübergreifend via Graph $search)."""
+    _require_owner(user)
+    _check_configured()
+    client = _get_graph_client()
+    try:
+        results = await client.search_emails(query=q, top=top)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    emails = []
+    for msg in results:
+        from_obj = msg.get("from", {}).get("emailAddress", {})
+        flag_obj = msg.get("flag", {})
+        emails.append(EmailSummary(
+            id=msg.get("id", ""),
+            subject=msg.get("subject"),
+            from_address=from_obj.get("address"),
+            from_name=from_obj.get("name"),
+            received_at=msg.get("receivedDateTime"),
+            is_read=msg.get("isRead", False),
+            body_preview=msg.get("bodyPreview", "")[:250],
+            categories=msg.get("categories", []),
+            inference_classification=msg.get("inferenceClassification"),
+            importance=msg.get("importance"),
+            has_attachments=msg.get("hasAttachments", False),
+            flag_status=flag_obj.get("flagStatus") if isinstance(flag_obj, dict) else None,
+        ))
+    return EmailListResponse(emails=emails, total=len(emails))
+
+
 @router.get("/folders", response_model=list[FolderInfo])
 async def list_folders(
     user: User = Depends(get_current_user),
@@ -161,6 +197,49 @@ async def get_unread_count(
         return UnreadCountResponse(unread_count=0)
 
 
+class FlaggedEmailSummary(BaseModel):
+    id: str
+    subject: str | None = None
+    from_address: str | None = None
+    from_name: str | None = None
+    received_at: str | None = None
+    body_preview: str | None = None
+    categories: list[str] = []
+    importance: str | None = None
+    has_attachments: bool = False
+
+
+@router.get("/flagged", response_model=list[FlaggedEmailSummary])
+async def list_flagged_emails(
+    top: int = Query(20, ge=1, le=50),
+    since_days: int = Query(180, ge=7, le=730, description="Nur E-Mails der letzten N Tage"),
+    user: User = Depends(get_current_user),
+) -> list[FlaggedEmailSummary]:
+    """Markierte E-Mails (Outlook-Fahne) laden."""
+    _require_owner(user)
+    _check_configured()
+    client = _get_graph_client()
+    try:
+        raw = await client.list_flagged_emails(top=top, since_days=since_days)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    result = []
+    for msg in raw:
+        sender = msg.get("from", {}).get("emailAddress", {})
+        result.append(FlaggedEmailSummary(
+            id=msg.get("id", ""),
+            subject=msg.get("subject"),
+            from_address=sender.get("address"),
+            from_name=sender.get("name"),
+            received_at=msg.get("receivedDateTime"),
+            body_preview=msg.get("bodyPreview", "")[:200],
+            categories=msg.get("categories", []),
+            importance=msg.get("importance"),
+            has_attachments=msg.get("hasAttachments", False),
+        ))
+    return result
+
+
 @router.get("", response_model=EmailListResponse)
 async def list_emails(
     folder: str = Query("inbox"),
@@ -180,6 +259,7 @@ async def list_emails(
     emails = []
     for msg in data.get("value", []):
         from_obj = msg.get("from", {}).get("emailAddress", {})
+        flag_obj = msg.get("flag", {})
         emails.append(EmailSummary(
             id=msg.get("id", ""),
             subject=msg.get("subject"),
@@ -192,6 +272,7 @@ async def list_emails(
             inference_classification=msg.get("inferenceClassification"),
             importance=msg.get("importance"),
             has_attachments=msg.get("hasAttachments", False),
+            flag_status=flag_obj.get("flagStatus") if isinstance(flag_obj, dict) else None,
         ))
     return EmailListResponse(emails=emails, total=len(emails))
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { Sidebar } from '../components/Sidebar';
 import { SearchDialog } from '../components/SearchDialog';
+import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { api } from '../api/client';
 
 interface AppSettings {
@@ -14,6 +15,7 @@ export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const [appSettings, setAppSettings] = useState<AppSettings>({});
   const navigate = useNavigate();
@@ -43,8 +45,9 @@ export function AppLayout() {
   }, [sidebarCollapsed]);
 
   const handleTaskClick = useCallback(
-    (_taskId: string) => {
+    (taskId: string) => {
       setSearchOpen(false);
+      setSelectedTaskId(taskId);
     },
     [],
   );
@@ -100,6 +103,14 @@ export function AppLayout() {
         onTaskClick={handleTaskClick}
         onProjectClick={handleProjectClick}
       />
+
+      {selectedTaskId && (
+        <TaskDetailDialog
+          taskId={selectedTaskId}
+          onClose={() => setSelectedTaskId(null)}
+          onUpdated={() => setSelectedTaskId(null)}
+        />
+      )}
     </div>
   );
 }

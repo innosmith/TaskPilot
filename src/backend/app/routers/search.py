@@ -1,5 +1,9 @@
+import asyncio
+import logging
+import sys
 import uuid
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -9,6 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_user
 from app.database import get_db
 from app.models import Project, Tag, Task, User
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "pipedrive"))
+
+from app.routers.pipedrive import _extract_pic_url
+
+logger = logging.getLogger("taskpilot.search")
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -36,27 +46,113 @@ class SearchTagHit(BaseModel):
     color: str
 
 
+class CrmSearchHit(BaseModel):
+    id: int | str
+    name: str
+    type: str
+    detail: str | None = None
+    email: str | None = None
+    pic_url: str | None = None
+
+
 class SearchResults(BaseModel):
     tasks: list[SearchTaskHit]
     projects: list[SearchProjectHit]
     tags: list[SearchTagHit]
+    crm: list[CrmSearchHit]
+
+
+async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
+    """Pipedrive-Suche mit Timeout und Fallback (blockiert nie die lokale Suche)."""
+    try:
+        from pipedrive_client import PipedriveClient, PipedriveConfig  # noqa: E402
+
+        settings = user.settings or {}
+        token = settings.get("pipedrive_api_token") or ""
+        domain = settings.get("pipedrive_domain") or "innosmith"
+
+        if not token:
+            from app.config import get_settings
+            app_cfg = get_settings()
+            token = app_cfg.pipedrive_api_token
+            domain = app_cfg.pipedrive_domain or domain
+
+        if not token:
+            return []
+
+        client = PipedriveClient(PipedriveConfig(api_token=token, company_domain=domain))
+        raw = await asyncio.wait_for(
+            client.search_items(term, "deal,person,organization", 8),
+            timeout=5.0,
+        )
+        results: list[CrmSearchHit] = []
+        for item in raw:
+            item_data = item.get("item", item)
+            item_type = item.get("item_type") or item_data.get("type", "")
+            name = item_data.get("title") or item_data.get("name") or ""
+            detail = None
+            email = None
+            pic_url = None
+            if item_type == "person":
+                org = item_data.get("organization", {})
+                detail = org.get("name") if isinstance(org, dict) else None
+                emails = item_data.get("emails", []) or item_data.get("primary_email", "")
+                if isinstance(emails, list) and emails:
+                    email = emails[0] if isinstance(emails[0], str) else emails[0].get("value", "")
+                elif isinstance(emails, str):
+                    email = emails
+                person_id = item_data.get("id")
+                if person_id:
+                    try:
+                        full_person = await client.get_person_v1(person_id)
+                        pic_url = _extract_pic_url(full_person)
+                    except Exception:
+                        pass
+            elif item_type == "deal":
+                detail = item_data.get("person_name") or item_data.get("org_name")
+            elif item_type == "organization":
+                detail = item_data.get("address")
+            results.append(CrmSearchHit(
+                id=item_data.get("id", 0),
+                name=name,
+                type=item_type,
+                detail=detail,
+                email=email,
+                pic_url=pic_url,
+            ))
+        return results
+    except Exception as exc:
+        logger.debug("Pipedrive-Suche fehlgeschlagen (wird ignoriert): %s", exc)
+        return []
 
 
 @router.get("", response_model=SearchResults)
 async def search(
     q: str = Query(..., min_length=1),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> SearchResults:
     pattern = f"%{q}%"
 
-    task_result = await db.execute(
+    db_task = db.execute(
         select(Task, Project.name.label("project_name"))
         .join(Project, Task.project_id == Project.id)
         .where(or_(Task.title.ilike(pattern), Task.description.ilike(pattern)))
         .order_by(Task.updated_at.desc())
         .limit(20)
     )
+    db_project = db.execute(
+        select(Project).where(Project.name.ilike(pattern)).order_by(Project.name).limit(10)
+    )
+    db_tag = db.execute(
+        select(Tag).where(Tag.name.ilike(pattern)).order_by(Tag.name).limit(10)
+    )
+    crm_task = _search_pipedrive(user, q)
+
+    task_result, project_result, tag_result, crm_results = await asyncio.gather(
+        db_task, db_project, db_tag, crm_task,
+    )
+
     tasks = [
         SearchTaskHit(
             id=t.id, title=t.title, project_id=t.project_id,
@@ -66,20 +162,14 @@ async def search(
         for t, pname in task_result.all()
     ]
 
-    project_result = await db.execute(
-        select(Project).where(Project.name.ilike(pattern)).order_by(Project.name).limit(10)
-    )
     projects = [
         SearchProjectHit(id=p.id, name=p.name, color=p.color, status=p.status)
         for p in project_result.scalars().all()
     ]
 
-    tag_result = await db.execute(
-        select(Tag).where(Tag.name.ilike(pattern)).order_by(Tag.name).limit(10)
-    )
     tags = [
         SearchTagHit(id=t.id, name=t.name, color=t.color)
         for t in tag_result.scalars().all()
     ]
 
-    return SearchResults(tasks=tasks, projects=projects, tags=tags)
+    return SearchResults(tasks=tasks, projects=projects, tags=tags, crm=crm_results)

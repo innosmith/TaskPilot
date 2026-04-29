@@ -1,9 +1,9 @@
 ---
-description: Startbefehle und Ports aller TaskPilot-Dienste nach Server-Neustart
+description: Start-, Stopp- und Neustartbefehle aller TaskPilot-Dienste
 alwaysApply: false
 ---
 
-# TaskPilot Dienste starten
+# TaskPilot Dienste verwalten
 
 ## Voraussetzungen
 
@@ -89,3 +89,51 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/  # Frontend
 curl -s http://localhost:11434/api/tags | head -c 100          # Ollama
 docker ps --format "{{.Names}}: {{.Status}}" | grep taskpilot  # Docker
 ```
+
+## Dienste stoppen
+
+### Backend (Port 8000)
+```bash
+lsof -ti:8000 | xargs -r kill -9
+```
+
+### Frontend (Port 5173)
+```bash
+lsof -ti:5173 | xargs -r kill -9
+```
+
+### Docker-Container
+```bash
+cd /home/innosmith/dev/github/TaskPilot
+docker compose -f docker/docker-compose.dev.yml down
+```
+
+## Neustart (Backend + Frontend)
+
+Verwaiste Prozesse sind ein **wiederkehrendes Problem** -- bei Neustarts immer zuerst die Ports freigeben:
+
+```bash
+lsof -ti:8000 | xargs -r kill -9; lsof -ti:5173 | xargs -r kill -9
+sleep 1
+
+# Backend
+cd /home/innosmith/dev/github/TaskPilot
+source .venv/bin/activate
+PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src/backend &
+
+# Frontend
+cd /home/innosmith/dev/github/TaskPilot/src/frontend
+npm run dev &
+```
+
+## Wann ist ein manueller Neustart nötig?
+
+| Änderung | Neustart nötig? |
+|----------|----------------|
+| Python-Dateien in `src/backend/` | Nein -- `--reload` erkennt Änderungen |
+| Neue pip-Pakete installiert | **Ja** -- Backend neu starten |
+| DB-Schema geändert (Alembic/SQL) | **Ja** -- Backend neu starten |
+| `.env.dev` geändert | **Ja** -- Backend neu starten |
+| Frontend-Dateien (TSX/TS/CSS) | Nein -- Vite HMR |
+| Neue npm-Pakete installiert | **Ja** -- Frontend neu starten |
+| Docker-Compose geändert | **Ja** -- `docker compose down && up -d` |

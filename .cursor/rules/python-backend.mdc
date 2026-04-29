@@ -24,6 +24,16 @@ alwaysApply: false
 - MCP-Server nutzt `GRAPH_*` Env-Vars (via `GraphConfig.from_env()`)
 - Immer `PermissionError` abfangen für 403-Responses
 
+## Pipedrive API Client
+- Shared Library in `src/pipedrive/pipedrive_client.py`
+- Wird von Backend-Router (`routers/pipedrive.py`) und MCP-Server (`mcp-pipedrive/server.py`) importiert
+- API-Token aus User-Settings (DB) oder Env-Var `TP_PIPEDRIVE_API_TOKEN`
+- REST API v1 + v2 (v1 für Person-Search/Details, v2 für ItemSearch)
+- Personen-Lookup per E-Mail: `/persons/search` (v1) bevorzugen vor `itemSearch` (v2)
+
+## Bekannte DB-Constraints
+- `email_triage.agent_job_id` → FK auf `agent_jobs.id` — vor dem Löschen von Agent-Jobs **immer** zuerst FK auf NULL setzen (`UPDATE email_triage SET agent_job_id = NULL WHERE ...`), sonst IntegrityError
+
 ## Background-Services
 - Pattern: `start_*()` / `stop_*()` Funktionen, `asyncio.create_task()`
 - Registrierung im Lifespan-Hook in `main.py`
@@ -34,3 +44,31 @@ alwaysApply: false
 2. SQLAlchemy Model in `models/models.py` + Export in `__init__.py`
 3. Pydantic Schema in `schemas/schemas.py` + Export in `__init__.py`
 4. Migration via `asyncpg` Script ausführen
+
+## Test-Infrastruktur
+
+### Werkzeuge
+- **pytest** + **pytest-asyncio** für async Tests
+- **respx** für HTTP-Mocking (httpx-kompatibel, ersetzt Graph-API-Calls)
+
+### Verzeichnis und Ausführung
+```bash
+cd /home/innosmith/dev/github/TaskPilot/src/backend
+python -m pytest tests/ -v
+```
+
+Tests liegen in `src/backend/tests/`. Aktuell existieren:
+
+| Datei | Testet |
+|-------|--------|
+| `test_graph_client.py` | Graph-Client (Sortierung, $search-Fallback, Body in $select) |
+| `test_mcp_handlers.py` | MCP-Email-Kontextaufbereitung (HTML→Text, Thread-Limits) |
+| `test_triage_prompt.py` | Nanobot-Prompt (PFLICHT-Aufrufe, Umlaute, Felder) |
+| `test_pipedrive_client.py` | Pipedrive-Client (Search, Deals, Activities) |
+
+### Prinzipien
+- **Kein Graph-API** in Tests -- alle HTTP-Calls mit `respx` gemockt
+- **Kein LLM** in Tests -- nur Prompt-Strings prüfen, nicht LLM-Output
+- **Kein DB** in Tests -- kein `async_session()`, nur isolierte Funktionen
+- Tests nur für **neuralgische Punkte** (Kontextaufbereitung, Prompt-Qualität, API-Fallbacks)
+- `conftest.py` setzt `sys.path` für Imports aus `src/email-graph/` und `src/mcp-email/`

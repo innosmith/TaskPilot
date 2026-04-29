@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
 from app.database import get_db
-from app.models import AgentJob, Task, User
+from app.models import AgentJob, EmailTriage, Task, User
 from app.schemas import AgentJobCreate, AgentJobOut, AgentJobUpdate, AgentJobWithTask
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
@@ -66,6 +66,7 @@ def _extract_draft_id(job: AgentJob) -> str | None:
 async def list_agent_jobs(
     status: str | None = None,
     task_id: uuid.UUID | None = None,
+    limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> list[AgentJobWithTask]:
@@ -74,7 +75,7 @@ async def list_agent_jobs(
         query = query.where(AgentJob.status == status)
     if task_id:
         query = query.where(AgentJob.task_id == task_id)
-    query = query.order_by(AgentJob.created_at.desc())
+    query = query.order_by(AgentJob.created_at.desc()).limit(limit)
 
     result = await db.execute(query)
     rows = result.all()
@@ -145,6 +146,49 @@ async def get_draft_preview(
         }
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Draft konnte nicht geladen werden: {e}")
+    finally:
+        await client.close()
+
+
+class DraftUpdateBody(BaseModel):
+    subject: str | None = None
+    body_html: str | None = None
+    to_recipients: list[str] | None = None
+    cc_recipients: list[str] | None = None
+
+
+@router.patch("/{job_id}/draft")
+async def update_draft(
+    job_id: uuid.UUID,
+    body: DraftUpdateBody,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> dict:
+    """Entwurf in Outlook aktualisieren (Betreff, Body, Empfaenger)."""
+    result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Agent job not found")
+
+    draft_id = _extract_draft_id(job)
+    if not draft_id:
+        raise HTTPException(status_code=404, detail="Kein Entwurf mit diesem Job verknüpft")
+
+    client = _get_email_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Graph API nicht konfiguriert")
+
+    try:
+        await client.update_draft(
+            message_id=draft_id,
+            subject=body.subject,
+            body_html=body.body_html,
+            to_recipients=body.to_recipients,
+            cc_recipients=body.cc_recipients,
+        )
+        return {"ok": True, "draft_id": draft_id}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Draft konnte nicht aktualisiert werden: {e}")
     finally:
         await client.close()
 
@@ -226,7 +270,7 @@ async def update_agent_job(
     return job
 
 
-_DELETABLE_STATUSES = {"completed", "failed"}
+_DELETABLE_STATUSES = {"completed", "failed", "awaiting_approval"}
 
 
 class BulkDeleteResult(BaseModel):
@@ -282,6 +326,16 @@ async def bulk_delete_agent_jobs(
     count = count_result.scalar_one()
 
     if count > 0:
+        job_ids_result = await db.execute(
+            select(AgentJob.id).where(and_(*conditions))
+        )
+        job_ids = [row[0] for row in job_ids_result.all()]
+        if job_ids:
+            await db.execute(
+                update(EmailTriage)
+                .where(EmailTriage.agent_job_id.in_(job_ids))
+                .values(agent_job_id=None)
+            )
         await db.execute(delete(AgentJob).where(and_(*conditions)))
 
     return BulkDeleteResult(deleted=count)
@@ -299,6 +353,11 @@ async def delete_agent_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Agent job not found")
     if job.status in _DELETABLE_STATUSES:
+        await db.execute(
+            update(EmailTriage)
+            .where(EmailTriage.agent_job_id == job_id)
+            .values(agent_job_id=None)
+        )
         await db.delete(job)
     elif job.status in ("running", "queued"):
         job.status = "failed"

@@ -19,6 +19,8 @@ interface UserSettingsData {
   sidebar_color?: string | null;
   show_column_count?: boolean | null;
   cockpit_background_url?: string | null;
+  cockpit_calendar_exclude_categories?: string | null;
+  cockpit_calendar_hide_private?: boolean | null;
 }
 
 interface ManagedUser {
@@ -55,7 +57,7 @@ interface HeartbeatStatus {
   agents_md: string;
 }
 
-type SettingsTab = 'profile' | 'display' | 'triage' | 'team' | 'memory';
+type SettingsTab = 'profile' | 'display' | 'cockpit' | 'integrations' | 'triage' | 'team' | 'memory';
 
 export function SettingsPage() {
   const [searchParams] = useSearchParams();
@@ -92,6 +94,11 @@ export function SettingsPage() {
   const [memExpanded, setMemExpanded] = useState<Set<string>>(new Set());
   const [memLoading, setMemLoading] = useState(false);
 
+  const [pdToken, setPdToken] = useState('');
+  const [pdDomain, setPdDomain] = useState('innosmith');
+  const [pdMsg, setPdMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [pdTesting, setPdTesting] = useState(false);
+
   const fetchData = useCallback(async () => {
     try {
       const [p, s] = await Promise.all([
@@ -127,6 +134,16 @@ export function SettingsPage() {
       setHeartbeat(hb);
       setMemFiles(files ?? []);
     }).finally(() => setMemLoading(false));
+  }, [tab]);
+
+  useEffect(() => {
+    if (tab !== 'integrations') return;
+    api.get<{ pipedrive_api_token: string | null; pipedrive_domain: string | null }>('/api/settings/integrations')
+      .then((data) => {
+        setPdToken(data.pipedrive_api_token || '');
+        setPdDomain(data.pipedrive_domain || 'innosmith');
+      })
+      .catch(() => {});
   }, [tab]);
 
   const saveProfile = async () => {
@@ -234,6 +251,42 @@ export function SettingsPage() {
     });
   };
 
+  const saveIntegrations = async () => {
+    setPdMsg(null);
+    try {
+      const payload: Record<string, string> = { pipedrive_domain: pdDomain };
+      if (pdToken && !pdToken.startsWith('****')) {
+        payload.pipedrive_api_token = pdToken;
+      }
+      const data = await api.put<{ pipedrive_api_token: string | null; pipedrive_domain: string | null }>('/api/settings/integrations', payload);
+      setPdToken(data.pipedrive_api_token || '');
+      setPdDomain(data.pipedrive_domain || 'innosmith');
+      setPdMsg({ type: 'ok', text: 'Einstellungen gespeichert' });
+      setTimeout(() => setPdMsg(null), 3000);
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setPdMsg({ type: 'err', text: `Fehler beim Speichern: ${detail}` });
+    }
+  };
+
+  const testPipedrive = async () => {
+    setPdTesting(true);
+    setPdMsg(null);
+    try {
+      const result = await api.get<{ ok: boolean; name: string; company: string }>('/api/pipedrive/test-connection');
+      if (result.ok) {
+        setPdMsg({ type: 'ok', text: `Verbunden als ${result.name} (${result.company})` });
+      } else {
+        setPdMsg({ type: 'err', text: 'Verbindung fehlgeschlagen' });
+      }
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setPdMsg({ type: 'err', text: `Verbindungstest fehlgeschlagen: ${detail}` });
+    } finally {
+      setPdTesting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -246,6 +299,8 @@ export function SettingsPage() {
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'profile', label: 'Profil' },
     { id: 'display', label: 'Erscheinungsbild' },
+    { id: 'cockpit', label: 'Cockpit' },
+    ...(isOwner ? [{ id: 'integrations' as const, label: 'Integrationen' }] : []),
     ...(isOwner ? [{ id: 'triage' as const, label: 'E-Mail-Triage' }] : []),
     ...(isOwner ? [{ id: 'team' as const, label: 'Team' }] : []),
     { id: 'memory', label: 'Memory' },
@@ -527,11 +582,20 @@ export function SettingsPage() {
                     </button>
                   )}
                 </div>
+              </div>
+            </section>
+          )}
+
+          {/* ── Cockpit ── */}
+          {tab === 'cockpit' && (
+            <section>
+              <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Cockpit-Einstellungen</h2>
+              <div className="space-y-6">
 
                 <div>
                   <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Cockpit-Hintergrund</label>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {settings.cockpit_background_url ? 'Hintergrund gesetzt' : 'Kein Hintergrund gesetzt'} — kann in der Cockpit-Ansicht geändert werden.
+                    {settings.cockpit_background_url ? 'Hintergrund gesetzt' : 'Kein Hintergrund gesetzt'} — kann auch in der Cockpit-Ansicht geändert werden.
                   </p>
                   {settings.cockpit_background_url && (
                     <button
@@ -542,6 +606,127 @@ export function SettingsPage() {
                     </button>
                   )}
                 </div>
+
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-900 dark:bg-indigo-950/30">
+                  <label className="mb-1 block text-sm font-semibold text-gray-900 dark:text-white">Kalender-Kategorien ausblenden</label>
+                  <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                    Termine mit diesen Kategorien werden im Cockpit nicht angezeigt. Mehrere Kategorien mit Komma trennen (z.B. «Transfer, Privat, Lunch»).
+                  </p>
+                  <input
+                    value={settings.cockpit_calendar_exclude_categories ?? 'Transfer, Privat'}
+                    onChange={(e) => updateSetting('cockpit_calendar_exclude_categories', e.target.value || null)}
+                    placeholder="z.B. Transfer, Privat, Lunch"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                  />
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {(settings.cockpit_calendar_exclude_categories ?? 'Transfer, Privat').split(',').map((cat, i) => {
+                      const trimmed = cat.trim();
+                      if (!trimmed) return null;
+                      return (
+                        <span key={i} className="inline-flex items-center gap-1 rounded-full bg-gray-200 px-2.5 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+                          {trimmed}
+                          <button
+                            onClick={() => {
+                              const cats = (settings.cockpit_calendar_exclude_categories ?? 'Transfer, Privat')
+                                .split(',').map(c => c.trim()).filter(c => c && c !== trimmed);
+                              updateSetting('cockpit_calendar_exclude_categories', cats.join(', ') || null);
+                            }}
+                            className="ml-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                          >×</button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <div>
+                    <p className="font-medium text-gray-900 dark:text-white">Private Termine ausblenden</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Termine mit Vertraulichkeit «Privat» (sensitivity) im Cockpit verbergen
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => updateSetting('cockpit_calendar_hide_private', !(settings.cockpit_calendar_hide_private ?? true))}
+                    className={`relative h-6 w-11 rounded-full transition-colors ${(settings.cockpit_calendar_hide_private ?? true) ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                  >
+                    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${(settings.cockpit_calendar_hide_private ?? true) ? 'left-[22px]' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
+              </div>
+            </section>
+          )}
+
+          {/* ── Integrationen ── */}
+          {tab === 'integrations' && isOwner && (
+            <section>
+              <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Integrationen</h2>
+              <div className="space-y-6">
+
+                <div className="rounded-xl border border-orange-200 bg-orange-50/50 p-5 dark:border-orange-900 dark:bg-orange-950/30">
+                  <div className="mb-3 flex items-center gap-3">
+                    <PipedriveIcon className="h-8 w-8" />
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Pipedrive CRM</h3>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Deals, Leads, Kontakte und Aktivitäten synchronisieren
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">API-Token</label>
+                      <input
+                        type="password"
+                        value={pdToken}
+                        onChange={(e) => setPdToken(e.target.value)}
+                        placeholder="Pipedrive API-Token eingeben"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                      />
+                      <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                        Zu finden unter: Pipedrive → Einstellungen → Persönliche Einstellungen → API
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Firmen-Domain</label>
+                      <div className="flex items-center gap-0">
+                        <input
+                          value={pdDomain}
+                          onChange={(e) => setPdDomain(e.target.value)}
+                          className="rounded-l-lg border border-r-0 border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                        />
+                        <span className="rounded-r-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
+                          .pipedrive.com
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex items-center gap-3">
+                    <button
+                      onClick={saveIntegrations}
+                      className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
+                    >
+                      Speichern
+                    </button>
+                    <button
+                      onClick={testPipedrive}
+                      disabled={pdTesting}
+                      className="rounded-lg bg-orange-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-orange-700 disabled:opacity-50"
+                    >
+                      {pdTesting ? 'Teste...' : 'Verbindung testen'}
+                    </button>
+                    {pdMsg && (
+                      <span className={`text-sm ${pdMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>
+                        {pdMsg.text}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
               </div>
             </section>
           )}
@@ -871,6 +1056,15 @@ function FullscreenIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9m11.25-5.25v4.5m0-4.5h-4.5m4.5 0L15 9m5.25 11.25v-4.5m0 4.5h-4.5m4.5 0L15 15m-11.25 5.25v-4.5m0 4.5h4.5m-4.5 0L9 15" />
+    </svg>
+  );
+}
+
+function PipedriveIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none">
+      <rect width="24" height="24" rx="6" fill="#017737" />
+      <path d="M12 4C8.69 4 6 6.69 6 10c0 2.22 1.21 4.16 3 5.2V18a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2.8c1.79-1.04 3-2.98 3-5.2 0-3.31-2.69-6-6-6Zm0 9a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z" fill="white" />
     </svg>
   );
 }

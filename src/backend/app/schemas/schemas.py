@@ -118,6 +118,8 @@ class TaskCreate(TaskBase):
     email_message_id: str | None = None
     calendar_duration_minutes: int | None = None
     calendar_preferred_time: str | None = None
+    pipedrive_deal_id: int | None = None
+    pipedrive_person_id: int | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -138,6 +140,8 @@ class TaskUpdate(BaseModel):
     recurrence_rule: str | None = None
     calendar_duration_minutes: int | None = None
     calendar_preferred_time: str | None = None
+    pipedrive_deal_id: int | None = None
+    pipedrive_person_id: int | None = None
 
 
 class TaskOut(TaskBase):
@@ -155,6 +159,8 @@ class TaskOut(TaskBase):
     calendar_preferred_time: str | None = None
     needs_review: bool = False
     template_id: uuid.UUID | None = None
+    pipedrive_deal_id: int | None = None
+    pipedrive_person_id: int | None = None
     created_at: datetime
     updated_at: datetime
     tags: list[TagOut] = []

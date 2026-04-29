@@ -105,6 +105,8 @@ class Task(Base):
     calendar_duration_minutes: Mapped[int | None] = mapped_column(Integer)
     calendar_preferred_time: Mapped[str | None] = mapped_column(Text)
     needs_review: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    pipedrive_deal_id: Mapped[int | None] = mapped_column(Integer)
+    pipedrive_person_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 

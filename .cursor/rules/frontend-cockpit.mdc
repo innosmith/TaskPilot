@@ -1,10 +1,10 @@
 ---
-description: React/TypeScript-Konventionen für das TaskPilot Cockpit Frontend
-globs: "src/cockpit/**/*.{tsx,ts,jsx,js}"
+description: React/TypeScript-Konventionen für das TaskPilot Frontend
+globs: "src/frontend/**/*.{tsx,ts,jsx,js}"
 alwaysApply: false
 ---
 
-# Frontend-Konventionen (Cockpit)
+# Frontend-Konventionen
 
 ## Stack
 - React 19 + Vite + TypeScript
@@ -15,19 +15,46 @@ alwaysApply: false
 
 ## UI-Prinzipien
 - Modernes Glass-Blur-Design mit dunklem Hintergrund
-- Sidebar: Kollabierbar, enthält Suche, Projekte, Navigation
-- Boards: Customizable Spalten (Name, Farbe, Icon editierbar)
+- Wählbare Hintergrundbilder (Unsplash, `/uploads/`, persönliche Bilder) pro Seite
+- **Lesbarkeit auf Hintergrundbildern:** Karten und UI-Elemente verwenden `bg-black/30 backdrop-blur-xl` mit weissem Text und `drop-shadow-sm`. Nie transparente Karten auf hellen Bildern.
+- Sidebar: Kollabierbar (Chevron-Toggle oben, nicht unten), enthält Suche, Projekte, Navigation
+- Boards: Customizable Spalten (Name, Farbe, Icon editierbar), optionale Task-Anzahl-Badges
 - Pipeline: Zeithorizont-Spalten (Focus → Beyond)
 - Überall deutsche UI-Texte (Schweizer Hochdeutsch, keine ß)
+- **Rich-Text-Editor:** TipTap (headless) für E-Mail-Entwürfe, nicht ContentEditable direkt
+
+## Seiten und Routen
+
+| Route | Seite | Datei |
+|-------|-------|-------|
+| `/` | CockpitPage | `pages/CockpitPage.tsx` |
+| `/agenda` | AgendaPage | `pages/AgendaPage.tsx` |
+| `/agenten` | AgentQueuePage | `pages/AgentQueuePage.tsx` |
+| `/project/:id` | ProjectBoardPage | `pages/ProjectBoardPage.tsx` |
+| `/inbox` | InboxPage | `pages/InboxPage.tsx` |
+| `/einstellungen` | SettingsPage | `pages/SettingsPage.tsx` |
+| `/admin` | AdminPage | `pages/AdminPage.tsx` |
+
+## Wichtige Komponenten
+
+| Komponente | Datei | Zweck |
+|-----------|-------|-------|
+| TracePanel | `components/TracePanel.tsx` | Agent-Job-Trace anzeigen (compact + expanded) |
+| ReplayPanel | `components/ReplayPanel.tsx` | E-Mail-Replay (Ordner-Auswahl, Suche, Batch) |
+| BackgroundPicker | `components/BackgroundPicker.tsx` | Hintergrundbild-Auswahl pro Seite (Unsplash mit Infinite Scroll) |
+| TaskDetailDialog | `components/TaskDetailDialog.tsx` | Task-Detailansicht (Bearbeitung, Activity-Log, Anhänge) |
+| DraftEditor | `components/DraftEditor.tsx` | Rich-Text-Editor für E-Mail-Entwürfe (TipTap) |
+| RichTextEditor | `components/RichTextEditor.tsx` | Wiederverwendbarer TipTap-Editor |
+| CrmBadge | `components/CrmBadge.tsx` | Pipedrive-Kontaktinfo neben Absender (Bild, Name, Link) |
+| SearchDialog | `components/SearchDialog.tsx` | Globale Suche (Tasks, Projekte, CRM via `/`) |
 
 ## API-Kommunikation
 - Alle Backend-Calls über `fetch()` an `http://localhost:8000/api/`
 - Auth via Bearer Token im Authorization-Header
-- SSE-Events von `/api/sse/events` für Real-Time-Updates (tasks_changed, agent_jobs_changed, email_triage_changed)
+- SSE-Events von `/api/sse/events` für Real-Time-Updates
 
-## Wichtige Seiten
-- `/` — Dashboard / Agenda (Pipeline)
-- `/project/:id` — Kanban Board
-- `/inbox` — Unified Inbox (E-Mails + Triage)
-- `/agent-queue` — Agent-Jobs Übersicht
-- `/settings` — Einstellungen (Triage-Konfiguration, Profil)
+## Code-Konventionen
+- Funktionale Komponenten (kein Class-Based)
+- Custom Hooks für wiederholte Logik (z.B. `useSSE`, `useFetch`)
+- Typen/Interfaces direkt in der Datei oder in `types/` wenn geteilt
+- Keine `any`-Typen -- immer explizite Typisierung

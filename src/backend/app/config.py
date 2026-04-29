@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     litellm_base_url: str = "http://localhost:4000"
     triage_model: str = "ollama/qwen3.5:35b"
 
+    # Pipedrive CRM
+    pipedrive_api_token: str = ""
+    pipedrive_domain: str = "innosmith"
+
     # Triage
     triage_interval_seconds: int = 120
 

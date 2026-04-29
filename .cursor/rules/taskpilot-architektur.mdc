@@ -5,30 +5,76 @@ alwaysApply: true
 
 # TaskPilot Architektur-Kontext
 
+## Pflichtenheft
+Das verbindliche Pflichtenheft liegt in [docs/pflichtenheft-taskpilot.md](docs/pflichtenheft-taskpilot.md) (Version 0.12). Bei grösseren Architektur-Entscheidungen oder neuen Features dieses Dokument konsultieren -- es definiert die 10 Leitprinzipien, Szenarien (A--H), funktionale Anforderungen und die Roadmap.
+
 ## Stack
 - **Frontend:** React 19 + Vite + Tailwind CSS + @dnd-kit + Lucide-React Icons
 - **Backend:** FastAPI (Python 3.12) + SQLAlchemy 2.0 (async) + asyncpg + Pydantic v2
 - **Datenbank:** PostgreSQL mit pgvector, Port 5435
 - **Agent-Runtime:** nanobot (HKUDS), Config: `~/.nanobot/config.json`
 - **LLM-Gateway:** LiteLLM-Proxy, Default-Modell: Qwen 3.5 35B (Ollama lokal)
-- **MCP-Server:** `src/mcp-taskpilot/` (DB-Zugriff), `src/mcp-email/` (Graph API)
+- **MCP-Server:** `src/mcp-taskpilot/` (DB-Zugriff), `src/mcp-email/` (Graph API), `src/mcp-pipedrive/` (Pipedrive CRM)
 - **Graph API:** `src/email-graph/graph_client.py` (Shared Library)
+- **Pipedrive API:** `src/pipedrive/pipedrive_client.py` (Shared Library)
 - **Skills:** `~/.nanobot/workspace/skills/*.md`
 
 ## Verzeichnisstruktur
 ```
 src/
   backend/app/       → FastAPI (routers, models, schemas, services)
+  backend/tests/     → pytest-Tests (Graph-Client, MCP-Handler, Triage-Prompt, Pipedrive)
   frontend/src/      → React Frontend (Vite)
   mcp-taskpilot/     → MCP-Server für DB
   mcp-email/         → MCP-Server für E-Mail + Kalender
+  mcp-pipedrive/     → MCP-Server für Pipedrive CRM
   email-graph/       → Shared Graph API Client
+  pipedrive/         → Shared Pipedrive API Client
 db/schema.sql        → PostgreSQL DDL
+docs/                → Pflichtenheft, Research-Dokumente
+docker/              → Docker Compose (Dev + Staging)
 ```
+
+## Frontend-Navigation
+
+| Route | Seite | Beschreibung |
+|-------|-------|-------------|
+| `/` | CockpitPage | Überblick: KPI, Freigaben, aktive Agenten, Fokus-Aufgaben |
+| `/agenda` | AgendaPage | Persönliche Zeithorizont-Pipeline (Fokus → Beyond) |
+| `/agenten` | AgentQueuePage | Agent-Jobs, Trace-Ansicht, Replay-Panel |
+| `/project/:id` | ProjectBoardPage | Kanban-Board pro Projekt |
+| `/inbox` | InboxPage | E-Mail-Posteingang (Graph API) |
+| `/einstellungen` | SettingsPage | Profil, Triage-Config, Hintergrund |
+
+## Agent-Job-Lifecycle
+
+```
+queued → running → awaiting_approval → completed
+                 → completed (direkt bei fyi)
+                 → failed (bei Fehlern)
+```
+
+- **queued:** Nanobot-Worker pollt alle 10s, greift Jobs auf
+- **running:** Agent verarbeitet (LLM + MCP-Tool-Aufrufe)
+- **awaiting_approval:** Agent hat Draft erstellt, wartet auf HITL-Freigabe
+- **completed:** Abgeschlossen (automatisch oder nach Freigabe)
+- **failed:** Fehler oder manuell abgebrochen
+
+## SSE-Events (Real-Time)
+
+Endpoint: `GET /api/sse/events`
+
+| Event | Beschreibung |
+|-------|-------------|
+| `tasks_changed` | Task erstellt/aktualisiert/gelöscht |
+| `agent_jobs_changed` | Agent-Job-Status geändert |
+| `email_triage_changed` | Neue Triage-Ergebnisse |
 
 ## Env-Variablen
 - Backend: `TP_`-Prefix (via Pydantic `env_prefix`), geladen aus `.env.dev`
 - MCP-Server/GraphClient: ohne Prefix (`GRAPH_TENANT_ID`, `TP_DB_HOST` etc.)
+- Pipedrive: `TP_PIPEDRIVE_API_TOKEN` (Backend), `PIPEDRIVE_API_TOKEN` (MCP-Server)
+- Unsplash: `TP_UNSPLASH_ACCESS_KEY` (Backend)
 
 ## HITL-Autonomie (4 Stufen)
 - **L0 Block:** Verboten (Finanztransaktionen, Daten löschen)
@@ -37,3 +83,10 @@ db/schema.sql        → PostgreSQL DDL
 - **L3 Auto:** Autonom, nur Audit-Log
 
 **Eiserne Regel:** Externe Kommunikation = immer L1. Kein Auto-Versand von E-Mails.
+
+## Verworfene Alternativen (nicht erneut vorschlagen)
+- **LangGraph / LangChain** — zu komplex, nanobot AgentLoop reicht
+- **CrewAI / AutoGen** — Multi-Agent formal zurückgewiesen
+- **n8n als Agent-Kern** — nur für deterministische Pipelines
+- **Telegram-Bot** — Datenschutz-Bedenken (Dubai-Server, kein E2E)
+- **Plane / WeKan / Focalboard** — Paradigmen-Entscheid: eigenes agentisches Cockpit

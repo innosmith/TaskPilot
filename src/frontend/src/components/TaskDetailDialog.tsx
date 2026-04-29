@@ -3,6 +3,7 @@ import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type D
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { api } from '../api/client';
+import { RichTextEditor } from './RichTextEditor';
 import type {
   TaskDetail, ChecklistItem, TaskUpdatePayload, AgentJob, Tag,
   TaskDetailMode, PipelineColumn, PipelineData, Project, BoardColumn,
@@ -338,12 +339,11 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                   <SectionLabel icon={DescIcon} text="Beschreibung" />
                   {editingDesc ? (
                     <div>
-                      <textarea
-                        value={descValue}
-                        onChange={(e) => setDescValue(e.target.value)}
-                        rows={6}
-                        autoFocus
-                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-400/30 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                      <RichTextEditor
+                        content={descValue}
+                        onChange={setDescValue}
+                        editable
+                        minHeight="120px"
                       />
                       <div className="mt-2 flex gap-2">
                         <button onClick={saveDescription} className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-indigo-700">Speichern</button>
@@ -353,7 +353,7 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                   ) : (
                     <div onClick={() => setEditingDesc(true)} className="min-h-[48px] cursor-pointer rounded-lg border border-transparent px-3 py-2.5 text-sm text-gray-700 transition-colors hover:border-gray-200 hover:bg-gray-50/60 dark:text-gray-300 dark:hover:border-gray-700 dark:hover:bg-gray-900/60">
                       {task.description
-                        ? <div className="whitespace-pre-wrap">{task.description}</div>
+                        ? <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: task.description }} />
                         : <span className="italic text-gray-400 dark:text-gray-600">Klicken um Beschreibung hinzuzufügen…</span>
                       }
                     </div>
@@ -632,6 +632,44 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                   </div>
                 )}
 
+                {/* Pipedrive CRM */}
+                {(task.pipedrive_deal_id || task.pipedrive_person_id) && (
+                  <div className="!mt-3 rounded-lg border border-green-200 bg-green-50/50 p-3 dark:border-green-900 dark:bg-green-950/30">
+                    <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-green-700 dark:text-green-400">
+                      <CrmLinkIcon className="h-3.5 w-3.5" />
+                      Pipedrive
+                    </div>
+                    <div className="space-y-1 text-xs text-gray-600 dark:text-gray-400">
+                      {task.pipedrive_deal_id && (
+                        <div>
+                          <span className="font-medium">Deal:</span>{' '}
+                          <a
+                            href={`https://innosmith.pipedrive.com/deal/${task.pipedrive_deal_id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-green-600 hover:underline dark:text-green-400"
+                          >
+                            #{task.pipedrive_deal_id} →
+                          </a>
+                        </div>
+                      )}
+                      {task.pipedrive_person_id && (
+                        <div>
+                          <span className="font-medium">Kontakt:</span>{' '}
+                          <a
+                            href={`https://innosmith.pipedrive.com/person/${task.pipedrive_person_id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-green-600 hover:underline dark:text-green-400"
+                          >
+                            #{task.pipedrive_person_id} →
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* Metadaten */}
                 <div className="!mt-4 space-y-0.5 border-t border-gray-100 pt-3 text-[10px] text-gray-400 dark:border-gray-800 dark:text-gray-600">
                   <div>Erstellt: {new Date(task.created_at).toLocaleString('de-CH')}</div>
@@ -771,6 +809,9 @@ function CommentDotIcon({ className }: { className?: string }) {
 }
 function HistoryIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M21.015 4.356v4.992" /></svg>;
+}
+function CrmLinkIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z" /></svg>;
 }
 
 function formatFileSize(bytes: number): string {

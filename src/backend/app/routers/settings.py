@@ -19,12 +19,18 @@ class UserSettings(BaseModel):
     show_column_count: bool | None = None
     cockpit_background_url: str | None = None
     cockpit_background_type: str | None = None
+    cockpit_calendar_exclude_categories: str | None = None
+    cockpit_calendar_hide_private: bool | None = None
+    inbox_background_url: str | None = None
+    agents_background_url: str | None = None
 
 
 SETTINGS_FIELDS = [
     "agenda_background_url", "agenda_background_type", "task_detail_mode",
     "sidebar_collapsed", "app_logo_url", "sidebar_color",
     "show_column_count", "cockpit_background_url", "cockpit_background_type",
+    "cockpit_calendar_exclude_categories", "cockpit_calendar_hide_private",
+    "inbox_background_url", "agents_background_url",
 ]
 
 
@@ -91,3 +97,54 @@ async def update_triage_settings(
     user.settings = current
     await db.flush()
     return TriageSettings(**{f: current.get(f) for f in TRIAGE_FIELDS})
+
+
+# --- Integrations-Einstellungen (Pipedrive etc.) ---
+
+class IntegrationSettings(BaseModel):
+    pipedrive_api_token: str | None = None
+    pipedrive_domain: str | None = None
+
+
+INTEGRATION_FIELDS = ["pipedrive_api_token", "pipedrive_domain"]
+
+
+@router.get("/integrations", response_model=IntegrationSettings)
+async def get_integration_settings(
+    user: User = Depends(get_current_user),
+) -> IntegrationSettings:
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Nur Owner")
+    s = user.settings or {}
+    token = s.get("pipedrive_api_token") or ""
+    masked = f"{'*' * (len(token) - 4)}{token[-4:]}" if len(token) > 4 else "****" if token else ""
+    return IntegrationSettings(
+        pipedrive_api_token=masked,
+        pipedrive_domain=s.get("pipedrive_domain") or "innosmith",
+    )
+
+
+@router.put("/integrations", response_model=IntegrationSettings)
+async def update_integration_settings(
+    body: IntegrationSettings,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> IntegrationSettings:
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Nur Owner")
+    current = dict(user.settings or {})
+    for field, value in body.model_dump(exclude_unset=True).items():
+        if value is None:
+            current.pop(field, None)
+        elif value.startswith("****"):
+            pass
+        else:
+            current[field] = value
+    user.settings = current
+    await db.flush()
+    token = current.get("pipedrive_api_token") or ""
+    masked = f"{'*' * (len(token) - 4)}{token[-4:]}" if len(token) > 4 else "****" if token else ""
+    return IntegrationSettings(
+        pipedrive_api_token=masked,
+        pipedrive_domain=current.get("pipedrive_domain") or "innosmith",
+    )

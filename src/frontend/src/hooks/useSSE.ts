@@ -21,6 +21,10 @@ export function useSSE(onEvent: SSEHandler) {
       handlerRef.current('agent_jobs_changed', e.data);
     });
 
+    es.addEventListener('email_triage_changed', (e) => {
+      handlerRef.current('email_triage_changed', e.data);
+    });
+
     es.onerror = () => {
       es.close();
       setTimeout(() => connect(), 3000);

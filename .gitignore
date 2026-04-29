@@ -25,12 +25,15 @@ build/
 .coverage
 htmlcov/
 
-# Node / Frontend (spaeter)
+# Node / Frontend
 node_modules/
 .next/
 .nuxt/
 dist/
 *.local
+
+# Vite Cache
+src/frontend/node_modules/.vite/
 
 # IDEs & Tools
 .idea/
@@ -41,6 +44,10 @@ dist/
 *~
 .DS_Store
 Thumbs.db
+
+# Cursor (Projektdateien, nicht Rules)
+.cursor/projects/
+.cursor/agent-transcripts/
 
 # Logs & laufende Artefakte
 *.log
@@ -62,3 +69,6 @@ docker-compose.override.yml
 # Lokale Notizen, die nicht ins Repo
 *.local.md
 scratch/
+
+# Nanobot Runtime (User-spezifisch)
+.nanobot/

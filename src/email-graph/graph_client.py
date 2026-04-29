@@ -167,7 +167,7 @@ class GraphClient:
             "$orderby": "receivedDateTime desc",
             "$select": "id,subject,from,toRecipients,receivedDateTime,isRead,"
                        "bodyPreview,categories,inferenceClassification,hasAttachments,"
-                       "importance,conversationId",
+                       "importance,conversationId,flag",
         }
         if filter_str:
             params["$filter"] = filter_str
@@ -231,6 +231,35 @@ class GraphClient:
             headers=headers,
         )
         resp.raise_for_status()
+
+    async def update_draft(
+        self,
+        message_id: str,
+        subject: str | None = None,
+        body_html: str | None = None,
+        to_recipients: list[str] | None = None,
+        cc_recipients: list[str] | None = None,
+    ) -> dict:
+        """Bestehenden Entwurf aktualisieren (Betreff, Body, Empfaenger)."""
+        patch_body: dict = {}
+        if subject is not None:
+            patch_body["subject"] = subject
+        if body_html is not None:
+            patch_body["body"] = {"contentType": "HTML", "content": body_html}
+        if to_recipients is not None:
+            patch_body["toRecipients"] = [
+                {"emailAddress": {"address": addr}} for addr in to_recipients
+            ]
+        if cc_recipients is not None:
+            patch_body["ccRecipients"] = [
+                {"emailAddress": {"address": addr}} for addr in cc_recipients
+            ]
+        if not patch_body:
+            return {}
+        return await self._patch(
+            f"{self._user_path}/messages/{message_id}",
+            patch_body,
+        )
 
     async def delete_message(self, message_id: str) -> None:
         """E-Mail oder Entwurf loeschen."""
@@ -371,6 +400,34 @@ class GraphClient:
         )
         return data.get("value", [])
 
+    async def list_flagged_emails(self, top: int = 20, since_days: int = 180) -> list[dict]:
+        """Markierte E-Mails (Outlook-Fahne gesetzt) laden, nur aus den letzten since_days Tagen."""
+        import datetime as _dt
+        since = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=since_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            data = await self._get(
+                f"{self._user_path}/messages",
+                {
+                    "$filter": f"flag/flagStatus eq 'flagged' and receivedDateTime ge {since}",
+                    "$top": str(top),
+                    "$select": "id,subject,from,receivedDateTime,bodyPreview,"
+                               "flag,categories,importance,hasAttachments,conversationId",
+                },
+            )
+        except Exception:
+            data = await self._get(
+                f"{self._user_path}/messages",
+                {
+                    "$filter": "flag/flagStatus eq 'flagged'",
+                    "$top": "100",
+                    "$select": "id,subject,from,receivedDateTime,bodyPreview,"
+                               "flag,categories,importance,hasAttachments,conversationId",
+                },
+            )
+        msgs = data.get("value", [])
+        msgs.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)
+        return msgs[:top]
+
     # ── Kalender CRUD ────────────────────────────────────────────
 
     async def list_events(
@@ -388,7 +445,8 @@ class GraphClient:
                 "$top": str(top),
                 "$orderby": "start/dateTime",
                 "$select": "id,subject,start,end,location,isAllDay,isCancelled,"
-                           "organizer,attendees,bodyPreview,showAs,importance",
+                           "organizer,attendees,bodyPreview,showAs,importance,"
+                           "categories,sensitivity,isOrganizer",
             },
         )
         return data.get("value", [])

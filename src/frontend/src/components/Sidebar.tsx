@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { useSSE } from '../hooks/useSSE';
 import { ThemeToggle } from './ThemeToggle';
 import { ProjectIcon } from './ProjectIcon';
 import type { AgentJob, Project } from '../types';
@@ -43,12 +44,11 @@ export function Sidebar({
   const [activeJobCount, setActiveJobCount] = useState(0);
   const [unreadMailCount, setUnreadMailCount] = useState(0);
   const [pendingDecisions, setPendingDecisions] = useState(0);
+  const [focusTaskCount, setFocusTaskCount] = useState(0);
   const { logout } = useAuth();
   const navigate = useNavigate();
 
-  useEffect(() => {
-    api.get<Project[]>('/api/projects').then(setProjects).catch(() => {});
-
+  const refreshBadges = useCallback(() => {
     api
       .get<AgentJob[]>('/api/agent-jobs')
       .then((jobs) => {
@@ -62,7 +62,40 @@ export function Sidebar({
       .get<{ unread_count?: number }>('/api/emails/unread-count')
       .then((r) => setUnreadMailCount(r.unread_count ?? 0))
       .catch(() => {});
-  }, [refreshKey]);
+
+    api
+      .get<{ columns: { position: number; tasks: unknown[] }[] }>('/api/pipeline')
+      .then((data) => {
+        const focusCol = data.columns?.find(c => c.position === 0) || data.columns?.[0];
+        setFocusTaskCount(focusCol?.tasks?.length ?? 0);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api.get<Project[]>('/api/projects').then(setProjects).catch(() => {});
+    refreshBadges();
+  }, [refreshKey, refreshBadges]);
+
+  useSSE((event) => {
+    if (event === 'agent_jobs_changed') {
+      refreshBadges();
+    } else if (event === 'email_triage_changed') {
+      api
+        .get<{ unread_count?: number }>('/api/emails/unread-count')
+        .then((r) => setUnreadMailCount(r.unread_count ?? 0))
+        .catch(() => {});
+    } else if (event === 'tasks_changed') {
+      api.get<Project[]>('/api/projects').then(setProjects).catch(() => {});
+      api
+        .get<{ columns: { position: number; tasks: unknown[] }[] }>('/api/pipeline')
+        .then((data) => {
+          const focusCol = data.columns?.find(c => c.position === 0) || data.columns?.[0];
+          setFocusTaskCount(focusCol?.tasks?.length ?? 0);
+        })
+        .catch(() => {});
+    }
+  });
 
   const handleLogout = () => {
     logout();
@@ -175,7 +208,14 @@ export function Sidebar({
                 </span>
               </NavLink>
               <NavLink to="/pipeline" className={collapsedLinkClasses} onClick={onClose} title="Agenda">
-                <AgendaIcon className="h-5 w-5" />
+                <span className="relative">
+                  <AgendaIcon className="h-5 w-5" />
+                  {focusTaskCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold text-white">
+                      {focusTaskCount > 9 ? '9+' : focusTaskCount}
+                    </span>
+                  )}
+                </span>
               </NavLink>
               <NavLink to="/agenten" className={collapsedLinkClasses} onClick={onClose} title="Agenten">
                 <span className="relative">
@@ -234,7 +274,12 @@ export function Sidebar({
 
               <NavLink to="/pipeline" className={linkClasses} onClick={onClose}>
                 <AgendaIcon className="h-5 w-5" />
-                Agenda
+                <span className="flex-1">Agenda</span>
+                {focusTaskCount > 0 && (
+                  <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                    {focusTaskCount}
+                  </span>
+                )}
               </NavLink>
 
               <NavLink to="/agenten" className={linkClasses} onClick={onClose}>

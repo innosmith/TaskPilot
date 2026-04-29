@@ -1,21 +1,44 @@
 """FastAPI-Router für E-Mail-Triage: Triage-Vorschläge anzeigen, Aktionen ausführen."""
 
+import sys
+import os
 import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
+from app.config import get_settings
 from app.database import get_db
 from app.models import AgentJob, EmailTriage, User
 from app.schemas import EmailTriageOut, EmailTriageUpdate
 from app.services.triage import run_triage_now
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
+from graph_client import GraphClient, GraphConfig  # noqa: E402
+
 logger = logging.getLogger("taskpilot.triage.router")
 router = APIRouter(prefix="/api/triage", tags=["triage"])
+
+_graph_client: GraphClient | None = None
+
+
+def _get_graph_client() -> GraphClient:
+    global _graph_client
+    if _graph_client is None:
+        settings = get_settings()
+        config = GraphConfig(
+            tenant_id=settings.graph_tenant_id,
+            client_id=settings.graph_client_id,
+            client_secret=settings.graph_client_secret,
+            user_email=settings.graph_user_email,
+        )
+        _graph_client = GraphClient(config)
+    return _graph_client
 
 
 def _require_owner(user: User) -> None:
@@ -210,4 +233,143 @@ async def triage_activity_feed(
             "drafts_pending": stats_row.drafts_pending,
             "classified_today": stats_row.classified_today,
         },
+    }
+
+
+# ── Replay-Endpoints ─────────────────────────────────────────
+
+class ReplayRequest(BaseModel):
+    message_id: str
+
+
+class ReplayBatchRequest(BaseModel):
+    count: int = 5
+    triage_class: str | None = None
+
+
+@router.post("/replay", status_code=201)
+async def replay_single(
+    body: ReplayRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """E-Mail erneut durch die Triage-Pipeline schicken (Replay/Test-Modus)."""
+    _require_owner(user)
+
+    settings = get_settings()
+    if not settings.graph_tenant_id or not settings.graph_client_id:
+        raise HTTPException(status_code=503, detail="Graph API nicht konfiguriert")
+
+    client = _get_graph_client()
+    try:
+        msg = await client.get_email(body.message_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"E-Mail nicht gefunden: {e}")
+
+    from_obj = msg.get("from", {}).get("emailAddress", {})
+    subject = msg.get("subject", "(kein Betreff)")
+    from_address = from_obj.get("address", "")
+    from_name = from_obj.get("name", "")
+    received_at_str = msg.get("receivedDateTime")
+    conversation_id = msg.get("conversationId", "")
+
+    job = AgentJob(
+        task_id=None,
+        job_type="email_triage",
+        status="queued",
+        metadata_json={
+            "email_message_id": body.message_id,
+            "message_id": body.message_id,
+            "subject": subject,
+            "from_address": from_address,
+            "from_name": from_name,
+            "conversation_id": conversation_id,
+            "body_preview": msg.get("bodyPreview", "")[:300],
+            "inference_classification": msg.get("inferenceClassification", ""),
+            "is_replay": True,
+        },
+    )
+    db.add(job)
+    await db.flush()
+
+    triage = EmailTriage(
+        message_id=f"replay_{job.id}_{body.message_id[:40]}",
+        subject=subject,
+        from_address=from_address,
+        from_name=from_name,
+        received_at=datetime.fromisoformat(received_at_str.replace("Z", "+00:00")) if received_at_str else None,
+        inference_class=msg.get("inferenceClassification"),
+        status="pending",
+        agent_job_id=job.id,
+    )
+    db.add(triage)
+    await db.commit()
+
+    logger.info("Replay-Job erstellt: job=%s, message_id=%s", job.id, body.message_id)
+
+    return {
+        "status": "queued",
+        "job_id": str(job.id),
+        "triage_id": str(triage.id),
+        "subject": subject,
+        "from": from_address,
+        "is_replay": True,
+    }
+
+
+@router.post("/replay-batch", status_code=201)
+async def replay_batch(
+    body: ReplayBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Letzte N E-Mails erneut triagieren (optional nach triage_class filtern)."""
+    _require_owner(user)
+
+    query = (
+        select(EmailTriage)
+        .where(EmailTriage.message_id.not_like("replay_%"))
+        .order_by(EmailTriage.created_at.desc())
+    )
+    if body.triage_class:
+        query = query.where(EmailTriage.triage_class == body.triage_class)
+    query = query.limit(body.count)
+
+    result = await db.execute(query)
+    items = list(result.scalars().all())
+
+    if not items:
+        return {"status": "no_items", "replayed": 0, "jobs": []}
+
+    jobs_created = []
+    for item in items:
+        job = AgentJob(
+            task_id=None,
+            job_type="email_triage",
+            status="queued",
+            metadata_json={
+                "email_message_id": item.message_id,
+                "message_id": item.message_id,
+                "subject": item.subject or "",
+                "from_address": item.from_address or "",
+                "from_name": item.from_name or "",
+                "is_replay": True,
+                "original_triage_class": item.triage_class,
+            },
+        )
+        db.add(job)
+        await db.flush()
+        jobs_created.append({
+            "job_id": str(job.id),
+            "message_id": item.message_id,
+            "subject": item.subject,
+        })
+
+    await db.commit()
+    logger.info("Batch-Replay: %d Jobs erstellt", len(jobs_created))
+
+    return {
+        "status": "queued",
+        "replayed": len(jobs_created),
+        "jobs": jobs_created,
     }

@@ -42,29 +42,58 @@ export function BackgroundPicker({ isOpen, onClose, currentUrl, onSelect }: Back
   const [customUrl, setCustomUrl] = useState('');
   const backdropRef = useRef<HTMLDivElement>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const searchUnsplash = useCallback(async (q: string) => {
-    if (!q.trim()) { setPhotos([]); return; }
-    setSearching(true);
+  const searchUnsplash = useCallback(async (q: string, pageNum: number, append: boolean) => {
+    if (!q.trim()) { setPhotos([]); setHasMore(false); return; }
+    if (pageNum === 1) setSearching(true); else setLoadingMore(true);
     try {
-      const data = await api.get<{ results: UnsplashPhoto[] }>(`/api/unsplash/search?q=${encodeURIComponent(q)}`);
-      setPhotos(data.results);
+      const data = await api.get<{ results: UnsplashPhoto[]; total: number }>(`/api/unsplash/search?q=${encodeURIComponent(q)}&page=${pageNum}&per_page=18`);
+      if (append) {
+        setPhotos(prev => [...prev, ...data.results]);
+      } else {
+        setPhotos(data.results);
+      }
+      setHasMore(pageNum * 18 < data.total);
     } catch {
       setUnsplashAvailable(false);
     } finally {
       setSearching(false);
+      setLoadingMore(false);
     }
   }, []);
 
   useEffect(() => {
     if (tab !== 'unsplash' || !query.trim()) return;
     clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => searchUnsplash(query), 400);
+    searchTimer.current = setTimeout(() => { setPage(1); searchUnsplash(query, 1, false); }, 400);
     return () => clearTimeout(searchTimer.current);
   }, [query, tab, searchUnsplash]);
 
+  const handleLoadMore = useCallback(() => {
+    if (loadingMore || !hasMore || !query.trim()) return;
+    const nextPage = page + 1;
+    setPage(nextPage);
+    searchUnsplash(query, nextPage, true);
+  }, [loadingMore, hasMore, query, page, searchUnsplash]);
+
   useEffect(() => {
-    if (!isOpen) { setQuery(''); setPhotos([]); setCustomUrl(''); }
+    const el = scrollRef.current;
+    if (!el || tab !== 'unsplash') return;
+    const onScroll = () => {
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+        handleLoadMore();
+      }
+    };
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [tab, handleLoadMore]);
+
+  useEffect(() => {
+    if (!isOpen) { setQuery(''); setPhotos([]); setCustomUrl(''); setPage(1); setHasMore(false); }
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -101,7 +130,7 @@ export function BackgroundPicker({ isOpen, onClose, currentUrl, onSelect }: Back
           ))}
         </div>
 
-        <div className="max-h-[60vh] overflow-y-auto p-6">
+        <div ref={scrollRef} className="max-h-[60vh] overflow-y-auto p-6">
           {tab === 'gradients' && (
             <div className="grid grid-cols-4 gap-3">
               {GRADIENTS.map((g) => (
@@ -162,6 +191,21 @@ export function BackgroundPicker({ isOpen, onClose, currentUrl, onSelect }: Back
                   </button>
                 ))}
               </div>
+              {loadingMore && (
+                <div className="flex justify-center py-4">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+                </div>
+              )}
+              {hasMore && !loadingMore && photos.length > 0 && (
+                <div className="flex justify-center py-3">
+                  <button
+                    onClick={handleLoadMore}
+                    className="rounded-lg px-4 py-2 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950/30"
+                  >
+                    Weitere Bilder laden…
+                  </button>
+                </div>
+              )}
               {query && !searching && photos.length === 0 && unsplashAvailable && (
                 <p className="py-8 text-center text-sm text-gray-400">Keine Ergebnisse für "{query}"</p>
               )}

@@ -31,16 +31,27 @@ interface SearchTag {
   color: string;
 }
 
+interface CrmHit {
+  id: number | string;
+  name: string;
+  type: string;
+  detail: string | null;
+  email: string | null;
+  pic_url: string | null;
+}
+
 interface SearchResults {
   tasks: SearchTask[];
   projects: SearchProject[];
   tags: SearchTag[];
+  crm: CrmHit[];
 }
 
 type ResultItem =
   | { kind: 'task'; data: SearchTask }
   | { kind: 'project'; data: SearchProject }
-  | { kind: 'tag'; data: SearchTag };
+  | { kind: 'tag'; data: SearchTag }
+  | { kind: 'crm'; data: CrmHit };
 
 export function SearchDialog({
   isOpen,
@@ -62,6 +73,7 @@ export function SearchDialog({
     for (const t of results.tasks) items.push({ kind: 'task', data: t });
     for (const p of results.projects) items.push({ kind: 'project', data: p });
     for (const tag of results.tags) items.push({ kind: 'tag', data: tag });
+    for (const c of (results.crm || [])) items.push({ kind: 'crm', data: c });
     return items;
   }, [results]);
 
@@ -74,6 +86,8 @@ export function SearchDialog({
       sections.push({ label: 'Projekte', items: results.projects.map((d) => ({ kind: 'project' as const, data: d })) });
     if (results.tags.length > 0)
       sections.push({ label: 'Tags', items: results.tags.map((d) => ({ kind: 'tag' as const, data: d })) });
+    if ((results.crm || []).length > 0)
+      sections.push({ label: 'CRM (Pipedrive)', items: results.crm.map((d) => ({ kind: 'crm' as const, data: d })) });
     return sections;
   }, [results]);
 
@@ -125,6 +139,12 @@ export function SearchDialog({
         onClose();
       } else if (item.kind === 'project') {
         onProjectClick(item.data.id);
+        onClose();
+      } else if (item.kind === 'crm') {
+        const crm = item.data;
+        const pathMap: Record<string, string> = { person: 'person', deal: 'deal', organization: 'organization' };
+        const path = pathMap[crm.type] || crm.type;
+        window.open(`https://innosmith.pipedrive.com/${path}/${crm.id}`, '_blank');
         onClose();
       }
     },
@@ -300,29 +320,81 @@ export function SearchDialog({
                   }
 
                   // tag
-                  const tag = item.data;
-                  return (
-                    <div
-                      key={tag.id}
-                      data-active={isActive}
-                      onMouseEnter={() => setActiveIndex(idx)}
-                      className={`flex items-center gap-3 px-4 py-2.5 transition-colors ${
-                        isActive
-                          ? 'bg-indigo-50 dark:bg-indigo-950/40'
-                          : ''
-                      }`}
-                    >
-                      <span
-                        className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium"
-                        style={{
-                          backgroundColor: tag.color + '20',
-                          color: tag.color,
-                        }}
+                  if (item.kind === 'tag') {
+                    const tag = item.data;
+                    return (
+                      <div
+                        key={tag.id}
+                        data-active={isActive}
+                        onMouseEnter={() => setActiveIndex(idx)}
+                        className={`flex items-center gap-3 px-4 py-2.5 transition-colors ${
+                          isActive
+                            ? 'bg-indigo-50 dark:bg-indigo-950/40'
+                            : ''
+                        }`}
                       >
-                        {tag.name}
-                      </span>
-                    </div>
-                  );
+                        <span
+                          className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium"
+                          style={{
+                            backgroundColor: tag.color + '20',
+                            color: tag.color,
+                          }}
+                        >
+                          {tag.name}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  // crm
+                  if (item.kind === 'crm') {
+                    const crm = item.data;
+                    const typeLabels: Record<string, string> = { person: 'Kontakt', deal: 'Deal', organization: 'Organisation' };
+                    const typeColors: Record<string, string> = {
+                      person: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+                      deal: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+                      organization: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+                    };
+                    return (
+                      <button
+                        key={`${crm.type}-${crm.id}`}
+                        data-active={isActive}
+                        onClick={() => activateItem(item)}
+                        onMouseEnter={() => setActiveIndex(idx)}
+                        className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+                          isActive
+                            ? 'bg-indigo-50 dark:bg-indigo-950/40'
+                            : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                        }`}
+                      >
+                        {crm.pic_url ? (
+                          <img
+                            src={crm.pic_url}
+                            alt=""
+                            className="h-9 w-9 shrink-0 rounded-full object-cover"
+                          />
+                        ) : (
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
+                            <CrmSearchIcon className="h-4 w-4" />
+                          </span>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                            {crm.name}
+                          </p>
+                          <p className="truncate text-xs text-gray-400 dark:text-gray-500">
+                            {crm.detail || crm.email || ''}
+                          </p>
+                        </div>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${typeColors[crm.type] || 'bg-gray-100 text-gray-600'}`}>
+                          {typeLabels[crm.type] || crm.type}
+                        </span>
+                        <ExternalLinkIcon className="h-3.5 w-3.5 shrink-0 text-gray-300 dark:text-gray-600" />
+                      </button>
+                    );
+                  }
+
+                  return null;
                 })}
               </div>
             ))}
@@ -387,5 +459,21 @@ function AgentBadge() {
       </svg>
       Agent
     </span>
+  );
+}
+
+function CrmSearchIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+    </svg>
+  );
+}
+
+function ExternalLinkIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+    </svg>
   );
 }

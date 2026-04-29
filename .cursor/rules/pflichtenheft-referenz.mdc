@@ -1,0 +1,60 @@
+---
+description: Verweis auf das Pflichtenheft als verbindliche Produktgrundlage
+alwaysApply: true
+---
+
+# Pflichtenheft-Referenz
+
+## Dokument
+Das verbindliche Pflichtenheft liegt in **[docs/pflichtenheft-taskpilot.md](docs/pflichtenheft-taskpilot.md)** (Version 0.12, Stand 25. April 2026).
+
+Bei grösseren Architektur-Entscheidungen, neuen Features oder Prioritätsfragen **immer zuerst das Pflichtenheft konsultieren** — es ist die Single Source of Truth für Produktentscheide.
+
+## 10 Leitprinzipien (Kurzfassung)
+
+1. **Team-Modell** — Agent = virtueller Mitarbeiter, Berater = Orchestrator + QA + Ausführender
+2. **Aufgaben-Delegation** — Berater weist Tasks explizit zu (an sich, an Agent, oder gemeinsam)
+3. **LLM-Kontrolle pro Task** — Berater bestimmt welches LLM (Datenschutz, Qualität, Kosten)
+4. **HITL für Externe** — Alles an Kunden/Lieferanten durchläuft menschliche Prüfung, ausnahmslos
+5. **Datenschutz-Souveränität** — Sensitive Daten lokal (Ollama); Cloud nur für public/internal
+6. **Markdown-First** — Agent-Output ist Markdown (kompatibel mit Obsidian, Cursor, Git)
+7. **Lernend** — Agent lernt Gewohnheiten, Entscheidungsmuster, Domänenwissen über Zeit
+8. **Transparenz** — Jede Agentenaktion erklärbar, auditierbar, rückgängig machbar
+9. **Einfachheit** — So wenige Komponenten wie möglich; Wartung ≤ 4–6h/Monat
+10. **No-Code-Bedienung + agentische Steuerung** — UI wie MeisterTask, Agent nutzt dieselbe API
+
+## Szenarien-Checkliste
+
+| ID | Szenario | Abgedeckt? |
+|----|----------|-----------|
+| A | Wochenplanung am Montagmorgen | Teilweise (Agenda vorhanden, Agent-Vorschlag fehlt) |
+| B | Mail-Triage mit automatischer Bearbeitung | Ja (Phase 1 implementiert) |
+| C | Agent führt Research-Aufgabe aus | Nein (Phase 2) |
+| D | Agent schreibt Dokument | Nein (Phase 2) |
+| E | Mobile Quick-Capture | Nein (PWA noch nicht implementiert) |
+| F | Wiederkehrende Admin-Tasks | Teilweise (Recurring Scheduler aktiv) |
+| F2 | Monatsabschluss (Rechnungen) | Nein (Phase 2) |
+| G | Re-Priorisierung im Tagesverlauf | Nein (Phase 2) |
+| H | Agent unterstützt beim Code | Nein (Phase 3) |
+| I | Neukunden-Onboarding | Nein (Phase 2) |
+| J | Berater + Agent gemeinsam | Nein (Phase 2) |
+| K | SIGNA-Signale → Aufgaben | Nein (Phase 1–2, SIGNA read-only geplant) |
+| L | InvoiceInsight-Warnung → Aufgabe | Nein (Phase 2) |
+
+## Roadmap-Status
+
+| Phase | Beschreibung | Status |
+|-------|-------------|--------|
+| **Phase 0** | Spike & Fundament | **Abgeschlossen** |
+| **Phase 1** | Beobachter + Quick-Wins + Cockpit MVP | **In Arbeit** — Cockpit, Triage, Agent-Queue, Agenda, Inbox implementiert |
+| Phase 2 | Aktive Ausführung + Lernen + Cockpit-Ausbau | Geplant |
+| Phase 3 | Vertiefung + Compliance | Geplant |
+
+## Verworfene Alternativen (nicht erneut vorschlagen)
+
+- **LangGraph / LangChain** — zu komplex für den Anwendungsfall
+- **CrewAI / AutoGen** — Multi-Agent formal zurückgewiesen
+- **n8n als Agent-Kern** — nur für deterministische Pipelines geeignet
+- **Telegram-Bot** — Datenschutz (Dubai-Server, kein E2E)
+- **Klassisches Kanban-Backend** (Plane, Vikunja, WeKan, Focalboard) — Paradigmen-Entscheid: eigenes agentisches Cockpit
+- **SaaS-Lock-in** — alles Self-Hosted, kein proprietäres Backend

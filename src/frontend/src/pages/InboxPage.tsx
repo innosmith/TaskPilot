@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api/client';
+import { BackgroundPicker } from '../components/BackgroundPicker';
+import { RichTextEditor } from '../components/RichTextEditor';
 
 /* ---------- Typen ---------- */
 
@@ -25,6 +27,7 @@ interface EmailSummary {
   inference_classification: string | null;
   importance: string | null;
   has_attachments: boolean;
+  flag_status: string | null;
 }
 
 interface EmailDetail {
@@ -197,6 +200,9 @@ export function InboxPage() {
   const [approvalJobs, setApprovalJobs] = useState<ApprovalJob[]>([]);
   const [pendingReviewTasks, setPendingReviewTasks] = useState<PendingReviewTask[]>([]);
   const sseRef = useRef<EventSource | null>(null);
+  const [senderAvatars, setSenderAvatars] = useState<Record<string, string | null>>({});
+  const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const [bgPickerOpen, setBgPickerOpen] = useState(false);
 
   /* -- E-Mails laden -- */
   const fetchEmails = useCallback(async () => {
@@ -272,6 +278,9 @@ export function InboxPage() {
   /* -- Initiales Laden -- */
   useEffect(() => {
     fetchEmails();
+    api.get<{ inbox_background_url: string | null }>('/api/settings')
+      .then(s => setBgUrl(s.inbox_background_url))
+      .catch(() => {});
   }, [fetchEmails]);
 
   useEffect(() => {
@@ -335,36 +344,78 @@ export function InboxPage() {
 
   const selectedTriage = selectedEmail ? triageMap[selectedEmail.id] : null;
 
+  useEffect(() => {
+    const uniqueAddresses = [...new Set(emails.map(e => e.from_address).filter(Boolean))] as string[];
+    for (const addr of uniqueAddresses) {
+      if (senderAvatars[addr] !== undefined) continue;
+      setSenderAvatars(prev => ({ ...prev, [addr]: null }));
+      api.get<{ id: number; pic_url: string | null } | null>(`/api/pipedrive/lookup-email?email=${encodeURIComponent(addr)}`)
+        .then(data => {
+          if (data?.pic_url) {
+            setSenderAvatars(prev => ({ ...prev, [addr]: data.pic_url }));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [emails]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleBgSelect = async (url: string | null) => {
+    await api.patch('/api/settings', { inbox_background_url: url });
+    setBgUrl(url);
+  };
+
+  const hasBg = !!bgUrl;
+  const isGradient = bgUrl?.startsWith('gradient:') ?? false;
+  const bgStyle = isGradient
+    ? { background: bgUrl!.slice('gradient:'.length) }
+    : hasBg
+      ? { backgroundImage: `url(${bgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+      : undefined;
+
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col" style={!hasBg ? undefined : bgStyle}>
+      {!hasBg && <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-indigo-50/30 dark:from-gray-950 dark:via-gray-900 dark:to-indigo-950/20" />}
+      {hasBg && !isGradient && <div className="absolute inset-0 bg-black/25 dark:bg-black/40" />}
+      {isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/25" />}
+
+      <div className="relative z-10 flex h-full flex-col">
       {/* Header */}
-      <div className="border-b border-white/40 bg-white/50 px-6 py-4 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
+      <div className={`border-b px-6 py-4 backdrop-blur-xl ${hasBg ? 'border-white/10 bg-black/35' : 'border-gray-200/60 bg-white/80 dark:border-gray-800/60 dark:bg-gray-900/80'}`}>
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">Posteingang</h1>
-            <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+            <h1 className={`text-xl font-bold ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>Posteingang</h1>
+            <p className={`mt-0.5 text-sm ${hasBg ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
               E-Mails verwalten und beantworten
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+            <button
+              onClick={() => setBgPickerOpen(true)}
+              className={`rounded-lg p-2 transition-colors ${hasBg ? 'text-white/70 hover:bg-white/10 hover:text-white' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
+              title="Hintergrund ändern"
+            >
+              <svg className="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5a2.25 2.25 0 0 0 2.25-2.25V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" />
+              </svg>
+            </button>
+            <label className={`flex items-center gap-2 text-xs cursor-pointer select-none ${hasBg ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
               <input
                 type="checkbox"
                 checked={unreadOnly}
                 onChange={(e) => setUnreadOnly(e.target.checked)}
-                className="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600"
+                className="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
               />
               Nur ungelesen
             </label>
             <button
               onClick={fetchEmails}
-              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-700"
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow active:scale-[0.97]"
             >
               Aktualisieren
             </button>
             <button
               onClick={() => { setComposeReplyTo(undefined); setShowCompose(true); }}
-              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700"
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow active:scale-[0.97]"
             >
               Entwurf schreiben
             </button>
@@ -376,8 +427,8 @@ export function InboxPage() {
       <>
       {/* Triage-Statistik-Leiste */}
       {triageStats && triageStats.total_pending > 0 && (
-        <div className="flex items-center gap-4 border-b border-white/40 bg-white/50 px-6 py-2 text-xs backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
-          <span className="font-medium text-gray-700 dark:text-gray-300">Triage:</span>
+        <div className={`flex items-center gap-4 border-b px-6 py-2.5 text-xs backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-gray-200/60 bg-white/60 dark:border-gray-800/60 dark:bg-gray-900/60'}`}>
+          <span className={`font-semibold ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>Triage:</span>
           {Object.entries(triageStats.by_class).map(([cls, count]) => {
             const cfg = TRIAGE_CONFIG[cls];
             return (
@@ -401,11 +452,11 @@ export function InboxPage() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Folder sidebar */}
-        <div className="hidden w-48 shrink-0 border-r border-white/40 bg-white/30 p-3 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/30 md:block">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+        <div className={`hidden w-52 shrink-0 border-r p-4 backdrop-blur-sm md:block ${hasBg ? 'border-white/10 bg-black/30' : 'border-gray-200/60 bg-white/40 dark:border-gray-800/60 dark:bg-gray-900/40'}`}>
+          <h3 className={`mb-3 text-[11px] font-semibold uppercase tracking-wider ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`}>
             Ordner
           </h3>
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             {[
               { id: 'inbox', name: 'Posteingang' },
               { id: 'drafts', name: 'Entwürfe' },
@@ -417,10 +468,14 @@ export function InboxPage() {
               <button
                 key={folder.id}
                 onClick={() => { setActiveFolder(folder.id); setSelectedEmail(null); }}
-                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${
+                className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-all ${
                   activeFolder === folder.id
-                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300'
-                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-800'
+                    ? hasBg
+                      ? 'bg-white/20 text-white shadow-sm'
+                      : 'bg-indigo-100/80 text-indigo-700 shadow-sm dark:bg-indigo-950/60 dark:text-indigo-300'
+                    : hasBg
+                      ? 'text-white/70 hover:bg-white/10 hover:text-white'
+                      : 'text-gray-600 hover:bg-gray-100/80 dark:text-gray-400 dark:hover:bg-gray-800/60'
                 }`}
               >
                 {folder.name}
@@ -430,54 +485,109 @@ export function InboxPage() {
         </div>
 
         {/* Email list */}
-        <div className={`${selectedEmail ? 'hidden md:block md:w-1/3' : 'w-full'} shrink-0 overflow-y-auto border-r border-white/40 dark:border-gray-800`}>
+        <div className={`${selectedEmail ? 'hidden md:block md:w-[380px]' : 'w-full'} shrink-0 overflow-y-auto border-r ${hasBg ? 'border-white/10' : 'border-gray-200/60 dark:border-gray-800/60'}`}>
           {loading ? (
             <div className="flex h-full items-center justify-center">
               <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
             </div>
           ) : emails.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-gray-400 dark:text-gray-600">
-              Keine E-Mails
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400 dark:text-gray-600">
+              <svg className="h-12 w-12" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 9v.906a2.25 2.25 0 0 1-1.183 1.981l-6.478 3.488M2.25 9v.906a2.25 2.25 0 0 0 1.183 1.981l6.478 3.488m8.839 2.51-4.66-2.51m0 0-1.023-.55a2.25 2.25 0 0 0-2.134 0l-1.022.55m0 0-4.661 2.51m16.5 1.615a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V8.844a2.25 2.25 0 0 1 1.183-1.981l7.5-4.039a2.25 2.25 0 0 1 2.134 0l7.5 4.039a2.25 2.25 0 0 1 1.183 1.98V19.5Z" />
+              </svg>
+              <span className="text-sm">Keine E-Mails</span>
             </div>
           ) : (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+            <div className="space-y-2 p-3">
               {emails.map((email) => {
                 const triage = triageMap[email.id];
+                const initials = (email.from_name || email.from_address || '?')
+                  .split(/[\s.@]+/)
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map(p => p[0]?.toUpperCase() || '')
+                  .join('');
+                const isSelected = selectedEmail?.id === email.id;
+                const avatarColors = [
+                  'bg-blue-500', 'bg-emerald-500', 'bg-violet-500', 'bg-rose-500',
+                  'bg-amber-500', 'bg-teal-500', 'bg-pink-500', 'bg-indigo-500',
+                ];
+                const colorIdx = (email.from_address || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0) % avatarColors.length;
                 return (
                   <button
                     key={email.id}
                     onClick={() => openEmail(email)}
-                    className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-900 ${
-                      selectedEmail?.id === email.id ? 'bg-indigo-50/50 dark:bg-indigo-950/20' : ''
-                    } ${!email.is_read ? 'bg-white dark:bg-gray-950' : 'bg-gray-50/50 dark:bg-gray-900/50'}`}
+                    className={`group flex w-full items-start gap-3 rounded-xl px-4 py-3 text-left transition-all ${
+                      hasBg
+                        ? isSelected
+                          ? 'bg-black/40 shadow-lg backdrop-blur-xl ring-1 ring-white/20'
+                          : 'bg-black/30 shadow-sm backdrop-blur-lg hover:bg-black/40'
+                        : isSelected
+                          ? 'bg-indigo-50/80 shadow-md ring-1 ring-indigo-200/50 dark:bg-indigo-950/40 dark:ring-indigo-800/50'
+                          : !email.is_read
+                            ? 'bg-white/80 shadow-sm hover:bg-white hover:shadow-md dark:bg-gray-900/60 dark:hover:bg-gray-900/80'
+                            : 'bg-white/50 shadow-sm hover:bg-white/70 dark:bg-gray-900/40 dark:hover:bg-gray-900/60'
+                    }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className={`text-sm ${!email.is_read ? 'font-semibold text-gray-900 dark:text-white' : 'text-gray-700 dark:text-gray-300'}`}>
-                        {email.from_name || email.from_address || 'Unbekannt'}
-                      </span>
-                      <span className="shrink-0 text-[10px] text-gray-400 dark:text-gray-500">
-                        {formatDate(email.received_at)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <p className={`flex-1 truncate text-sm ${!email.is_read ? 'font-medium text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
-                        {email.subject || '(Kein Betreff)'}
+                    {/* Avatar */}
+                    {senderAvatars[email.from_address || ''] ? (
+                      <img
+                        src={senderAvatars[email.from_address || '']!}
+                        alt=""
+                        className="h-10 w-10 shrink-0 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${avatarColors[colorIdx]}`}>
+                        {initials}
+                      </div>
+                    )}
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {email.flag_status === 'flagged' && (
+                            <svg className="h-4 w-4 shrink-0 text-orange-500" viewBox="0 0 20 20" fill="currentColor">
+                              <path d="M3.5 2.75a.75.75 0 0 0-1.5 0v14.5a.75.75 0 0 0 1.5 0v-4.392l1.657-.348a6.25 6.25 0 0 1 4.44.05l.29.12a7.75 7.75 0 0 0 4.908.293l2.054-.492a.75.75 0 0 0 .582-.73V3.498a.75.75 0 0 0-.96-.72l-2.143.513a6.25 6.25 0 0 1-3.965-.236l-.29-.12a7.75 7.75 0 0 0-5.507-.062L3.5 3.22V2.75Z" />
+                            </svg>
+                          )}
+                          <span className={`text-[13px] truncate ${hasBg ? (!email.is_read ? 'font-semibold text-white drop-shadow' : 'font-medium text-white/90 drop-shadow-sm') : (!email.is_read ? 'font-semibold text-gray-900 dark:text-white' : 'font-medium text-gray-600 dark:text-gray-300')}`}>
+                            {email.from_name || email.from_address || 'Unbekannt'}
+                          </span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {email.has_attachments && (
+                            <svg className={`h-3 w-3 ${hasBg ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'}`} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" />
+                            </svg>
+                          )}
+                          <span className={`text-[10px] ${hasBg ? 'text-white/70 drop-shadow-sm' : 'text-gray-400 dark:text-gray-500'}`}>
+                            {formatDate(email.received_at)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-2">
+                        <p className={`flex-1 truncate text-[13px] ${hasBg ? (!email.is_read ? 'font-medium text-white/95 drop-shadow-sm' : 'text-white/80 drop-shadow-sm') : (!email.is_read ? 'font-medium text-gray-800 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400')}`}>
+                          {email.subject || '(Kein Betreff)'}
+                        </p>
+                        {triage && triage.status === 'pending' && (
+                          <TriageBadge triageClass={triage.triage_class} />
+                        )}
+                      </div>
+                      <p className={`mt-0.5 truncate text-xs ${hasBg ? 'text-white/60 drop-shadow-sm' : 'text-gray-400 dark:text-gray-500'}`}>
+                        {email.body_preview}
                       </p>
-                      {triage && triage.status === 'pending' && (
-                        <TriageBadge triageClass={triage.triage_class} />
+                      {email.categories.length > 0 && (
+                        <div className="mt-1 flex gap-1">
+                          {email.categories.map((cat) => (
+                            <span key={cat} className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${getCategoryClass(cat)}`}>
+                              {cat}
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
-                    <p className="truncate text-xs text-gray-400 dark:text-gray-500">
-                      {email.body_preview}
-                    </p>
-                    {email.categories.length > 0 && (
-                      <div className="mt-0.5 flex gap-1">
-                        {email.categories.map((cat) => (
-                          <span key={cat} className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${getCategoryClass(cat)}`}>
-                            {cat}
-                          </span>
-                        ))}
-                      </div>
+                    {!email.is_read && (
+                      <div className="mt-2 h-2 w-2 shrink-0 rounded-full bg-indigo-500" />
                     )}
                   </button>
                 );
@@ -487,7 +597,7 @@ export function InboxPage() {
         </div>
 
         {/* Detail pane */}
-        <div className={`${selectedEmail ? 'flex-1' : 'hidden md:flex md:flex-1'} overflow-y-auto`}>
+        <div className={`${selectedEmail ? 'flex-1' : 'hidden md:flex md:flex-1'} overflow-y-auto ${hasBg ? 'bg-black/20 backdrop-blur-sm' : 'bg-white/40 dark:bg-gray-900/20'}`}>
           {detailLoading ? (
             <div className="flex h-full items-center justify-center">
               <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
@@ -495,7 +605,7 @@ export function InboxPage() {
           ) : selectedEmail ? (
             <div className="p-6">
               {/* Aktionsleiste */}
-              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-white/50 bg-white/60 p-3 backdrop-blur-sm dark:border-gray-700 dark:bg-gray-900/60">
+              <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-gray-200/80 bg-white/80 p-3 shadow-sm backdrop-blur-sm dark:border-gray-700/60 dark:bg-gray-900/80">
                 {selectedTriage && selectedTriage.status === 'pending' && (
                   <TriageBadge triageClass={selectedTriage.triage_class} />
                 )}
@@ -510,7 +620,7 @@ export function InboxPage() {
                       setComposeReplyTo(selectedEmail.id);
                       setShowCompose(true);
                     }}
-                    className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700"
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow active:scale-[0.97]"
                   >
                     Antwort entwerfen
                   </button>
@@ -527,7 +637,7 @@ export function InboxPage() {
                       });
                       window.dispatchEvent(event);
                     }}
-                    className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white shadow-sm transition-all hover:bg-blue-700 hover:shadow active:scale-[0.97]"
                   >
                     Task erstellen
                   </button>
@@ -609,8 +719,12 @@ export function InboxPage() {
               )}
             </div>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-gray-400 dark:text-gray-600">
-              E-Mail auswählen
+            <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+              <svg className="h-16 w-16 text-gray-200 dark:text-gray-700" fill="none" viewBox="0 0 24 24" strokeWidth={0.8} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+              </svg>
+              <p className="text-sm font-medium text-gray-400 dark:text-gray-500">E-Mail auswählen</p>
+              <p className="text-xs text-gray-300 dark:text-gray-600">Klicke auf eine E-Mail, um Details anzuzeigen</p>
             </div>
           )}
         </div>
@@ -628,6 +742,14 @@ export function InboxPage() {
       {/* CreateTaskFromEmail dialog */}
       <CreateTaskFromEmailListener onTaskCreated={fetchTriage} />
       </>
+      </div>
+
+      <BackgroundPicker
+        isOpen={bgPickerOpen}
+        onClose={() => setBgPickerOpen(false)}
+        currentUrl={bgUrl}
+        onSelect={(url) => { handleBgSelect(url); setBgPickerOpen(false); }}
+      />
     </div>
   );
 }
@@ -712,12 +834,11 @@ function ComposeDialog({
             placeholder="Betreff..."
             className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
           />
-          <textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            rows={8}
-            placeholder="Nachricht..."
-            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          <RichTextEditor
+            content={body}
+            onChange={setBody}
+            editable
+            minHeight="160px"
           />
         </div>
 
@@ -962,11 +1083,11 @@ function CreateTaskFromEmailListener({ onTaskCreated }: { onTaskCreated: () => v
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Beschreibung</label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={4}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+            <RichTextEditor
+              content={description}
+              onChange={setDescription}
+              editable
+              minHeight="100px"
             />
           </div>
           <div className="flex gap-3">

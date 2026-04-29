@@ -9,4 +9,5 @@ __pycache__/
 dist/
 build/
 .cache/
-
+src/frontend/node_modules/.vite/
+.nanobot/

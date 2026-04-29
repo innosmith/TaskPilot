@@ -1,0 +1,98 @@
+---
+description: Nanobot Agent-Runtime, MCP-Server und Worker-Konventionen
+globs: "**/*nanobot*,**/*triage*,**/*mcp*"
+alwaysApply: false
+---
+
+# Nanobot Agent-Runtime
+
+## Konfiguration
+
+- Config-Datei: `~/.nanobot/config.json`
+- Workspace: `~/.nanobot/workspace/`
+- Skills: `~/.nanobot/workspace/skills/*.md` (mail-triage, quick-response, calendar-management, crm-assistant)
+- Agents-Definition: `~/.nanobot/workspace/AGENTS.md`
+- Tools-Definition: `~/.nanobot/workspace/TOOLS.md`
+
+### Wichtige Einstellungen
+| Setting | Wert | Bedeutung |
+|---------|------|-----------|
+| `model` | `qwen3.5:35b` | Default-LLM via Ollama |
+| `provider` | `ollama` | Lokal, kein Cloud-Call |
+| `maxToolIterations` | `200` | Kann bei langen Mails ausgeschöpft werden |
+| `unifiedSession` | `false` | Jeder Job bekommt eigene Session |
+| `dream.intervalH` | `2` | Memory-Konsolidierung alle 2 Stunden |
+| `temperature` | `0.1` | Niedrig für konsistente Ergebnisse |
+
+## Session-Key-Schema
+
+```
+{job_type}:{job_id}:{unix_timestamp}
+```
+
+Beispiel: `email_triage:550e8400-e29b-41d4-a716-446655440000:1714300000`
+
+## MCP-Server
+
+Zwei MCP-Server sind in `config.json → tools.mcpServers` registriert:
+
+| Name | Quellcode | Zweck | Env-Vars |
+|------|-----------|-------|----------|
+| `taskpilot` | `src/mcp-taskpilot/server.py` | DB-Zugriff (Tasks, Projekte, Boards) | `TP_DB_*` |
+| `email` | `src/mcp-email/server.py` | Graph API (E-Mails, Kalender, Drafts) | `GRAPH_*` |
+| `pipedrive` | `src/mcp-pipedrive/server.py` | Pipedrive CRM (Kontakte, Deals, Leads) | `PIPEDRIVE_API_TOKEN` |
+
+Beide Server werden als Subprocess vom Nanobot gestartet (stdio-Transport).
+
+## Metadata-Keys für AgentJobs (KRITISCH)
+
+Bei der Erstellung von `AgentJob`-Records müssen folgende Keys in `metadata_json` korrekt gesetzt sein:
+
+| Key | PFLICHT | Beschreibung |
+|-----|---------|-------------|
+| `email_message_id` | **Ja** | Graph-API Message-ID (NICHT `message_id`!) |
+| `subject` | Ja | E-Mail-Betreff |
+| `from_address` | Ja | Absender-Adresse |
+| `from_name` | Ja | Absender-Name |
+| `conversation_id` | Ja | Graph-API Conversation-ID für Thread-Zuordnung |
+| `body_preview` | Ja | Vorschau-Text (max 300 Zeichen) |
+| `inference_classification` | Ja | Graph-Klassifikation (focused/other) |
+| `is_replay` | Nein | `true` bei Replay-Jobs |
+
+**Bekannter Bug (behoben):** `message_id` wurde statt `email_message_id` verwendet → Nanobot erhielt leere E-Mail-ID im Prompt → riesige E-Mail-Liste statt einzelner E-Mail. Immer `email_message_id` verwenden!
+
+## Worker-Loop (`nanobot_worker.py`)
+
+1. Polling alle 10s nach `status='queued'` Jobs
+2. `_build_triage_prompt(job)` baut den Prompt aus Metadata
+3. Prompt enthält **PFLICHT-Aufrufe** (Tool-Calls, die der Agent ausführen muss):
+   - `mcp_email_get_email(email_id)` — voller E-Mail-Body
+   - `mcp_email_get_thread(conversation_id)` — Thread-Kontext
+   - `mcp_email_search_sender_history(from_address, top=5)` — bisherige Kommunikation
+4. `bot.run(prompt, session_key=...)` startet den Nanobot
+5. Post-Processing: Triage-Klasse extrahieren, ggf. Draft erstellen, Task anlegen
+
+## Post-Processing-Logik
+
+Der Worker extrahiert nach Abschluss:
+- **Triage-Klasse** (action_needed, fyi, newsletter, spam, calendar, personal)
+- **Priorität** und **Deadline** für Task-Erstellung
+- **Draft-ID** falls Antwort-Entwurf erstellt wurde
+- Status wird auf `awaiting_approval` (bei Drafts) oder `completed` (bei fyi etc.) gesetzt
+
+## Dream-Memory
+
+Nanobot konsolidiert periodisch Session-Daten zu langfristigem Wissen:
+- Intervall: alle 2 Stunden
+- Batch-Grösse: max 20 Sessions
+- Speicherort: internes Memory-System von Nanobot
+- Nutzen: Absender-Präferenzen, wiederkehrende Themen, Schreibstil
+
+## Bekannte Gotchas
+
+1. **`maxToolIterations: 200`** — Bei langen Newsletter-Mails kann der Agent alle Iterationen aufbrauchen. In Logs auf `max iterations reached` achten.
+2. **Graph API `$filter` + `$orderby`** — Kombination wird von Microsoft nicht unterstützt. `search_sender_emails()` sortiert deshalb Python-seitig.
+3. **Graph API `$search`-Fallback** — Bei HTTP 400 auf `$filter` wird automatisch auf `$search` umgestellt.
+4. **HTML-Body** — E-Mails kommen als HTML. `_html_to_text()` in `mcp-email/server.py` konvertiert zu Plain-Text (Style/Script-Tags entfernt, `<br>` → Newline).
+5. **Thread-Limits** — `max_per_msg=3000`, `max_total=15000` Zeichen pro Thread-Kontext um Token-Overflow zu vermeiden.
+6. **Schweizer Deutsch im Prompt** — Alle generierten Texte müssen "ss" statt "ß", korrekte Umlaute (ä, ö, ü) verwenden. Im Prompt explizit instruiert.

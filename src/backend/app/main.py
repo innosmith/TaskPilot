@@ -17,6 +17,7 @@ from app.routers import (
     emails,
     memory,
     models,
+    pipedrive,
     pipeline,
     projects,
     search,
@@ -107,6 +108,7 @@ app.include_router(emails.router)
 app.include_router(calendar.router)
 app.include_router(triage.router)
 app.include_router(models.router)
+app.include_router(pipedrive.router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
