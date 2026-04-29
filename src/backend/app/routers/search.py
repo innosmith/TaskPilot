@@ -55,11 +55,27 @@ class CrmSearchHit(BaseModel):
     pic_url: str | None = None
 
 
+class TogglHit(BaseModel):
+    id: int
+    name: str
+    type: str  # "client" | "project"
+    workspace_id: int | None = None
+
+
+class BexioHit(BaseModel):
+    id: int
+    name: str
+    type: str  # "contact" | "order" | "project"
+    email: str | None = None
+
+
 class SearchResults(BaseModel):
     tasks: list[SearchTaskHit]
     projects: list[SearchProjectHit]
     tags: list[SearchTagHit]
     crm: list[CrmSearchHit]
+    toggl: list[TogglHit]
+    bexio: list[BexioHit]
 
 
 async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
@@ -126,6 +142,78 @@ async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
         return []
 
 
+async def _search_toggl(user: User, term: str) -> list[TogglHit]:
+    """Toggl-Suche: Clients + Projekte (lokal gefiltert)."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "toggl"))
+        from toggl_client import TogglClient, TogglConfig
+
+        settings = user.settings or {}
+        token = settings.get("toggl_api_token") or ""
+        ws_id = int(settings.get("toggl_workspace_id") or 0)
+        if not token:
+            from app.config import get_settings
+            cfg = get_settings()
+            token = cfg.toggl_api_token
+            ws_id = ws_id or cfg.toggl_workspace_id
+        if not token or not ws_id:
+            return []
+
+        client = TogglClient(TogglConfig(api_token=token, workspace_id=ws_id))
+        clients_task = client.search_clients(term, ws_id)
+        projects_task = client.search_projects(term, ws_id)
+        clients_raw, projects_raw = await asyncio.wait_for(
+            asyncio.gather(clients_task, projects_task),
+            timeout=5.0,
+        )
+        hits: list[TogglHit] = []
+        for c in (clients_raw or [])[:5]:
+            hits.append(TogglHit(id=c["id"], name=c.get("name", ""), type="client", workspace_id=ws_id))
+        for p in (projects_raw or [])[:5]:
+            hits.append(TogglHit(id=p["id"], name=p.get("name", ""), type="project", workspace_id=ws_id))
+        return hits
+    except Exception as exc:
+        logger.debug("Toggl-Suche fehlgeschlagen (wird ignoriert): %s", exc)
+        return []
+
+
+async def _search_bexio(user: User, term: str) -> list[BexioHit]:
+    """Bexio-Suche: Kontakte nach Name."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "bexio"))
+        from bexio_client import BexioClient, BexioConfig
+
+        settings = user.settings or {}
+        token = settings.get("bexio_api_token") or ""
+        if not token:
+            from app.config import get_settings
+            cfg = get_settings()
+            token = cfg.bexio_api_token
+        if not token:
+            return []
+
+        client = BexioClient(BexioConfig(api_token=token))
+        contacts_raw = await asyncio.wait_for(
+            client.search_contact_by_name(term),
+            timeout=5.0,
+        )
+        hits: list[BexioHit] = []
+        for c in (contacts_raw or [])[:8]:
+            name = c.get("name_1", "")
+            if c.get("name_2"):
+                name = f"{name} {c['name_2']}"
+            hits.append(BexioHit(
+                id=c["id"],
+                name=name,
+                type="contact",
+                email=c.get("mail"),
+            ))
+        return hits
+    except Exception as exc:
+        logger.debug("Bexio-Suche fehlgeschlagen (wird ignoriert): %s", exc)
+        return []
+
+
 @router.get("", response_model=SearchResults)
 async def search(
     q: str = Query(..., min_length=1),
@@ -148,9 +236,11 @@ async def search(
         select(Tag).where(Tag.name.ilike(pattern)).order_by(Tag.name).limit(10)
     )
     crm_task = _search_pipedrive(user, q)
+    toggl_task = _search_toggl(user, q)
+    bexio_task = _search_bexio(user, q)
 
-    task_result, project_result, tag_result, crm_results = await asyncio.gather(
-        db_task, db_project, db_tag, crm_task,
+    task_result, project_result, tag_result, crm_results, toggl_results, bexio_results = await asyncio.gather(
+        db_task, db_project, db_tag, crm_task, toggl_task, bexio_task,
     )
 
     tasks = [
@@ -172,4 +262,4 @@ async def search(
         for t in tag_result.scalars().all()
     ]
 
-    return SearchResults(tasks=tasks, projects=projects, tags=tags, crm=crm_results)
+    return SearchResults(tasks=tasks, projects=projects, tags=tags, crm=crm_results, toggl=toggl_results, bexio=bexio_results)

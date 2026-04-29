@@ -104,9 +104,18 @@ async def update_triage_settings(
 class IntegrationSettings(BaseModel):
     pipedrive_api_token: str | None = None
     pipedrive_domain: str | None = None
+    toggl_api_token: str | None = None
+    toggl_workspace_id: int | None = None
+    bexio_api_token: str | None = None
 
 
-INTEGRATION_FIELDS = ["pipedrive_api_token", "pipedrive_domain"]
+INTEGRATION_FIELDS = ["pipedrive_api_token", "pipedrive_domain", "toggl_api_token", "toggl_workspace_id", "bexio_api_token"]
+
+
+def _mask_token(token: str) -> str:
+    if not token:
+        return ""
+    return f"{'*' * (len(token) - 4)}{token[-4:]}" if len(token) > 4 else "****"
 
 
 @router.get("/integrations", response_model=IntegrationSettings)
@@ -116,11 +125,12 @@ async def get_integration_settings(
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
     s = user.settings or {}
-    token = s.get("pipedrive_api_token") or ""
-    masked = f"{'*' * (len(token) - 4)}{token[-4:]}" if len(token) > 4 else "****" if token else ""
     return IntegrationSettings(
-        pipedrive_api_token=masked,
+        pipedrive_api_token=_mask_token(s.get("pipedrive_api_token") or ""),
         pipedrive_domain=s.get("pipedrive_domain") or "innosmith",
+        toggl_api_token=_mask_token(s.get("toggl_api_token") or ""),
+        toggl_workspace_id=s.get("toggl_workspace_id"),
+        bexio_api_token=_mask_token(s.get("bexio_api_token") or ""),
     )
 
 
@@ -136,15 +146,18 @@ async def update_integration_settings(
     for field, value in body.model_dump(exclude_unset=True).items():
         if value is None:
             current.pop(field, None)
-        elif value.startswith("****"):
+        elif isinstance(value, str) and value.startswith("****"):
             pass
+        elif isinstance(value, int):
+            current[field] = value
         else:
             current[field] = value
     user.settings = current
     await db.flush()
-    token = current.get("pipedrive_api_token") or ""
-    masked = f"{'*' * (len(token) - 4)}{token[-4:]}" if len(token) > 4 else "****" if token else ""
     return IntegrationSettings(
-        pipedrive_api_token=masked,
+        pipedrive_api_token=_mask_token(current.get("pipedrive_api_token") or ""),
         pipedrive_domain=current.get("pipedrive_domain") or "innosmith",
+        toggl_api_token=_mask_token(current.get("toggl_api_token") or ""),
+        toggl_workspace_id=current.get("toggl_workspace_id"),
+        bexio_api_token=_mask_token(current.get("bexio_api_token") or ""),
     )

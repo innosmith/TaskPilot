@@ -57,7 +57,33 @@ interface HeartbeatStatus {
   agents_md: string;
 }
 
-type SettingsTab = 'profile' | 'display' | 'cockpit' | 'integrations' | 'triage' | 'team' | 'memory';
+interface SenderProfile {
+  email: string;
+  name: string | null;
+  total_emails: number;
+  auto_reply_count: number;
+  task_count: number;
+  fyi_count: number;
+  reply_rate: number;
+  last_seen: string | null;
+}
+
+interface TriageStatsData {
+  total: number;
+  auto_reply: number;
+  task: number;
+  fyi: number;
+  reply_expected_count: number;
+  avg_per_day: number;
+  period_days: number;
+}
+
+interface AgentSkillData {
+  name: string;
+  description: string;
+}
+
+type SettingsTab = 'profile' | 'display' | 'cockpit' | 'integrations' | 'triage' | 'team' | 'intelligence';
 
 export function SettingsPage() {
   const [searchParams] = useSearchParams();
@@ -93,11 +119,24 @@ export function SettingsPage() {
   const [heartbeat, setHeartbeat] = useState<HeartbeatStatus | null>(null);
   const [memExpanded, setMemExpanded] = useState<Set<string>>(new Set());
   const [memLoading, setMemLoading] = useState(false);
+  const [senderProfiles, setSenderProfiles] = useState<SenderProfile[]>([]);
+  const [triageStats, setTriageStats] = useState<TriageStatsData | null>(null);
+  const [agentSkills, setAgentSkills] = useState<AgentSkillData[]>([]);
+  const [totalSenders, setTotalSenders] = useState(0);
 
   const [pdToken, setPdToken] = useState('');
   const [pdDomain, setPdDomain] = useState('innosmith');
   const [pdMsg, setPdMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [pdTesting, setPdTesting] = useState(false);
+
+  const [togglToken, setTogglToken] = useState('');
+  const [togglWsId, setTogglWsId] = useState('');
+  const [togglMsg, setTogglMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [togglTesting, setTogglTesting] = useState(false);
+
+  const [bexioToken, setBexioToken] = useState('');
+  const [bexioMsg, setBexioMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [bexioTesting, setBexioTesting] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -125,23 +164,33 @@ export function SettingsPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   useEffect(() => {
-    if (tab !== 'memory') return;
+    if (tab !== 'intelligence') return;
     setMemLoading(true);
     Promise.all([
       api.get<HeartbeatStatus>('/api/memory/status/heartbeat').catch(() => null),
       api.get<MemoryFile[]>('/api/memory').catch(() => []),
-    ]).then(([hb, files]) => {
+      api.get<{ profiles: SenderProfile[]; total_senders: number }>('/api/intelligence/sender-profiles?limit=20').catch(() => ({ profiles: [], total_senders: 0 })),
+      api.get<TriageStatsData>('/api/intelligence/triage-stats?days=30').catch(() => null),
+      api.get<{ skills: AgentSkillData[] }>('/api/intelligence/skills').catch(() => ({ skills: [] })),
+    ]).then(([hb, files, sp, ts, sk]) => {
       setHeartbeat(hb);
       setMemFiles(files ?? []);
+      setSenderProfiles(sp?.profiles ?? []);
+      setTotalSenders(sp?.total_senders ?? 0);
+      setTriageStats(ts);
+      setAgentSkills(sk?.skills ?? []);
     }).finally(() => setMemLoading(false));
   }, [tab]);
 
   useEffect(() => {
     if (tab !== 'integrations') return;
-    api.get<{ pipedrive_api_token: string | null; pipedrive_domain: string | null }>('/api/settings/integrations')
+    api.get<{ pipedrive_api_token: string | null; pipedrive_domain: string | null; toggl_api_token: string | null; toggl_workspace_id: number | null; bexio_api_token: string | null }>('/api/settings/integrations')
       .then((data) => {
         setPdToken(data.pipedrive_api_token || '');
         setPdDomain(data.pipedrive_domain || 'innosmith');
+        setTogglToken(data.toggl_api_token || '');
+        setTogglWsId(data.toggl_workspace_id ? String(data.toggl_workspace_id) : '');
+        setBexioToken(data.bexio_api_token || '');
       })
       .catch(() => {});
   }, [tab]);
@@ -252,15 +301,19 @@ export function SettingsPage() {
   };
 
   const saveIntegrations = async () => {
-    setPdMsg(null);
+    setPdMsg(null); setTogglMsg(null); setBexioMsg(null);
     try {
-      const payload: Record<string, string> = { pipedrive_domain: pdDomain };
-      if (pdToken && !pdToken.startsWith('****')) {
-        payload.pipedrive_api_token = pdToken;
-      }
-      const data = await api.put<{ pipedrive_api_token: string | null; pipedrive_domain: string | null }>('/api/settings/integrations', payload);
+      const payload: Record<string, string | number> = { pipedrive_domain: pdDomain };
+      if (pdToken && !pdToken.startsWith('****')) payload.pipedrive_api_token = pdToken;
+      if (togglToken && !togglToken.startsWith('****')) payload.toggl_api_token = togglToken;
+      if (togglWsId) payload.toggl_workspace_id = parseInt(togglWsId) || 0;
+      if (bexioToken && !bexioToken.startsWith('****')) payload.bexio_api_token = bexioToken;
+      const data = await api.put<{ pipedrive_api_token: string | null; pipedrive_domain: string | null; toggl_api_token: string | null; toggl_workspace_id: number | null; bexio_api_token: string | null }>('/api/settings/integrations', payload);
       setPdToken(data.pipedrive_api_token || '');
       setPdDomain(data.pipedrive_domain || 'innosmith');
+      setTogglToken(data.toggl_api_token || '');
+      setTogglWsId(data.toggl_workspace_id ? String(data.toggl_workspace_id) : '');
+      setBexioToken(data.bexio_api_token || '');
       setPdMsg({ type: 'ok', text: 'Einstellungen gespeichert' });
       setTimeout(() => setPdMsg(null), 3000);
     } catch (err: unknown) {
@@ -287,6 +340,45 @@ export function SettingsPage() {
     }
   };
 
+  const testToggl = async () => {
+    setTogglTesting(true);
+    setTogglMsg(null);
+    try {
+      const result = await api.get<{ ok: boolean; name: string; email: string; default_workspace_id: number }>('/api/toggl/test-connection');
+      if (result.ok) {
+        setTogglMsg({ type: 'ok', text: `Verbunden als ${result.name} (${result.email})` });
+        if (result.default_workspace_id && !togglWsId) {
+          setTogglWsId(String(result.default_workspace_id));
+        }
+      } else {
+        setTogglMsg({ type: 'err', text: 'Verbindung fehlgeschlagen' });
+      }
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setTogglMsg({ type: 'err', text: `Verbindungstest fehlgeschlagen: ${detail}` });
+    } finally {
+      setTogglTesting(false);
+    }
+  };
+
+  const testBexio = async () => {
+    setBexioTesting(true);
+    setBexioMsg(null);
+    try {
+      const result = await api.get<{ ok: boolean; name: string; email: string }>('/api/bexio/test-connection');
+      if (result.ok) {
+        setBexioMsg({ type: 'ok', text: `Verbunden als ${result.name} (${result.email})` });
+      } else {
+        setBexioMsg({ type: 'err', text: 'Verbindung fehlgeschlagen' });
+      }
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setBexioMsg({ type: 'err', text: `Verbindungstest fehlgeschlagen: ${detail}` });
+    } finally {
+      setBexioTesting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -303,7 +395,7 @@ export function SettingsPage() {
     ...(isOwner ? [{ id: 'integrations' as const, label: 'Integrationen' }] : []),
     ...(isOwner ? [{ id: 'triage' as const, label: 'E-Mail-Triage' }] : []),
     ...(isOwner ? [{ id: 'team' as const, label: 'Team' }] : []),
-    { id: 'memory', label: 'Memory' },
+    { id: 'intelligence', label: 'Intelligenz' },
   ];
 
   return (
@@ -728,6 +820,69 @@ export function SettingsPage() {
                 </div>
 
               </div>
+
+              {/* ── Toggl Track ── */}
+              <div className="mt-6 rounded-xl border border-gray-200 p-5 dark:border-gray-700">
+                <div className="mb-4 flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-pink-100 dark:bg-pink-900/30">
+                    <svg className="h-5 w-5 text-pink-600 dark:text-pink-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Toggl Track</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Zeiterfassung, Kunden und Projekte</p>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">API-Token</label>
+                    <input type="password" className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white" value={togglToken} onChange={(e) => setTogglToken(e.target.value)} placeholder="Toggl API-Token eingeben" />
+                    <p className="mt-1 text-[10px] text-gray-400">Zu finden unter: Toggl Track → Profile Settings → API Token</p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Workspace-ID</label>
+                    <input type="text" className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white" value={togglWsId} onChange={(e) => setTogglWsId(e.target.value)} placeholder="Wird nach Test automatisch gesetzt" />
+                  </div>
+                  <div className="flex items-center gap-3 pt-2">
+                    <button onClick={saveIntegrations} className="rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Speichern</button>
+                    <button onClick={testToggl} disabled={togglTesting} className="rounded-lg bg-pink-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-pink-700 disabled:opacity-50">
+                      {togglTesting ? 'Teste...' : 'Verbindung testen'}
+                    </button>
+                    {togglMsg && (
+                      <span className={`text-sm ${togglMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{togglMsg.text}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Bexio ── */}
+              <div className="mt-6 rounded-xl border border-gray-200 p-5 dark:border-gray-700">
+                <div className="mb-4 flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/30">
+                    <svg className="h-5 w-5 text-blue-600 dark:text-blue-400" fill="currentColor" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Bexio</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Buchhaltung, Kontakte und Aufträge</p>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">API-Token</label>
+                    <input type="password" className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white" value={bexioToken} onChange={(e) => setBexioToken(e.target.value)} placeholder="Bexio API-Token eingeben" />
+                    <p className="mt-1 text-[10px] text-gray-400">Zu finden unter: Bexio → Einstellungen → Sicherheit → API-Zugänge</p>
+                  </div>
+                  <div className="flex items-center gap-3 pt-2">
+                    <button onClick={saveIntegrations} className="rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Speichern</button>
+                    <button onClick={testBexio} disabled={bexioTesting} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50">
+                      {bexioTesting ? 'Teste...' : 'Verbindung testen'}
+                    </button>
+                    {bexioMsg && (
+                      <span className={`text-sm ${bexioMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{bexioMsg.text}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
             </section>
           )}
 
@@ -922,12 +1077,12 @@ export function SettingsPage() {
             </section>
           )}
 
-          {/* ── Memory ── */}
-          {tab === 'memory' && (
+          {/* ── Intelligenz ── */}
+          {tab === 'intelligence' && (
             <section>
-              <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Memory</h2>
+              <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Intelligenz</h2>
               <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-                Nanobot-Zustand — Heartbeat, Skills und Memory-Dateien (nur lesen)
+                Systemwissen — Triage-Statistiken, Absenderprofile, Agent-Skills und Memory
               </p>
 
               {memLoading ? (
@@ -936,6 +1091,87 @@ export function SettingsPage() {
                 </div>
               ) : (
                 <div className="space-y-6">
+
+                  {/* Triage-Statistiken */}
+                  {triageStats && (
+                    <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
+                      <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                        Triage-Statistiken (letzte {triageStats.period_days} Tage)
+                      </h3>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <div className="rounded-lg bg-gray-50 p-3 text-center dark:bg-gray-800">
+                          <div className="text-2xl font-bold text-gray-900 dark:text-white">{triageStats.total}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">Gesamt</div>
+                        </div>
+                        <div className="rounded-lg bg-green-50 p-3 text-center dark:bg-green-900/20">
+                          <div className="text-2xl font-bold text-green-700 dark:text-green-300">{triageStats.auto_reply}</div>
+                          <div className="text-xs text-green-600 dark:text-green-400">Auto-Reply</div>
+                        </div>
+                        <div className="rounded-lg bg-blue-50 p-3 text-center dark:bg-blue-900/20">
+                          <div className="text-2xl font-bold text-blue-700 dark:text-blue-300">{triageStats.task}</div>
+                          <div className="text-xs text-blue-600 dark:text-blue-400">Aufgaben</div>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 p-3 text-center dark:bg-gray-800">
+                          <div className="text-2xl font-bold text-gray-700 dark:text-gray-300">{triageStats.fyi}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">FYI</div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+                        <span>⌀ {triageStats.avg_per_day} E-Mails/Tag</span>
+                        <span>{triageStats.reply_expected_count} mit erwarteter Antwort</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Absenderprofile */}
+                  {senderProfiles.length > 0 && (
+                    <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
+                      <div className="mb-3 flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Absenderprofile</h3>
+                        <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                          {totalSenders} Absender bekannt
+                        </span>
+                      </div>
+                      <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                        {senderProfiles.map((sp) => (
+                          <div key={sp.email} className="flex items-center gap-3 py-2.5">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300">
+                              {(sp.name || sp.email).charAt(0).toUpperCase()}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                                {sp.name || sp.email}
+                              </p>
+                              <p className="truncate text-xs text-gray-400 dark:text-gray-500">{sp.email}</p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">{sp.auto_reply_count}</span>
+                              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">{sp.task_count}</span>
+                              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">{sp.fyi_count}</span>
+                              <span className="text-xs text-gray-400 dark:text-gray-500">{sp.total_emails}×</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Agent-Skills */}
+                  {agentSkills.length > 0 && (
+                    <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
+                      <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">Agent-Skills</h3>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {agentSkills.map((skill) => (
+                          <div key={skill.name} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800/50">
+                            <p className="text-sm font-medium text-indigo-600 dark:text-indigo-300">{skill.name}</p>
+                            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{skill.description}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Heartbeat */}
                   {heartbeat && (
                     <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
                       <div className="mb-2 flex items-center gap-2">
@@ -960,12 +1196,14 @@ export function SettingsPage() {
                     </div>
                   )}
 
+                  {/* Memory-Dateien */}
                   {memFiles.length === 0 ? (
                     <div className="flex h-24 items-center justify-center rounded-xl border border-gray-200 text-sm text-gray-400 dark:border-gray-800 dark:text-gray-600">
                       Keine Memory-Dateien vorhanden
                     </div>
                   ) : (
                     <div className="space-y-2">
+                      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Memory-Dateien</h3>
                       {memFiles.map((file) => {
                         const isExpanded = memExpanded.has(file.name);
                         return (

@@ -40,18 +40,36 @@ interface CrmHit {
   pic_url: string | null;
 }
 
+interface TogglHit {
+  id: number;
+  name: string;
+  type: string; // "client" | "project"
+  workspace_id: number | null;
+}
+
+interface BexioHit {
+  id: number;
+  name: string;
+  type: string; // "contact"
+  email: string | null;
+}
+
 interface SearchResults {
   tasks: SearchTask[];
   projects: SearchProject[];
   tags: SearchTag[];
   crm: CrmHit[];
+  toggl: TogglHit[];
+  bexio: BexioHit[];
 }
 
 type ResultItem =
   | { kind: 'task'; data: SearchTask }
   | { kind: 'project'; data: SearchProject }
   | { kind: 'tag'; data: SearchTag }
-  | { kind: 'crm'; data: CrmHit };
+  | { kind: 'crm'; data: CrmHit }
+  | { kind: 'toggl'; data: TogglHit }
+  | { kind: 'bexio'; data: BexioHit };
 
 export function SearchDialog({
   isOpen,
@@ -74,6 +92,8 @@ export function SearchDialog({
     for (const p of results.projects) items.push({ kind: 'project', data: p });
     for (const tag of results.tags) items.push({ kind: 'tag', data: tag });
     for (const c of (results.crm || [])) items.push({ kind: 'crm', data: c });
+    for (const t of (results.toggl || [])) items.push({ kind: 'toggl', data: t });
+    for (const b of (results.bexio || [])) items.push({ kind: 'bexio', data: b });
     return items;
   }, [results]);
 
@@ -88,6 +108,10 @@ export function SearchDialog({
       sections.push({ label: 'Tags', items: results.tags.map((d) => ({ kind: 'tag' as const, data: d })) });
     if ((results.crm || []).length > 0)
       sections.push({ label: 'CRM (Pipedrive)', items: results.crm.map((d) => ({ kind: 'crm' as const, data: d })) });
+    if ((results.toggl || []).length > 0)
+      sections.push({ label: 'Toggl Track', items: results.toggl.map((d) => ({ kind: 'toggl' as const, data: d })) });
+    if ((results.bexio || []).length > 0)
+      sections.push({ label: 'Bexio', items: results.bexio.map((d) => ({ kind: 'bexio' as const, data: d })) });
     return sections;
   }, [results]);
 
@@ -145,6 +169,21 @@ export function SearchDialog({
         const pathMap: Record<string, string> = { person: 'person', deal: 'deal', organization: 'organization' };
         const path = pathMap[crm.type] || crm.type;
         window.open(`https://innosmith.pipedrive.com/${path}/${crm.id}`, '_blank');
+        onClose();
+      } else if (item.kind === 'toggl') {
+        const t = item.data;
+        const wsId = t.workspace_id || 0;
+        if (t.type === 'client') {
+          window.open(`https://track.toggl.com/${wsId}/clients`, '_blank');
+        } else {
+          window.open(`https://track.toggl.com/${wsId}/projects/${t.id}/team`, '_blank');
+        }
+        onClose();
+      } else if (item.kind === 'bexio') {
+        const b = item.data;
+        if (b.type === 'contact') {
+          window.open(`https://office.bexio.com/index.cfm/contact/show/id/${b.id}`, '_blank');
+        }
         onClose();
       }
     },
@@ -394,6 +433,78 @@ export function SearchDialog({
                     );
                   }
 
+                  // toggl
+                  if (item.kind === 'toggl') {
+                    const t = item.data;
+                    const togglTypeLabels: Record<string, string> = { client: 'Kunde', project: 'Projekt' };
+                    const togglTypeColors: Record<string, string> = {
+                      client: 'bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300',
+                      project: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
+                    };
+                    return (
+                      <button
+                        key={`toggl-${t.type}-${t.id}`}
+                        data-active={isActive}
+                        onClick={() => activateItem(item)}
+                        onMouseEnter={() => setActiveIndex(idx)}
+                        className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+                          isActive
+                            ? 'bg-indigo-50 dark:bg-indigo-950/40'
+                            : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                        }`}
+                      >
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300">
+                          <TogglIcon className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                            {t.name}
+                          </p>
+                        </div>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${togglTypeColors[t.type] || 'bg-gray-100 text-gray-600'}`}>
+                          {togglTypeLabels[t.type] || t.type}
+                        </span>
+                        <ExternalLinkIcon className="h-3.5 w-3.5 shrink-0 text-gray-300 dark:text-gray-600" />
+                      </button>
+                    );
+                  }
+
+                  // bexio
+                  if (item.kind === 'bexio') {
+                    const b = item.data;
+                    return (
+                      <button
+                        key={`bexio-${b.type}-${b.id}`}
+                        data-active={isActive}
+                        onClick={() => activateItem(item)}
+                        onMouseEnter={() => setActiveIndex(idx)}
+                        className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+                          isActive
+                            ? 'bg-indigo-50 dark:bg-indigo-950/40'
+                            : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                        }`}
+                      >
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300">
+                          <BexioIcon className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                            {b.name}
+                          </p>
+                          {b.email && (
+                            <p className="truncate text-xs text-gray-400 dark:text-gray-500">
+                              {b.email}
+                            </p>
+                          )}
+                        </div>
+                        <span className="shrink-0 rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-medium text-teal-700 dark:bg-teal-900/40 dark:text-teal-300">
+                          Kontakt
+                        </span>
+                        <ExternalLinkIcon className="h-3.5 w-3.5 shrink-0 text-gray-300 dark:text-gray-600" />
+                      </button>
+                    );
+                  }
+
                   return null;
                 })}
               </div>
@@ -474,6 +585,22 @@ function ExternalLinkIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+    </svg>
+  );
+}
+
+function TogglIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+    </svg>
+  );
+}
+
+function BexioIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z" />
     </svg>
   );
 }

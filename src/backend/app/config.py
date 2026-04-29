@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     pipedrive_api_token: str = ""
     pipedrive_domain: str = "innosmith"
 
+    # Toggl Track
+    toggl_api_token: str = ""
+    toggl_workspace_id: int = 0
+
+    # Bexio Buchhaltung
+    bexio_api_token: str = ""
+
     # Triage
     triage_interval_seconds: int = 120
 

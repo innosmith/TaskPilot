@@ -374,6 +374,9 @@ async def _populate_env_from_db() -> None:
     _ENV_KEYS = {
         "pipedrive_api_token": "TP_PIPEDRIVE_API_TOKEN",
         "pipedrive_domain": "TP_PIPEDRIVE_DOMAIN",
+        "toggl_api_token": "TP_TOGGL_API_TOKEN",
+        "toggl_workspace_id": "TP_TOGGL_WORKSPACE_ID",
+        "bexio_api_token": "TP_BEXIO_API_TOKEN",
     }
     try:
         async with async_session() as db:
@@ -389,6 +392,9 @@ async def _populate_env_from_db() -> None:
                 if value:
                     os.environ[env_key] = str(value)
                     logger.info("Env-Var %s aus DB-Settings gesetzt", env_key)
+                else:
+                    os.environ[env_key] = ""
+                    logger.debug("Env-Var %s auf leer gesetzt (kein DB-Wert)", env_key)
     except Exception:
         logger.warning("DB-Settings konnten nicht gelesen werden -- Env-Vars bleiben wie sie sind")
 

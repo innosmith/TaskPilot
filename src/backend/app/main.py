@@ -13,8 +13,10 @@ from app.database import async_session
 from app.routers import (
     agent_jobs,
     auth,
+    bexio,
     calendar,
     emails,
+    intelligence,
     memory,
     models,
     pipedrive,
@@ -24,6 +26,7 @@ from app.routers import (
     sse,
     tags,
     tasks,
+    toggl,
     triage,
     unsplash,
     uploads,
@@ -109,6 +112,9 @@ app.include_router(calendar.router)
 app.include_router(triage.router)
 app.include_router(models.router)
 app.include_router(pipedrive.router)
+app.include_router(toggl.router)
+app.include_router(bexio.router)
+app.include_router(intelligence.router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
