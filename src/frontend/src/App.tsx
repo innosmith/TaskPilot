@@ -16,6 +16,8 @@ import { AgentQueuePage } from './pages/AgentQueuePage';
 import { SettingsPage } from './pages/SettingsPage';
 import { InboxPage } from './pages/InboxPage';
 
+import { SignalePage } from './pages/SignalePage';
+
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuth();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
@@ -54,6 +56,7 @@ export default function App() {
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectBoardPage />} />
           <Route path="/inbox" element={<InboxPage />} />
+          <Route path="/signale" element={<SignalePage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 

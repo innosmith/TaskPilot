@@ -259,6 +259,9 @@ export function Sidebar({
                   )}
                 </span>
               </NavLink>
+              <NavLink to="/signale" className={collapsedLinkClasses} onClick={onClose} title="Signale">
+                <SignaleIcon className="h-5 w-5" />
+              </NavLink>
             </>
           ) : (
             <>
@@ -334,6 +337,11 @@ export function Sidebar({
                     {unreadMailCount}
                   </span>
                 )}
+              </NavLink>
+
+              <NavLink to="/signale" className={linkClasses} onClick={onClose}>
+                <SignaleIcon className="h-5 w-5" />
+                <span className="flex-1">Signale</span>
               </NavLink>
             </>
           )}
@@ -546,6 +554,14 @@ function MonitorSmallIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25A2.25 2.25 0 0 1 5.25 3h13.5A2.25 2.25 0 0 1 21 5.25Z" />
+    </svg>
+  );
+}
+
+function SignaleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
     </svg>
   );
 }

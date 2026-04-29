@@ -81,6 +81,7 @@ interface TriageStatsData {
 interface AgentSkillData {
   name: string;
   description: string;
+  content: string;
 }
 
 type SettingsTab = 'profile' | 'display' | 'cockpit' | 'integrations' | 'triage' | 'team' | 'intelligence';
@@ -1082,7 +1083,7 @@ export function SettingsPage() {
             <section>
               <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Intelligenz</h2>
               <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-                Systemwissen — Triage-Statistiken, Absenderprofile, Agent-Skills und Memory
+                Systemwissen — Triage-Statistiken, Agent-Skills, Memory und Absenderprofile
               </p>
 
               {memLoading ? (
@@ -1090,14 +1091,18 @@ export function SettingsPage() {
                   <div className="h-8 w-8 animate-spin rounded-full border-3 border-indigo-500 border-t-transparent" />
                 </div>
               ) : (
-                <div className="space-y-6">
+                <div className="space-y-2">
 
                   {/* Triage-Statistiken */}
                   {triageStats && (
-                    <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
-                      <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">
-                        Triage-Statistiken (letzte {triageStats.period_days} Tage)
-                      </h3>
+                    <CollapsibleBlock
+                      id="triage-stats"
+                      title="Triage-Statistiken"
+                      subtitle={`Letzte ${triageStats.period_days} Tage · ${triageStats.total} E-Mails`}
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                      defaultOpen
+                    >
                       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                         <div className="rounded-lg bg-gray-50 p-3 text-center dark:bg-gray-800">
                           <div className="text-2xl font-bold text-gray-900 dark:text-white">{triageStats.total}</div>
@@ -1120,18 +1125,56 @@ export function SettingsPage() {
                         <span>⌀ {triageStats.avg_per_day} E-Mails/Tag</span>
                         <span>{triageStats.reply_expected_count} mit erwarteter Antwort</span>
                       </div>
-                    </div>
+                    </CollapsibleBlock>
                   )}
+
+                  {/* Agent-Skills */}
+                  {agentSkills.length > 0 && agentSkills.map((skill) => (
+                    <CollapsibleBlock
+                      key={`skill-${skill.name}`}
+                      id={`skill-${skill.name}`}
+                      title={skill.name}
+                      subtitle={skill.description}
+                      badge={<span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">Skill</span>}
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                    >
+                      <div className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-4 text-sm leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+                        {skill.content || <span className="italic text-gray-400">Kein Inhalt</span>}
+                      </div>
+                    </CollapsibleBlock>
+                  ))}
+
+                  {/* Memory-Dateien */}
+                  {memFiles.map((file) => (
+                    <CollapsibleBlock
+                      key={`mem-${file.name}`}
+                      id={`mem-${file.name}`}
+                      title={file.name}
+                      subtitle=""
+                      badge={
+                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                          {file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`}
+                        </span>
+                      }
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                    >
+                      <div className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+                        {file.content || <span className="italic text-gray-400">Leer</span>}
+                      </div>
+                    </CollapsibleBlock>
+                  ))}
 
                   {/* Absenderprofile */}
                   {senderProfiles.length > 0 && (
-                    <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
-                      <div className="mb-3 flex items-center justify-between">
-                        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Absenderprofile</h3>
-                        <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                          {totalSenders} Absender bekannt
-                        </span>
-                      </div>
+                    <CollapsibleBlock
+                      id="sender-profiles"
+                      title="Absenderprofile"
+                      subtitle={`${totalSenders} Absender bekannt`}
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                    >
                       <div className="divide-y divide-gray-100 dark:divide-gray-800">
                         {senderProfiles.map((sp) => (
                           <div key={sp.email} className="flex items-center gap-3 py-2.5">
@@ -1153,34 +1196,24 @@ export function SettingsPage() {
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
-
-                  {/* Agent-Skills */}
-                  {agentSkills.length > 0 && (
-                    <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
-                      <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">Agent-Skills</h3>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {agentSkills.map((skill) => (
-                          <div key={skill.name} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800/50">
-                            <p className="text-sm font-medium text-indigo-600 dark:text-indigo-300">{skill.name}</p>
-                            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{skill.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                    </CollapsibleBlock>
                   )}
 
                   {/* Heartbeat */}
                   {heartbeat && (
-                    <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900">
-                      <div className="mb-2 flex items-center gap-2">
-                        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Heartbeat</h3>
+                    <CollapsibleBlock
+                      id="heartbeat"
+                      title="Heartbeat"
+                      subtitle=""
+                      badge={
                         <span className="flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300">
                           <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
                           Aktiv
                         </span>
-                      </div>
+                      }
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                    >
                       <div className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
                         {heartbeat.content}
                       </div>
@@ -1193,44 +1226,7 @@ export function SettingsPage() {
                           ))}
                         </div>
                       )}
-                    </div>
-                  )}
-
-                  {/* Memory-Dateien */}
-                  {memFiles.length === 0 ? (
-                    <div className="flex h-24 items-center justify-center rounded-xl border border-gray-200 text-sm text-gray-400 dark:border-gray-800 dark:text-gray-600">
-                      Keine Memory-Dateien vorhanden
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Memory-Dateien</h3>
-                      {memFiles.map((file) => {
-                        const isExpanded = memExpanded.has(file.name);
-                        return (
-                          <div key={file.name} className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
-                            <button
-                              onClick={() => toggleMemFile(file.name)}
-                              className="flex w-full items-center justify-between px-4 py-3 text-left"
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <ChevronIcon className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-                                <span className="truncate text-sm font-medium text-gray-900 dark:text-white">{file.name}</span>
-                              </div>
-                              <span className="ml-3 shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                                {file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`}
-                              </span>
-                            </button>
-                            {isExpanded && (
-                              <div className="border-t border-gray-100 px-4 py-3 dark:border-gray-800">
-                                <div className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
-                                  {file.content || <span className="italic text-gray-400">Leer</span>}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                    </CollapsibleBlock>
                   )}
                 </div>
               )}
@@ -1239,6 +1235,54 @@ export function SettingsPage() {
 
         </div>
       </div>
+    </div>
+  );
+}
+
+function CollapsibleBlock({
+  id,
+  title,
+  subtitle,
+  badge,
+  expanded,
+  toggle,
+  defaultOpen,
+  children,
+}: {
+  id: string;
+  title: string;
+  subtitle?: string;
+  badge?: React.ReactNode;
+  expanded: Set<string>;
+  toggle: (id: string) => void;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const isOpen = defaultOpen ? !expanded.has(id) : expanded.has(id);
+  const handleToggle = () => toggle(id);
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+      <button
+        onClick={handleToggle}
+        className="flex w-full items-center justify-between px-4 py-3 text-left"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <ChevronIcon className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+          <span className="truncate text-sm font-semibold text-gray-900 dark:text-white">{title}</span>
+          {badge}
+        </div>
+        {subtitle && (
+          <span className="ml-3 shrink-0 truncate text-xs text-gray-400 dark:text-gray-500 max-w-[40%]">
+            {subtitle}
+          </span>
+        )}
+      </button>
+      {isOpen && (
+        <div className="border-t border-gray-100 px-4 py-4 dark:border-gray-800">
+          {children}
+        </div>
+      )}
     </div>
   );
 }

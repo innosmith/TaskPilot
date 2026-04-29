@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # Bexio Buchhaltung
     bexio_api_token: str = ""
 
+    # SIGNA Strategic Intelligence (read-only DB)
+    isi_host: str = ""
+    isi_db: str = ""
+    isi_user: str = ""
+    isi_secret: str = ""
+    isi_port: int = 5432
+
     # Triage
     triage_interval_seconds: int = 120
 

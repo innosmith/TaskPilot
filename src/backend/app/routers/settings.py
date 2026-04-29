@@ -23,6 +23,7 @@ class UserSettings(BaseModel):
     cockpit_calendar_hide_private: bool | None = None
     inbox_background_url: str | None = None
     agents_background_url: str | None = None
+    signale_background_url: str | None = None
 
 
 SETTINGS_FIELDS = [
@@ -30,7 +31,7 @@ SETTINGS_FIELDS = [
     "sidebar_collapsed", "app_logo_url", "sidebar_color",
     "show_column_count", "cockpit_background_url", "cockpit_background_type",
     "cockpit_calendar_exclude_categories", "cockpit_calendar_hide_private",
-    "inbox_background_url", "agents_background_url",
+    "inbox_background_url", "agents_background_url", "signale_background_url",
 ]
 
 

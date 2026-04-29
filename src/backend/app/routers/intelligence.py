@@ -141,6 +141,7 @@ async def get_triage_stats(
 class AgentSkill(BaseModel):
     name: str
     description: str
+    content: str = ""
 
 
 class AgentSkillsResponse(BaseModel):
@@ -170,7 +171,7 @@ async def get_agent_skills(
                         if stripped and not stripped.startswith("#"):
                             first_line = stripped[:200]
                             break
-                    skills.append(AgentSkill(name=f.stem, description=first_line))
+                    skills.append(AgentSkill(name=f.stem, description=first_line, content=content))
                 except OSError:
                     continue
 

@@ -54,6 +54,14 @@ interface BexioHit {
   email: string | null;
 }
 
+interface SignaHit {
+  id: number;
+  title: string;
+  type: string; // "rss" | "youtube" | "web"
+  score: number | null;
+  source: string | null;
+}
+
 interface SearchResults {
   tasks: SearchTask[];
   projects: SearchProject[];
@@ -61,6 +69,7 @@ interface SearchResults {
   crm: CrmHit[];
   toggl: TogglHit[];
   bexio: BexioHit[];
+  signa: SignaHit[];
 }
 
 type ResultItem =
@@ -69,7 +78,8 @@ type ResultItem =
   | { kind: 'tag'; data: SearchTag }
   | { kind: 'crm'; data: CrmHit }
   | { kind: 'toggl'; data: TogglHit }
-  | { kind: 'bexio'; data: BexioHit };
+  | { kind: 'bexio'; data: BexioHit }
+  | { kind: 'signa'; data: SignaHit };
 
 export function SearchDialog({
   isOpen,
@@ -94,6 +104,7 @@ export function SearchDialog({
     for (const c of (results.crm || [])) items.push({ kind: 'crm', data: c });
     for (const t of (results.toggl || [])) items.push({ kind: 'toggl', data: t });
     for (const b of (results.bexio || [])) items.push({ kind: 'bexio', data: b });
+    for (const s of (results.signa || [])) items.push({ kind: 'signa', data: s });
     return items;
   }, [results]);
 
@@ -112,6 +123,8 @@ export function SearchDialog({
       sections.push({ label: 'Toggl Track', items: results.toggl.map((d) => ({ kind: 'toggl' as const, data: d })) });
     if ((results.bexio || []).length > 0)
       sections.push({ label: 'Bexio', items: results.bexio.map((d) => ({ kind: 'bexio' as const, data: d })) });
+    if ((results.signa || []).length > 0)
+      sections.push({ label: 'SIGNA Signale', items: results.signa.map((d) => ({ kind: 'signa' as const, data: d })) });
     return sections;
   }, [results]);
 
@@ -182,8 +195,11 @@ export function SearchDialog({
       } else if (item.kind === 'bexio') {
         const b = item.data;
         if (b.type === 'contact') {
-          window.open(`https://office.bexio.com/index.cfm/contact/show/id/${b.id}`, '_blank');
+          window.open(`https://office.bexio.com/index.php/kontakt/show/id/${b.id}`, '_blank');
         }
+        onClose();
+      } else if (item.kind === 'signa') {
+        window.location.href = `/signale`;
         onClose();
       }
     },
@@ -505,6 +521,57 @@ export function SearchDialog({
                     );
                   }
 
+                  // signa
+                  if (item.kind === 'signa') {
+                    const s = item.data;
+                    const signaTypeColors: Record<string, string> = {
+                      rss: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
+                      youtube: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+                      web: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+                    };
+                    return (
+                      <button
+                        key={`signa-${s.id}`}
+                        data-active={isActive}
+                        onClick={() => activateItem(item)}
+                        onMouseEnter={() => setActiveIndex(idx)}
+                        className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+                          isActive
+                            ? 'bg-indigo-50 dark:bg-indigo-950/40'
+                            : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                        }`}
+                      >
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                          <SignaSearchIcon className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                            {s.title}
+                          </p>
+                          {s.source && (
+                            <p className="truncate text-xs text-gray-400 dark:text-gray-500">
+                              {s.source}
+                            </p>
+                          )}
+                        </div>
+                        {s.score != null && (
+                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            s.score >= 8
+                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                              : s.score >= 6
+                                ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                                : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+                          }`}>
+                            {s.score.toFixed(1)}
+                          </span>
+                        )}
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${signaTypeColors[s.type] || 'bg-gray-100 text-gray-600'}`}>
+                          {s.type}
+                        </span>
+                      </button>
+                    );
+                  }
+
                   return null;
                 })}
               </div>
@@ -601,6 +668,14 @@ function BexioIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z" />
+    </svg>
+  );
+}
+
+function SignaSearchIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
     </svg>
   );
 }

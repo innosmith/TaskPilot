@@ -23,6 +23,7 @@ from app.routers import (
     pipeline,
     projects,
     search,
+    signa,
     sse,
     tags,
     tasks,
@@ -115,6 +116,7 @@ app.include_router(pipedrive.router)
 app.include_router(toggl.router)
 app.include_router(bexio.router)
 app.include_router(intelligence.router)
+app.include_router(signa.router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 

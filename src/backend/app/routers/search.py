@@ -76,6 +76,15 @@ class SearchResults(BaseModel):
     crm: list[CrmSearchHit]
     toggl: list[TogglHit]
     bexio: list[BexioHit]
+    signa: list["SignaHit"]
+
+
+class SignaHit(BaseModel):
+    id: int
+    title: str
+    type: str  # "rss" | "youtube" | "web"
+    score: float | None = None
+    source: str | None = None
 
 
 async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
@@ -214,6 +223,39 @@ async def _search_bexio(user: User, term: str) -> list[BexioHit]:
         return []
 
 
+async def _search_signa(term: str) -> list[SignaHit]:
+    """SIGNA-Signale nach Titel durchsuchen."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "signa"))
+        from signa_client import SignaClient, SignaConfig
+
+        cfg = SignaConfig.from_env()
+        if not cfg.is_configured:
+            return []
+
+        client = SignaClient(cfg)
+        try:
+            rows = await asyncio.wait_for(
+                client.search_signals(term, min_score=0, limit=8),
+                timeout=5.0,
+            )
+            return [
+                SignaHit(
+                    id=r["id"],
+                    title=r.get("title", ""),
+                    type=r.get("type", "rss"),
+                    score=float(r["total_score"]) if r.get("total_score") is not None else None,
+                    source=r.get("source_name"),
+                )
+                for r in rows
+            ]
+        finally:
+            await client.close()
+    except Exception as exc:
+        logger.debug("SIGNA-Suche fehlgeschlagen (wird ignoriert): %s", exc)
+        return []
+
+
 @router.get("", response_model=SearchResults)
 async def search(
     q: str = Query(..., min_length=1),
@@ -238,9 +280,10 @@ async def search(
     crm_task = _search_pipedrive(user, q)
     toggl_task = _search_toggl(user, q)
     bexio_task = _search_bexio(user, q)
+    signa_task = _search_signa(q)
 
-    task_result, project_result, tag_result, crm_results, toggl_results, bexio_results = await asyncio.gather(
-        db_task, db_project, db_tag, crm_task, toggl_task, bexio_task,
+    task_result, project_result, tag_result, crm_results, toggl_results, bexio_results, signa_results = await asyncio.gather(
+        db_task, db_project, db_tag, crm_task, toggl_task, bexio_task, signa_task,
     )
 
     tasks = [
@@ -262,4 +305,4 @@ async def search(
         for t in tag_result.scalars().all()
     ]
 
-    return SearchResults(tasks=tasks, projects=projects, tags=tags, crm=crm_results, toggl=toggl_results, bexio=bexio_results)
+    return SearchResults(tasks=tasks, projects=projects, tags=tags, crm=crm_results, toggl=toggl_results, bexio=bexio_results, signa=signa_results)
