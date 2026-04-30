@@ -34,3 +34,117 @@ body {
   opacity: 0.9;
   transform: rotate(3deg) scale(1.05);
 }
+
+/* SIGNA content: adapt inline-styled HTML reports to TaskPilot theme.
+   Inline color/background/font-family are stripped in JS; remaining
+   structural properties (padding, margin, font-weight, letter-spacing,
+   text-transform, font-size, line-height, border, border-radius) stay. */
+.signa-content,
+.signa-content * {
+  background-color: transparent !important;
+  background-image: none !important;
+  font-family: inherit !important;
+}
+
+.signa-content h1 {
+  color: var(--color-amber-600);
+  border-bottom: 2px solid var(--color-amber-500 / 0.3);
+  padding-bottom: 0.5rem;
+}
+.signa-content h2 {
+  color: var(--color-amber-700);
+}
+
+.signa-content a {
+  color: var(--color-indigo-600) !important;
+  text-decoration: underline !important;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+.signa-content a:hover {
+  color: var(--color-indigo-500) !important;
+}
+
+.signa-content table,
+.signa-content td,
+.signa-content th,
+.signa-content tr {
+  border-color: var(--color-gray-200) !important;
+}
+
+.signa-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+}
+
+/* Dark mode / prose-invert: light text on dark backgrounds */
+.dark .signa-content h1,
+.signa-content.prose-invert h1 {
+  color: var(--color-amber-400);
+  border-bottom-color: var(--color-amber-400 / 0.25);
+}
+.dark .signa-content h2,
+.signa-content.prose-invert h2 {
+  color: var(--color-amber-300);
+}
+
+.dark .signa-content a,
+.signa-content.prose-invert a {
+  color: var(--color-indigo-400) !important;
+}
+.dark .signa-content a:hover,
+.signa-content.prose-invert a:hover {
+  color: var(--color-indigo-300) !important;
+}
+
+.dark .signa-content table,
+.dark .signa-content td,
+.dark .signa-content th,
+.dark .signa-content tr,
+.signa-content.prose-invert table,
+.signa-content.prose-invert td,
+.signa-content.prose-invert th,
+.signa-content.prose-invert tr {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Verbesserte Absatz-Typographie für Plain-Text-Inhalte */
+.signa-content p {
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+  line-height: 1.75;
+}
+.signa-content p:first-child {
+  margin-top: 0;
+}
+.signa-content p:last-child {
+  margin-bottom: 0;
+}
+.signa-content > p + p {
+  margin-top: 1.25em;
+}
+
+.signa-content strong {
+  font-weight: 700;
+}
+
+.signa-content ul,
+.signa-content ol {
+  padding-left: 1.5em;
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+}
+.signa-content li {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+.signa-content blockquote {
+  border-left: 3px solid var(--color-indigo-400 / 0.5);
+  padding-left: 1em;
+  margin: 1em 0;
+  font-style: italic;
+  opacity: 0.9;
+}

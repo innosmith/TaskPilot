@@ -340,17 +340,27 @@ export function InboxPage() {
 
   useEffect(() => {
     const uniqueAddresses = [...new Set(emails.map(e => e.from_address).filter(Boolean))] as string[];
-    for (const addr of uniqueAddresses) {
-      if (senderAvatars[addr] !== undefined) continue;
-      setSenderAvatars(prev => ({ ...prev, [addr]: null }));
-      api.get<{ id: number; pic_url: string | null } | null>(`/api/pipedrive/lookup-email?email=${encodeURIComponent(addr)}`)
-        .then(data => {
-          if (data?.pic_url) {
-            setSenderAvatars(prev => ({ ...prev, [addr]: data.pic_url }));
-          }
-        })
-        .catch(() => {});
-    }
+    const unknownAddresses = uniqueAddresses.filter(addr => senderAvatars[addr] === undefined);
+    if (unknownAddresses.length === 0) return;
+
+    const placeholder: Record<string, string | null> = {};
+    for (const addr of unknownAddresses) placeholder[addr] = null;
+    setSenderAvatars(prev => ({ ...prev, ...placeholder }));
+
+    api.post<{ email: string; person: { id: number; pic_url: string | null } | null }[]>(
+      '/api/pipedrive/lookup-emails',
+      { emails: unknownAddresses }
+    )
+      .then(results => {
+        const updates: Record<string, string | null> = {};
+        for (const r of results) {
+          if (r.person?.pic_url) updates[r.email] = r.person.pic_url;
+        }
+        if (Object.keys(updates).length > 0) {
+          setSenderAvatars(prev => ({ ...prev, ...updates }));
+        }
+      })
+      .catch(() => {});
   }, [emails]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleBgSelect = async (url: string | null) => {

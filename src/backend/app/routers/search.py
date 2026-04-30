@@ -91,6 +91,7 @@ async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
     """Pipedrive-Suche mit Timeout und Fallback (blockiert nie die lokale Suche)."""
     try:
         from pipedrive_client import PipedriveClient, PipedriveConfig  # noqa: E402
+        from app.routers.pipedrive import _person_cache
 
         settings = user.settings or {}
         token = settings.get("pipedrive_api_token") or ""
@@ -126,13 +127,18 @@ async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
                     email = emails[0] if isinstance(emails[0], str) else emails[0].get("value", "")
                 elif isinstance(emails, str):
                     email = emails
-                person_id = item_data.get("id")
-                if person_id:
-                    try:
-                        full_person = await client.get_person_v1(person_id)
-                        pic_url = _extract_pic_url(full_person)
-                    except Exception:
-                        pass
+                if email:
+                    cached = _person_cache.get(email.strip().lower())
+                    if cached is not None and cached:
+                        pic_url = cached.pic_url
+                if not pic_url:
+                    person_id = item_data.get("id")
+                    if person_id:
+                        try:
+                            full_person = await client.get_person_v1(person_id)
+                            pic_url = _extract_pic_url(full_person)
+                        except Exception:
+                            pass
             elif item_type == "deal":
                 detail = item_data.get("person_name") or item_data.get("org_name")
             elif item_type == "organization":

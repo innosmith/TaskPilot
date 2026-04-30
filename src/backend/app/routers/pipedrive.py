@@ -2,11 +2,14 @@
 
 Stellt die Pipedrive-Daten dem Frontend ueber REST-Endpunkte bereit,
 ohne dass das Frontend direkt mit der Pipedrive-API kommunizieren muss.
+Zweistufiges In-Memory-Caching reduziert API-Token-Verbrauch massiv.
 """
 
+import logging
 import sys
 from pathlib import Path
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -16,7 +19,17 @@ from app.models import User
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "pipedrive"))
 from pipedrive_client import PipedriveClient, PipedriveConfig  # noqa: E402
 
+logger = logging.getLogger("taskpilot.pipedrive")
+
 router = APIRouter(prefix="/api/pipedrive", tags=["pipedrive"])
+
+# ── Cache-Layer ──────────────────────────────────────
+# Personen-Stammdaten (Name, Bild, Firma) aendern extrem selten → 24h TTL
+_person_cache: TTLCache = TTLCache(maxsize=2000, ttl=86400)
+# Listen (Deals, Leads, Activities) sind dynamischer → 2 Min TTL
+_list_cache: TTLCache = TTLCache(maxsize=100, ttl=120)
+# Pipelines/Stages aendern fast nie → 5 Min TTL
+_static_cache: TTLCache = TTLCache(maxsize=50, ttl=300)
 
 
 def _get_pipedrive_client(user: User) -> PipedriveClient:
@@ -79,11 +92,17 @@ async def list_deals(
     limit: int = Query(default=20, le=100),
     user: User = Depends(get_current_user),
 ):
+    cache_key = f"deals:{pipeline_id}:{stage_id}:{status}:{limit}"
+    cached = _list_cache.get(cache_key)
+    if cached is not None:
+        return cached
     client = _get_pipedrive_client(user)
     deals = await client.list_deals(
         pipeline_id=pipeline_id, stage_id=stage_id, status=status, limit=limit
     )
-    return [DealSummary(**{k: d.get(k) for k in DealSummary.model_fields}) for d in deals]
+    result = [DealSummary(**{k: d.get(k) for k in DealSummary.model_fields}) for d in deals]
+    _list_cache[cache_key] = result
+    return result
 
 
 @router.get("/deals/{deal_id}")
@@ -111,6 +130,10 @@ async def list_leads(
     limit: int = Query(default=20, le=100),
     user: User = Depends(get_current_user),
 ):
+    cache_key = f"leads:{limit}"
+    cached = _list_cache.get(cache_key)
+    if cached is not None:
+        return cached
     client = _get_pipedrive_client(user)
     leads = await client.list_leads(limit=limit)
     result = []
@@ -127,6 +150,7 @@ async def list_leads(
             value=val.get("amount") if isinstance(val, dict) else None,
             currency=val.get("currency") if isinstance(val, dict) else None,
         ))
+    _list_cache[cache_key] = result
     return result
 
 
@@ -183,9 +207,15 @@ async def list_activities(
     limit: int = Query(default=20, le=100),
     user: User = Depends(get_current_user),
 ):
+    cache_key = f"activities:{done}:{deal_id}:{person_id}:{limit}"
+    cached = _list_cache.get(cache_key)
+    if cached is not None:
+        return cached
     client = _get_pipedrive_client(user)
     acts = await client.list_activities(done=done, deal_id=deal_id, person_id=person_id, limit=limit)
-    return [ActivitySummary(**{k: a.get(k) for k in ActivitySummary.model_fields}) for a in acts]
+    result = [ActivitySummary(**{k: a.get(k) for k in ActivitySummary.model_fields}) for a in acts]
+    _list_cache[cache_key] = result
+    return result
 
 
 # ── Pipelines & Stages ──────────────────────────────────
@@ -205,16 +235,27 @@ class StageSummary(BaseModel):
 
 @router.get("/pipelines", response_model=list[PipelineSummary])
 async def list_pipelines(user: User = Depends(get_current_user)):
+    cached = _static_cache.get("pipelines")
+    if cached is not None:
+        return cached
     client = _get_pipedrive_client(user)
     pls = await client.list_pipelines()
-    return [PipelineSummary(**{k: p.get(k) for k in PipelineSummary.model_fields}) for p in pls]
+    result = [PipelineSummary(**{k: p.get(k) for k in PipelineSummary.model_fields}) for p in pls]
+    _static_cache["pipelines"] = result
+    return result
 
 
 @router.get("/pipelines/{pipeline_id}/stages", response_model=list[StageSummary])
 async def list_stages(pipeline_id: int, user: User = Depends(get_current_user)):
+    cache_key = f"stages:{pipeline_id}"
+    cached = _static_cache.get(cache_key)
+    if cached is not None:
+        return cached
     client = _get_pipedrive_client(user)
     stages = await client.list_stages(pipeline_id=pipeline_id)
-    return [StageSummary(**{k: s.get(k) for k in StageSummary.model_fields}) for s in stages]
+    result = [StageSummary(**{k: s.get(k) for k in StageSummary.model_fields}) for s in stages]
+    _static_cache[cache_key] = result
+    return result
 
 
 # ── Pipeline-Summary (aggregiert) ────────────────────────
@@ -296,17 +337,25 @@ def _extract_phone(person: dict) -> str:
 @router.get("/lookup-email", response_model=PersonLookupResult | None)
 async def lookup_email(
     email: str = Query(min_length=3),
+    include_deals: bool = Query(default=False),
     user: User = Depends(get_current_user),
 ):
-    """Person in Pipedrive anhand der E-Mail-Adresse suchen."""
-    import logging
-    logger = logging.getLogger("taskpilot.pipedrive")
+    """Person in Pipedrive anhand der E-Mail-Adresse suchen (24h-Cache)."""
+    normalized = email.strip().lower()
+
+    cached = _person_cache.get(normalized)
+    if cached is not None:
+        if include_deals and cached.open_deals_count == 0 and not cached.open_deals:
+            pass  # Re-fetch deals if explicitly requested but not cached
+        else:
+            return cached
+
     client = _get_pipedrive_client(user)
 
     person_id: int | None = None
 
     try:
-        results = await client.search_persons_by_email(email, 5)
+        results = await client.search_persons_by_email(normalized, 5)
         for item in results:
             item_data = item.get("item", item)
             pid = item_data.get("id")
@@ -318,7 +367,7 @@ async def lookup_email(
 
     if not person_id:
         try:
-            results = await client.search_items(email, "person", 5)
+            results = await client.search_items(normalized, "person", 5)
             for item in results:
                 item_data = item.get("item", item)
                 pid = item_data.get("id")
@@ -329,6 +378,7 @@ async def lookup_email(
             logger.debug("search_items fallback fehlgeschlagen: %s", exc)
 
     if not person_id:
+        _person_cache[normalized] = None
         return None
 
     try:
@@ -344,17 +394,19 @@ async def lookup_email(
     org_name = org.get("name") if isinstance(org, dict) else person.get("org_name", "")
     org_id = org.get("value") if isinstance(org, dict) else None
 
-    try:
-        deals = await client.list_deals(limit=20)
-        person_deals = [
-            DealSummary(**{k: d.get(k) for k in DealSummary.model_fields})
-            for d in deals
-            if d.get("person_id") == person_id or d.get("person_name") == person.get("name")
-        ]
-    except Exception:
-        person_deals = []
+    person_deals: list[DealSummary] = []
+    if include_deals:
+        try:
+            deals = await client.list_deals(limit=20)
+            person_deals = [
+                DealSummary(**{k: d.get(k) for k in DealSummary.model_fields})
+                for d in deals
+                if d.get("person_id") == person_id or d.get("person_name") == person.get("name")
+            ]
+        except Exception:
+            pass
 
-    return PersonLookupResult(
+    result = PersonLookupResult(
         id=person_id,
         name=person.get("name", ""),
         email=person_email,
@@ -365,6 +417,29 @@ async def lookup_email(
         open_deals_count=len(person_deals),
         open_deals=person_deals[:3],
     )
+    _person_cache[normalized] = result
+
+    all_emails = _get_all_emails(person)
+    for alt_email in all_emails:
+        alt_norm = alt_email.strip().lower()
+        if alt_norm and alt_norm != normalized:
+            _person_cache[alt_norm] = result
+
+    return result
+
+
+def _get_all_emails(person: dict) -> list[str]:
+    """Alle E-Mail-Adressen einer Person extrahieren fuer Cache-Aliase."""
+    emails_raw = person.get("email", [])
+    if isinstance(emails_raw, list):
+        return [
+            e.get("value", "") if isinstance(e, dict) else str(e)
+            for e in emails_raw
+            if (e.get("value", "") if isinstance(e, dict) else str(e))
+        ]
+    if isinstance(emails_raw, str) and emails_raw:
+        return [emails_raw]
+    return []
 
 
 # ── Quick-Contact ────────────────────────────────────────
@@ -402,4 +477,73 @@ async def create_quick_contact(
             pass
 
     person = await client.create_person(body.name, **kwargs)
+
+    normalized = body.email.strip().lower()
+    _person_cache.pop(normalized, None)
+
     return QuickContactResponse(id=person.get("id", 0), name=person.get("name", body.name))
+
+
+# ── Batch Lookup ──────────────────────────────────────
+
+class BatchLookupRequest(BaseModel):
+    emails: list[str]
+
+
+class BatchLookupItem(BaseModel):
+    email: str
+    person: PersonLookupResult | None = None
+
+
+@router.post("/lookup-emails", response_model=list[BatchLookupItem])
+async def batch_lookup_emails(
+    body: BatchLookupRequest,
+    user: User = Depends(get_current_user),
+):
+    """Mehrere E-Mail-Adressen in einem Request nachschlagen (Cache-aware)."""
+    results: list[BatchLookupItem] = []
+    uncached_emails: list[str] = []
+
+    for raw_email in body.emails[:50]:
+        normalized = raw_email.strip().lower()
+        cached = _person_cache.get(normalized)
+        if cached is not None:
+            results.append(BatchLookupItem(email=raw_email, person=cached if cached else None))
+        else:
+            uncached_emails.append(raw_email)
+            results.append(BatchLookupItem(email=raw_email, person=None))
+
+    if uncached_emails:
+        for email_addr in uncached_emails:
+            try:
+                person = await lookup_email(email=email_addr, include_deals=False, user=user)
+                for item in results:
+                    if item.email == email_addr:
+                        item.person = person
+                        break
+            except Exception:
+                pass
+
+    return results
+
+
+# ── Cache-Verwaltung ──────────────────────────────────
+
+@router.post("/cache/clear")
+async def clear_cache(user: User = Depends(get_current_user)):
+    """Alle Pipedrive-Caches leeren."""
+    _person_cache.clear()
+    _list_cache.clear()
+    _static_cache.clear()
+    logger.info("Pipedrive-Caches manuell geleert")
+    return {"status": "ok", "message": "Alle Caches geleert"}
+
+
+@router.get("/cache/stats")
+async def cache_stats(user: User = Depends(get_current_user)):
+    """Cache-Statistiken anzeigen."""
+    return {
+        "person_cache": {"size": len(_person_cache), "maxsize": _person_cache.maxsize, "ttl": _person_cache.ttl},
+        "list_cache": {"size": len(_list_cache), "maxsize": _list_cache.maxsize, "ttl": _list_cache.ttl},
+        "static_cache": {"size": len(_static_cache), "maxsize": _static_cache.maxsize, "ttl": _static_cache.ttl},
+    }

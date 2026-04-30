@@ -130,7 +130,12 @@ class SignaClient:
         query = f"""
             SELECT id, title, source_name, url, type, status, description,
                    thumbnail_url, published_at, total_score, relevant_role,
-                   ai_reason, topic_name, category
+                   ai_reason, topic_name, category,
+                   (
+                     (full_content IS NOT NULL AND full_content != '')
+                     OR (ai_reason IS NOT NULL AND ai_reason != ''
+                         AND description IS NOT NULL AND length(description) > 500)
+                   ) AS has_full_content
             FROM isi_signals
             {where}
             ORDER BY published_at DESC
@@ -257,7 +262,7 @@ class SignaClient:
         if persona:
             rows = await pool.fetch(
                 """SELECT id, persona_name, "createdAt", "updatedAt",
-                          left(last_synthesis, 300) as preview
+                          last_synthesis
                    FROM isi_deep_dives
                    WHERE persona_name = $1
                    ORDER BY "createdAt" DESC LIMIT $2""",
@@ -266,7 +271,7 @@ class SignaClient:
         else:
             rows = await pool.fetch(
                 """SELECT id, persona_name, "createdAt", "updatedAt",
-                          left(last_synthesis, 300) as preview
+                          last_synthesis
                    FROM isi_deep_dives
                    ORDER BY "createdAt" DESC LIMIT $1""",
                 limit,

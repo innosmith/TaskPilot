@@ -89,6 +89,7 @@ class SignalSummary(BaseModel):
     ai_reason: str | None = None
     topic_name: str | None = None
     category: str | None = None
+    has_full_content: bool = False
 
 
 class SignalListResponse(BaseModel):
@@ -134,7 +135,10 @@ async def get_signal(signal_id: int, user: User = Depends(get_current_user)):
     signal = await client.get_signal(signal_id)
     if not signal:
         raise HTTPException(status_code=404, detail="Signal nicht gefunden")
-    return _serialize(signal)
+    result = _serialize(signal)
+    if not result.get("full_content") and result.get("ai_reason") and len(result.get("description") or "") > 500:
+        result["full_content"] = result["description"]
+    return result
 
 
 # ── Briefings ────────────────────────────────────────
@@ -155,7 +159,10 @@ async def get_briefing(briefing_id: int, user: User = Depends(get_current_user))
     b = await client.get_briefing(briefing_id)
     if not b:
         raise HTTPException(status_code=404, detail="Briefing nicht gefunden")
-    return _serialize(b)
+    result = _serialize(b)
+    result["briefing_text"] = result.pop("plain_text", None)
+    result["briefing_html"] = result.pop("html_content", None) or result.pop("html_body", None)
+    return result
 
 
 # ── Deep Dives ───────────────────────────────────────
@@ -177,7 +184,10 @@ async def get_deep_dive(dd_id: int, user: User = Depends(get_current_user)):
     dd = await client.get_deep_dive(dd_id)
     if not dd:
         raise HTTPException(status_code=404, detail="Deep Dive nicht gefunden")
-    return _serialize(dd)
+    result = _serialize(dd)
+    result["briefing_html"] = result.pop("full_report", None)
+    result["briefing_text"] = result.get("last_synthesis")
+    return result
 
 
 # ── Stammdaten ───────────────────────────────────────

@@ -1,7 +1,38 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
+
+// ── ErrorBoundary ────────────────────────────────────
+
+class SignaleErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('SignalePage Crash:', error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-gray-950 p-8">
+          <div className="max-w-2xl rounded-2xl border border-red-500/30 bg-red-950/40 p-8 text-white shadow-xl">
+            <h2 className="text-lg font-bold text-red-400">Rendering-Fehler</h2>
+            <pre className="mt-4 whitespace-pre-wrap rounded-lg bg-black/40 p-4 text-sm text-red-300">{this.state.error.message}</pre>
+            <pre className="mt-2 max-h-60 overflow-y-auto whitespace-pre-wrap rounded-lg bg-black/30 p-4 text-xs text-gray-400">{this.state.error.stack}</pre>
+            <button onClick={() => this.setState({ error: null })} className="mt-6 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium transition-colors hover:bg-indigo-500">
+              Erneut versuchen
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // ── Types ────────────────────────────────────────────
 
@@ -20,6 +51,7 @@ interface Signal {
   ai_reason: string | null;
   topic_name: string | null;
   category: string | null;
+  has_full_content?: boolean;
   full_content?: string | null;
 }
 
@@ -45,20 +77,36 @@ interface Briefing {
   duration_seconds?: number | null;
 }
 
-interface DeepDive {
+interface DeepDiveListItem {
   id: number;
   persona_name: string | null;
-  preview: string | null;
   createdAt: string | null;
-  updatedAt: string | null;
-  last_synthesis?: string | null;
 }
+
+interface BriefingItem {
+  id: number;
+  type: 'daily' | 'deep-dive';
+  date: string;
+  signal_count?: number;
+  avg_score?: number;
+  persona_name?: string;
+}
+
+interface BriefingDetail {
+  briefing_text?: string | null;
+  briefing_html?: string | null;
+  audio_url?: string | null;
+  persona_name?: string | null;
+  type: 'daily' | 'deep-dive';
+}
+
+type BriefingFilter = 'all' | 'daily' | 'deep-dive';
 
 interface Persona { id: number; persona_name: string; description: string | null; }
 interface Topic { id: number; topic_name: string; relevance_weight: number | null; category: string | null; keywords: string | null; strategic_why: string | null; }
 interface Stats { total: number; high_score: number; medium_score: number; low_score: number; avg_score: number; today: number; this_week: number; sources: number; rss_count: number; youtube_count: number; web_count: number; }
 
-type TabId = 'signals' | 'briefings' | 'deep-dives';
+type TabId = 'signals' | 'briefings';
 type TypeFilter = '' | 'rss' | 'youtube';
 type TimeRange = '' | 'today' | 'week' | '2weeks';
 type ScoreFilter = 0 | 7 | 8 | 9;
@@ -86,15 +134,32 @@ function relativeTime(isoDate: string): string {
   return new Date(isoDate).toLocaleDateString('de-CH', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-function getKeywords(kw: string[] | string | null): string[] {
-  if (!kw) return [];
-  if (Array.isArray(kw)) return kw;
-  return kw.split(',').map(s => s.trim()).filter(Boolean);
-}
-
 function getYouTubeEmbedUrl(url: string): string {
   const match = url.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
   return match ? `https://www.youtube.com/embed/${match[1]}?autoplay=1` : url;
+}
+
+const STRIP_CSS_PROPS = new Set([
+  'background', 'background-color', 'background-image',
+  'font-family', 'box-shadow', 'color',
+]);
+
+function stripInlineStyles(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/\s*bgcolor="[^"]*"/gi, '')
+    .replace(/\s*color="[^"]*"/gi, '')
+    .replace(/style="([^"]*)"/gi, (_, css: string) => {
+      const kept = css
+        .split(';')
+        .filter(p => {
+          const name = p.split(':')[0]?.trim().toLowerCase() ?? '';
+          return name && !STRIP_CSS_PROPS.has(name);
+        })
+        .join(';')
+        .trim();
+      return kept ? `style="${kept}"` : '';
+    });
 }
 
 // ── Component ────────────────────────────────────────
@@ -129,14 +194,11 @@ export function SignalePage() {
   // YouTube inline player
   const [playingVideoId, setPlayingVideoId] = useState<number | null>(null);
 
-  const [briefings, setBriefings] = useState<Briefing[]>([]);
-  const [selectedBriefing, setSelectedBriefing] = useState<Briefing | null>(null);
+  const [briefingItems, setBriefingItems] = useState<BriefingItem[]>([]);
+  const [selectedDetail, setSelectedDetail] = useState<(BriefingDetail & { id: number; date: string }) | null>(null);
   const [loadingBriefings, setLoadingBriefings] = useState(false);
-
-  const [deepDives, setDeepDives] = useState<DeepDive[]>([]);
-  const [selectedDeepDive, setSelectedDeepDive] = useState<DeepDive | null>(null);
+  const [briefingFilter, setBriefingFilter] = useState<BriefingFilter>('all');
   const [ddPersonaFilter, setDdPersonaFilter] = useState('');
-  const [loadingDeepDives, setLoadingDeepDives] = useState(false);
 
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
@@ -198,27 +260,52 @@ export function SignalePage() {
   const toggleExpand = async (id: number) => {
     if (expandedId === id) { setExpandedId(null); setExpandedSignal(null); return; }
     setExpandedId(id);
+    setExpandedSignal(null);
     setLoadingDetail(true);
-    try { const data = await api.get<Signal>(`/api/signa/signals/${id}`); setExpandedSignal(data); } catch { /* handled */ }
+    try {
+      const data = await api.get<Signal>(`/api/signa/signals/${id}`);
+      setExpandedSignal(data);
+    } catch (err) {
+      console.error('Signal-Detail laden fehlgeschlagen:', err);
+      setExpandedId(null);
+    }
     finally { setLoadingDetail(false); }
   };
 
-  const fetchBriefings = useCallback(async () => {
+  const fetchBriefingItems = useCallback(async () => {
     setLoadingBriefings(true);
-    try { setBriefings(await api.get<Briefing[]>('/api/signa/briefings?limit=50')); } catch { /* handled */ }
+    try {
+      const items: BriefingItem[] = [];
+      if (briefingFilter !== 'deep-dive') {
+        const dailies = await api.get<Briefing[]>('/api/signa/briefings?limit=50');
+        for (const b of dailies) {
+          items.push({ id: b.id, type: 'daily', date: b.briefing_date || b.createdAt || '', signal_count: b.signal_count ?? undefined, avg_score: b.avg_score ?? undefined });
+        }
+      }
+      if (briefingFilter !== 'daily') {
+        const dives = await api.get<DeepDiveListItem[]>('/api/signa/deep-dives?limit=50');
+        for (const dd of dives) {
+          items.push({ id: dd.id, type: 'deep-dive', date: dd.createdAt || '', persona_name: dd.persona_name ?? undefined });
+        }
+      }
+      items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setBriefingItems(items);
+    } catch { /* handled */ }
     finally { setLoadingBriefings(false); }
-  }, []);
-  useEffect(() => { if (tab === 'briefings') fetchBriefings(); }, [tab, fetchBriefings]);
+  }, [briefingFilter]);
+  useEffect(() => { if (tab === 'briefings') fetchBriefingItems(); }, [tab, fetchBriefingItems]);
 
-  const fetchDeepDives = useCallback(async () => {
-    setLoadingDeepDives(true);
-    try { const params = ddPersonaFilter ? `?persona=${encodeURIComponent(ddPersonaFilter)}&limit=50` : '?limit=50'; setDeepDives(await api.get<DeepDive[]>(`/api/signa/deep-dives${params}`)); } catch { /* handled */ }
-    finally { setLoadingDeepDives(false); }
-  }, [ddPersonaFilter]);
-  useEffect(() => { if (tab === 'deep-dives') fetchDeepDives(); }, [tab, fetchDeepDives]);
-
-  const openBriefingDetail = async (id: number) => { try { setSelectedBriefing(await api.get<Briefing>(`/api/signa/briefings/${id}`)); } catch { /* handled */ } };
-  const openDeepDiveDetail = async (id: number) => { try { setSelectedDeepDive(await api.get<DeepDive>(`/api/signa/deep-dives/${id}`)); } catch { /* handled */ } };
+  const openBriefingDetail = async (item: BriefingItem) => {
+    try {
+      if (item.type === 'daily') {
+        const b = await api.get<Briefing>(`/api/signa/briefings/${item.id}`);
+        setSelectedDetail({ id: item.id, date: item.date, type: 'daily', briefing_text: b.briefing_text, briefing_html: b.briefing_html, audio_url: b.audio_url });
+      } else {
+        const dd = await api.get<{ briefing_html?: string; briefing_text?: string; persona_name?: string }>(`/api/signa/deep-dives/${item.id}`);
+        setSelectedDetail({ id: item.id, date: item.date, type: 'deep-dive', briefing_text: dd.briefing_text, briefing_html: dd.briefing_html, persona_name: dd.persona_name });
+      }
+    } catch { /* handled */ }
+  };
 
   const handleBgSelect = async (url: string | null) => { await api.patch('/api/settings', { signale_background_url: url }); setBgUrl(url); };
 
@@ -234,6 +321,7 @@ export function SignalePage() {
   const textMuted = hasBg ? 'text-white/40' : 'text-gray-400 dark:text-gray-500';
 
   return (
+    <SignaleErrorBoundary>
     <div className="relative flex h-full flex-col" style={!hasBg ? undefined : bgStyle}>
       {!hasBg && <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-indigo-50/30 dark:from-gray-950 dark:via-gray-900 dark:to-indigo-950/20" />}
       {hasBg && !isGradient && <div className="absolute inset-0 bg-black/30 dark:bg-black/45" />}
@@ -267,7 +355,7 @@ export function SignalePage() {
         {/* Tabs */}
         <div className={`border-b px-6 ${glass}`}>
           <div className="mx-auto flex max-w-3xl items-center gap-1">
-            {([{ id: 'signals' as TabId, label: 'Signale' }, { id: 'briefings' as TabId, label: 'Briefings' }, { id: 'deep-dives' as TabId, label: 'Deep Dives' }]).map(t => (
+            {([{ id: 'signals' as TabId, label: 'Signale' }, { id: 'briefings' as TabId, label: 'Briefings' }]).map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} className={`relative px-4 py-3 text-sm font-medium transition-colors ${tab === t.id ? (hasBg ? 'text-white' : 'text-indigo-600 dark:text-indigo-400') : (hasBg ? 'text-white/50 hover:text-white/80' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300')}`}>
                 {t.label}
                 {tab === t.id && <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-indigo-500" />}
@@ -359,9 +447,10 @@ export function SignalePage() {
                         );
                       }
 
-                      // RSS / Web signals: expand for full content
+                      // RSS / Web signals
+                      const canExpand = !!s.has_full_content;
                       return (
-                        <div key={s.id} className={`rounded-2xl border shadow-sm transition-all ${isExpanded ? cardExpandedGlass : `${cardGlass} cursor-pointer`}`} onClick={() => !isExpanded && toggleExpand(s.id)}>
+                        <div key={s.id} className={`rounded-2xl border shadow-sm transition-all ${isExpanded ? cardExpandedGlass : `${cardGlass}${canExpand ? ' cursor-pointer' : ''}`}`} onClick={() => canExpand && !isExpanded && toggleExpand(s.id)}>
                           <div className="p-5">
                             <div className="mb-2 flex items-start justify-between gap-2">
                               <div className="flex flex-wrap items-center gap-1.5">
@@ -386,6 +475,18 @@ export function SignalePage() {
                                 {s.published_at && <span>{relativeTime(s.published_at)}</span>}
                                 {s.topic_name && <span className={`rounded-full px-2 py-0.5 ${hasBg ? 'bg-white/8' : 'bg-gray-100 dark:bg-gray-800'}`}>{s.topic_name}</span>}
                                 <TypeBadge type={s.type} />
+                                {s.url && (
+                                  <a href={s.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="ml-auto inline-flex items-center gap-1 text-indigo-600 transition-colors hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300">
+                                    <LinkIcon className="h-3 w-3" />
+                                    <span>Artikel lesen</span>
+                                  </a>
+                                )}
+                                {canExpand && (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                    <ChevronDownIcon className="h-3 w-3" />
+                                    Volltext verfügbar
+                                  </span>
+                                )}
                               </div>
                             )}
                           </div>
@@ -394,26 +495,10 @@ export function SignalePage() {
                             <div className="border-t border-inherit px-5 pb-5 pt-4">
                               {loadingDetail ? (
                                 <div className="flex h-20 items-center justify-center"><div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" /></div>
+                              ) : expandedSignal ? (
+                                <ExpandedContent signal={expandedSignal} fallbackType={s.type} hasBg={hasBg} textSecondary={textSecondary} textMuted={textMuted} />
                               ) : (
-                                <>
-                                  <div className={`mb-3 flex flex-wrap items-center gap-3 text-xs ${textMuted}`}>
-                                    {expandedSignal?.published_at && <span>{new Date(expandedSignal.published_at).toLocaleString('de-CH')}</span>}
-                                    {expandedSignal?.topic_name && <span className={`rounded-full px-2 py-0.5 ${hasBg ? 'bg-white/8' : 'bg-gray-100 dark:bg-gray-800'}`}>{expandedSignal.topic_name}</span>}
-                                    <TypeBadge type={expandedSignal?.type ?? s.type} />
-                                  </div>
-
-                                  {expandedSignal?.full_content && (
-                                    <ContentBlock content={expandedSignal.full_content} hasBg={hasBg} />
-                                  )}
-
-                                  <div className="flex items-center gap-3">
-                                    {expandedSignal?.url && (
-                                      <a href={expandedSignal.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-indigo-500/15 px-4 py-2 text-xs font-semibold text-indigo-600 transition-colors hover:bg-indigo-500/25 dark:text-indigo-400">
-                                        <LinkIcon className="h-3.5 w-3.5" />Artikel lesen
-                                      </a>
-                                    )}
-                                  </div>
-                                </>
+                                <p className={`text-sm italic ${textSecondary}`}>Fehler beim Laden der Details.</p>
                               )}
                             </div>
                           )}
@@ -435,53 +520,79 @@ export function SignalePage() {
         {/* ── Briefings Tab ── */}
         {tab === 'briefings' && (
           <div className="flex flex-1 overflow-hidden">
-            <div className={`flex-1 overflow-y-auto p-6 ${selectedBriefing ? 'w-1/2' : 'w-full'}`}>
-              {loadingBriefings ? (
-                <div className="mx-auto max-w-3xl grid gap-4">{Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} hasBg={hasBg} />)}</div>
-              ) : briefings.length === 0 ? (
-                <div className={`py-16 text-center text-sm ${textMuted}`}>Keine Briefings vorhanden</div>
-              ) : (
-                <div className="mx-auto grid max-w-3xl gap-4">
-                  {briefings.map(b => (
-                    <button key={b.id} onClick={() => openBriefingDetail(b.id)} className={`w-full rounded-2xl border p-5 text-left shadow-sm transition-all ${selectedBriefing?.id === b.id ? cardExpandedGlass : cardGlass}`}>
-                      <div className="flex items-center justify-between">
-                        <h3 className={`font-semibold ${textPrimary}`}>{b.briefing_date ? new Date(b.briefing_date).toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : `Briefing #${b.id}`}</h3>
-                        {b.avg_score != null && <ScoreBadge score={b.avg_score} />}
-                      </div>
-                      <div className={`mt-1.5 flex items-center gap-3 text-xs ${textSecondary}`}>
-                        {b.signal_count != null && <span>{b.signal_count} Signale</span>}
-                        {b.high_score_count != null && <span>{b.high_score_count} High-Score</span>}
-                      </div>
-                      {b.top_keywords && (
-                        <div className="mt-2.5 flex flex-wrap gap-1.5">
-                          {getKeywords(b.top_keywords).slice(0, 6).map((kw, i) => (
-                            <span key={i} className={`rounded-full px-2 py-0.5 text-[10px] ${hasBg ? 'bg-white/8 text-white/50' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>{kw}</span>
-                          ))}
+            <div className={`flex flex-col ${selectedDetail ? 'w-[340px] shrink-0' : 'w-full'}`}>
+              <div className={`flex items-center gap-2 border-b px-4 py-3 ${glass}`}>
+                <PillGroup options={[{ value: 'all', label: 'Alle' }, { value: 'daily', label: 'Daily' }, { value: 'deep-dive', label: 'Deep Dives' }]} value={briefingFilter} onChange={v => { setBriefingFilter(v as BriefingFilter); setDdPersonaFilter(''); setSelectedDetail(null); }} hasBg={hasBg} />
+                {briefingFilter !== 'daily' && (
+                  <select value={ddPersonaFilter} onChange={e => setDdPersonaFilter(e.target.value)} className={`ml-auto rounded-lg border px-2 py-1 text-[11px] ${hasBg ? 'border-white/15 bg-white/10 text-white' : 'border-gray-200 bg-white text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300'}`}>
+                    <option value="">Persona</option>
+                    {personas.map(p => <option key={p.id} value={p.persona_name}>{p.persona_name}</option>)}
+                  </select>
+                )}
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {loadingBriefings ? (
+                  <div className="grid gap-2">{Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} hasBg={hasBg} />)}</div>
+                ) : briefingItems.length === 0 ? (
+                  <div className={`py-16 text-center text-sm ${textMuted}`}>Keine Briefings vorhanden</div>
+                ) : (
+                  <div className="grid gap-2">
+                    {briefingItems.filter(item => !ddPersonaFilter || item.type === 'daily' || item.persona_name === ddPersonaFilter).map(item => (
+                      <button key={`${item.type}-${item.id}`} onClick={() => openBriefingDetail(item)} className={`w-full rounded-xl border px-3.5 py-3 text-left shadow-sm transition-all ${selectedDetail?.id === item.id && selectedDetail?.type === item.type ? cardExpandedGlass : cardGlass}`}>
+                        <div className="flex items-center gap-2">
+                          {item.type === 'daily' ? (
+                            <span className="shrink-0 rounded-full bg-indigo-500/15 px-2 py-0.5 text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">Daily</span>
+                          ) : (
+                            <span className="shrink-0 rounded-full bg-purple-500/15 px-2 py-0.5 text-[10px] font-semibold text-purple-600 dark:text-purple-300">Deep Dive</span>
+                          )}
+                          <h3 className={`text-sm font-semibold ${textPrimary}`}>
+                            {new Date(item.date).toLocaleDateString('de-CH', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          </h3>
                         </div>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            {selectedBriefing && (
-              <div className={`w-1/2 overflow-y-auto border-l p-6 ${glass}`}>
-                <div className="flex items-center justify-between">
-                  <h2 className={`text-lg font-bold ${textPrimary}`}>{selectedBriefing.briefing_date ? new Date(selectedBriefing.briefing_date).toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : `Briefing #${selectedBriefing.id}`}</h2>
-                  <div className="flex items-center gap-1">
-                    <CopyButton text={selectedBriefing.briefing_text || ''} hasBg={hasBg} />
-                    <button onClick={() => setSelectedBriefing(null)} className={`rounded-lg p-1.5 transition-colors ${hasBg ? 'text-white/50 hover:bg-white/10' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}><CloseIcon className="h-4 w-4" /></button>
-                  </div>
-                </div>
-                {selectedBriefing.audio_url && (
-                  <div className={`mt-4 rounded-xl border p-3 ${hasBg ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/50'}`}>
-                    <audio src={selectedBriefing.audio_url} controls className="w-full" />
+                        <div className={`mt-1 flex items-center gap-2 text-xs ${textSecondary}`}>
+                          {item.type === 'daily' ? (
+                            <>
+                              {item.signal_count != null && <span>{item.signal_count} Signale</span>}
+                              {item.avg_score != null && <><span className={textMuted}>&middot;</span><span>&#216; {item.avg_score.toFixed(1)}</span></>}
+                            </>
+                          ) : (
+                            item.persona_name && <span className="truncate text-[11px]">{item.persona_name}</span>
+                          )}
+                        </div>
+                      </button>
+                    ))}
                   </div>
                 )}
-                {selectedBriefing.briefing_html ? (
-                  <div className={`mt-4 prose prose-sm max-w-none ${hasBg ? 'prose-invert' : 'dark:prose-invert'}`} dangerouslySetInnerHTML={{ __html: selectedBriefing.briefing_html }} />
-                ) : selectedBriefing.briefing_text ? (
-                  <div className={`mt-4 whitespace-pre-wrap text-sm leading-relaxed ${textSecondary}`}>{selectedBriefing.briefing_text}</div>
+              </div>
+            </div>
+            {selectedDetail && (
+              <div className={`flex-1 overflow-y-auto border-l p-6 ${glass}`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      {selectedDetail.type === 'daily' ? (
+                        <span className="rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">Daily Report</span>
+                      ) : (
+                        <span className="rounded-full bg-purple-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-purple-600 dark:text-purple-300">Deep Dive</span>
+                      )}
+                      <h2 className={`text-lg font-bold ${textPrimary}`}>{new Date(selectedDetail.date).toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h2>
+                    </div>
+                    {selectedDetail.persona_name && <p className={`mt-1 text-sm ${textSecondary}`}>{selectedDetail.persona_name}</p>}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <CopyButton text={selectedDetail.briefing_text || ''} hasBg={hasBg} />
+                    <button onClick={() => setSelectedDetail(null)} className={`rounded-lg p-1.5 transition-colors ${hasBg ? 'text-white/50 hover:bg-white/10' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}><CloseIcon className="h-4 w-4" /></button>
+                  </div>
+                </div>
+                {selectedDetail.audio_url && (
+                  <div className={`mt-4 rounded-xl border p-3 ${hasBg ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/50'}`}>
+                    <audio src={selectedDetail.audio_url} controls className="w-full" />
+                  </div>
+                )}
+                {selectedDetail.briefing_html ? (
+                  <div className={`signa-content mt-4 prose prose-sm max-w-none ${hasBg ? 'prose-invert' : 'dark:prose-invert'}`} dangerouslySetInnerHTML={{ __html: stripInlineStyles(selectedDetail.briefing_html) }} />
+                ) : selectedDetail.briefing_text ? (
+                  <div className={`mt-4 whitespace-pre-wrap text-sm leading-relaxed ${textSecondary}`}>{selectedDetail.briefing_text}</div>
                 ) : (
                   <p className={`mt-4 text-sm ${textMuted}`}>Kein Inhalt verfügbar</p>
                 )}
@@ -490,59 +601,11 @@ export function SignalePage() {
           </div>
         )}
 
-        {/* ── Deep Dives Tab ── */}
-        {tab === 'deep-dives' && (
-          <div className="flex flex-1 flex-col overflow-hidden">
-            <div className={`border-b px-6 py-3 ${glass}`}>
-              <div className="mx-auto max-w-3xl">
-                <select value={ddPersonaFilter} onChange={e => setDdPersonaFilter(e.target.value)} className={`rounded-lg border px-3 py-1.5 text-sm ${hasBg ? 'border-white/15 bg-white/10 text-white' : 'border-gray-200 bg-white text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300'}`}>
-                  <option value="">Alle Personas</option>
-                  {personas.map(p => <option key={p.id} value={p.persona_name}>{p.persona_name}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="flex flex-1 overflow-hidden">
-              <div className={`flex-1 overflow-y-auto p-6 ${selectedDeepDive ? 'w-1/2' : 'w-full'}`}>
-                {loadingDeepDives ? (
-                  <div className="mx-auto max-w-3xl grid gap-4">{Array.from({ length: 3 }).map((_, i) => <SkeletonCard key={i} hasBg={hasBg} />)}</div>
-                ) : deepDives.length === 0 ? (
-                  <div className={`py-16 text-center text-sm ${textMuted}`}>Keine Deep Dives vorhanden</div>
-                ) : (
-                  <div className="mx-auto grid max-w-3xl gap-4">
-                    {deepDives.map(dd => (
-                      <button key={dd.id} onClick={() => openDeepDiveDetail(dd.id)} className={`w-full rounded-2xl border p-5 text-left shadow-sm transition-all ${selectedDeepDive?.id === dd.id ? cardExpandedGlass : cardGlass}`}>
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-full bg-purple-500/15 px-2.5 py-0.5 text-[11px] font-medium text-purple-600 dark:text-purple-300">{dd.persona_name}</span>
-                          {dd.createdAt && <span className={`text-xs ${textMuted}`}>{new Date(dd.createdAt).toLocaleDateString('de-CH')}</span>}
-                        </div>
-                        {dd.preview && <p className={`mt-2 text-sm leading-relaxed ${textSecondary}`}>{dd.preview}</p>}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {selectedDeepDive && (
-                <div className={`w-1/2 overflow-y-auto border-l p-6 ${glass}`}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-purple-500/15 px-2.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-300">{selectedDeepDive.persona_name}</span>
-                      {selectedDeepDive.createdAt && <span className={`text-xs ${textMuted}`}>{new Date(selectedDeepDive.createdAt).toLocaleDateString('de-CH')}</span>}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <CopyButton text={selectedDeepDive.last_synthesis || ''} hasBg={hasBg} />
-                      <button onClick={() => setSelectedDeepDive(null)} className={`rounded-lg p-1.5 transition-colors ${hasBg ? 'text-white/50 hover:bg-white/10' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}><CloseIcon className="h-4 w-4" /></button>
-                    </div>
-                  </div>
-                  <div className={`mt-4 whitespace-pre-wrap text-sm leading-relaxed ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>{selectedDeepDive.last_synthesis || 'Kein Inhalt verfügbar'}</div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       <BackgroundPicker isOpen={bgPickerOpen} onClose={() => setBgPickerOpen(false)} currentUrl={bgUrl} onSelect={handleBgSelect} />
     </div>
+    </SignaleErrorBoundary>
   );
 }
 
@@ -563,20 +626,66 @@ function CopyButton({ text, hasBg }: { text: string; hasBg: boolean }) {
   );
 }
 
+function ExpandedContent({ signal, fallbackType, hasBg, textSecondary, textMuted }: {
+  signal: Signal; fallbackType: string | null; hasBg: boolean; textSecondary: string; textMuted: string;
+}) {
+  let dateStr = '';
+  try {
+    if (signal.published_at) dateStr = new Date(signal.published_at).toLocaleString('de-CH');
+  } catch { /* ungültiges Datum */ }
+
+  return (
+    <>
+      <div className={`mb-3 flex flex-wrap items-center gap-3 text-xs ${textMuted}`}>
+        {dateStr && <span>{dateStr}</span>}
+        {signal.topic_name && <span className={`rounded-full px-2 py-0.5 ${hasBg ? 'bg-white/8' : 'bg-gray-100 dark:bg-gray-800'}`}>{signal.topic_name}</span>}
+        <TypeBadge type={signal.type ?? fallbackType} />
+        {signal.url && (
+          <a href={signal.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="ml-auto inline-flex items-center gap-1 text-indigo-600 transition-colors hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300">
+            <LinkIcon className="h-3 w-3" />
+            <span>Artikel lesen</span>
+          </a>
+        )}
+      </div>
+      {signal.full_content ? (
+        <ContentBlock content={signal.full_content} hasBg={hasBg} />
+      ) : (
+        <p className={`text-sm italic ${textSecondary}`}>Kein Volltext verfügbar.</p>
+      )}
+    </>
+  );
+}
+
+function SafeMarkdown({ content, className }: { content: string; className: string }) {
+  try {
+    const formatted = content
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/(?<!\n)\n(?!\n)/g, '\n\n');
+    return <div className={className}><Markdown remarkPlugins={[remarkGfm]}>{formatted}</Markdown></div>;
+  } catch {
+    return <pre className="whitespace-pre-wrap text-sm">{content}</pre>;
+  }
+}
+
 function ContentBlock({ content, hasBg }: { content: string; hasBg: boolean }) {
   const [copied, setCopied] = useState(false);
-  const handleCopy = async () => { await navigator.clipboard.writeText(content.replace(/<[^>]*>/g, '')); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  if (!content) return null;
+  const handleCopy = async () => {
+    try { await navigator.clipboard.writeText(content.replace(/<[^>]*>/g, '')); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* clipboard unavailable */ }
+  };
   const isHtml = /<[a-z][\s\S]*>/i.test(content);
+  const proseClass = `signa-content prose prose-base max-w-none leading-relaxed ${hasBg ? 'prose-invert' : 'dark:prose-invert'}`;
   return (
-    <div className={`relative mb-4 rounded-xl border ${hasBg ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/40'}`}>
-      <button onClick={handleCopy} title="In Zwischenablage kopieren" className={`absolute right-3 top-3 z-10 rounded-lg p-1.5 transition-colors ${copied ? 'text-emerald-500' : hasBg ? 'text-white/40 hover:bg-white/10' : 'text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+    <div className={`relative mb-4 rounded-xl border ${hasBg ? 'border-white/15 bg-white/10' : 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/40'}`}>
+      <button onClick={handleCopy} title="In Zwischenablage kopieren" className={`absolute right-3 top-3 z-10 rounded-lg p-1.5 transition-colors ${copied ? 'text-emerald-500' : hasBg ? 'text-white/50 hover:bg-white/10' : 'text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
         {copied ? <CheckIcon className="h-4 w-4" /> : <ClipboardIcon className="h-4 w-4" />}
       </button>
-      <div className={`max-h-[40rem] overflow-y-auto p-5 pr-12 ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>
+      <div className={`max-h-[40rem] overflow-y-auto px-6 py-5 pr-14 ${hasBg ? 'text-white' : 'text-gray-700 dark:text-gray-300'}`}>
         {isHtml ? (
-          <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: content }} />
+          <div className={proseClass} dangerouslySetInnerHTML={{ __html: stripInlineStyles(content) }} />
         ) : (
-          <Markdown className="prose prose-sm max-w-none dark:prose-invert">{content}</Markdown>
+          <SafeMarkdown content={content} className={proseClass} />
         )}
       </div>
     </div>
@@ -636,6 +745,7 @@ function TypeBadge({ type }: { type: string | null }) {
 
 function ImageIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5a2.25 2.25 0 0 0 2.25-2.25V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>; }
 function CloseIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>; }
+function ChevronDownIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>; }
 function LinkIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" /></svg>; }
 function PlayIcon({ className }: { className?: string }) { return <svg className={className} fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>; }
 function SignalIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>; }

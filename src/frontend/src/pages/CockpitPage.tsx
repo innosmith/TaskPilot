@@ -301,20 +301,34 @@ export function CockpitPage() {
   }, [approvalJobs, previews, loadingPreviews, failedPreviews]);
 
   useEffect(() => {
+    const unknownEmails: string[] = [];
     for (const job of approvalJobs) {
       const meta = (job.metadata_json || {}) as Record<string, string>;
       const email = meta.from_address;
-      if (email && !senderAvatars[email]) {
-        setSenderAvatars(prev => ({ ...prev, [email]: { pic_url: null, person_id: null, name: null } }));
-        api.get<{ id: number; name: string; pic_url: string | null } | null>(`/api/pipedrive/lookup-email?email=${encodeURIComponent(email)}`)
-          .then(data => {
-            if (data && data.id) {
-              setSenderAvatars(prev => ({ ...prev, [email]: { pic_url: data.pic_url, person_id: data.id, name: data.name } }));
-            }
-          })
-          .catch(() => {});
-      }
+      if (email && !senderAvatars[email]) unknownEmails.push(email);
     }
+    if (unknownEmails.length === 0) return;
+
+    const placeholder: Record<string, { pic_url: string | null; person_id: number | null; name: string | null }> = {};
+    for (const email of unknownEmails) placeholder[email] = { pic_url: null, person_id: null, name: null };
+    setSenderAvatars(prev => ({ ...prev, ...placeholder }));
+
+    api.post<{ email: string; person: { id: number; name: string; pic_url: string | null } | null }[]>(
+      '/api/pipedrive/lookup-emails',
+      { emails: unknownEmails }
+    )
+      .then(results => {
+        const updates: Record<string, { pic_url: string | null; person_id: number | null; name: string | null }> = {};
+        for (const r of results) {
+          if (r.person && r.person.id) {
+            updates[r.email] = { pic_url: r.person.pic_url, person_id: r.person.id, name: r.person.name };
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          setSenderAvatars(prev => ({ ...prev, ...updates }));
+        }
+      })
+      .catch(() => {});
   }, [approvalJobs, senderAvatars]);
 
   useEffect(() => {
