@@ -320,7 +320,84 @@ async def _compute_expenses_by_category(
     return dict(cat_totals)
 
 
+# ── Bekannte Finanz-Konten (Sonderposten-Labels) ─────────
+SPECIAL_ACCOUNT_LABELS = {
+    2261: "Dividende",
+    2120: "Kontokorrent GS",
+    2201: "MWST-Zahlung",
+    2300: "Passive RA",
+    2302: "Ferienguthaben",
+    2970: "Gewinnvortrag",
+    2950: "Gesetzl. Reserve",
+}
+
+
+async def _compute_categorized_cashflow(
+    bexio: BexioClient,
+    bank_account_ids: set[int],
+    from_date: str,
+    to_date: str,
+    accounts_map: dict[int, int],
+) -> dict[str, dict]:
+    """Kategorisierter Cashflow pro Monat aus Bankkonten (direkte Methode).
+
+    Jede Bankbuchung wird anhand des Gegenkontos klassifiziert:
+    - operativ (Aufwand/Ertrag 3xxx-8xxx)
+    - investiv (Anlagen 1500-1599)
+    - Finanzierung (Eigenkapital/FK 2xxx)
+    """
+    entries = await _get_journal_data(bexio, from_date, to_date)
+    flows: dict[str, dict] = defaultdict(lambda: {
+        "inflow": 0.0, "op_outflow": 0.0,
+        "fin_outflow": 0.0, "invest_outflow": 0.0,
+        "special_items": defaultdict(float),
+    })
+
+    for e in entries:
+        mk = (e.get("date") or "")[:7]
+        if not mk:
+            continue
+        amount = float(e.get("amount", 0))
+        did = e.get("debit_account_id")
+        cid = e.get("credit_account_id")
+
+        if did in bank_account_ids:
+            flows[mk]["inflow"] += amount
+
+        if cid in bank_account_ids:
+            gegen_no = accounts_map.get(did, 0)
+            if 1500 <= gegen_no <= 1599:
+                flows[mk]["invest_outflow"] += amount
+            elif 2000 <= gegen_no <= 2999:
+                flows[mk]["fin_outflow"] += amount
+                label = SPECIAL_ACCOUNT_LABELS.get(gegen_no, f"Kto {gegen_no}")
+                flows[mk]["special_items"][label] += amount
+            else:
+                flows[mk]["op_outflow"] += amount
+
+    result = {}
+    for mk, data in flows.items():
+        items = [
+            {"label": label, "amount": round(amt, 2)}
+            for label, amt in sorted(data["special_items"].items(), key=lambda x: -x[1])
+            if amt > 100
+        ]
+        result[mk] = {
+            "inflow": round(data["inflow"], 2),
+            "op_outflow": round(data["op_outflow"], 2),
+            "fin_outflow": round(data["fin_outflow"], 2),
+            "invest_outflow": round(data["invest_outflow"], 2),
+            "special_items": items,
+        }
+    return result
+
+
 # ── Response-Modelle ─────────────────────────────────────
+
+class CashflowSpecialItem(BaseModel):
+    label: str
+    amount: float
+
 
 class KpiOverview(BaseModel):
     bank_balance: float | None = None
@@ -343,6 +420,11 @@ class KpiOverview(BaseModel):
     dso_days: float | None = None
     liquiditaet_2: float | None = None
     ek_quote: float | None = None
+    revenue_ytd_prior: float = 0
+    expenses_ytd_prior: float = 0
+    ebitda_ytd_prior: float | None = None
+    personalquote_ytd_prior: float | None = None
+    profit_margin_ytd_prior: float | None = None
     journal_data_from: str | None = None
     journal_data_to: str | None = None
     currency: str = "CHF"
@@ -352,9 +434,12 @@ class CashflowMonth(BaseModel):
     month: str
     revenue: float = 0
     expenses: float = 0
+    fin_outflow: float = 0
+    invest_outflow: float = 0
     delta: float = 0
     cumulative: float = 0
     is_forecast: bool = False
+    special_items: list[CashflowSpecialItem] = []
 
 
 class CashflowResponse(BaseModel):
@@ -366,6 +451,7 @@ class CashflowResponse(BaseModel):
 
 class TogglProjectSummary(BaseModel):
     project_name: str
+    client_name: str = ""
     hours: float = 0
     rate_per_hour: float = 0
     amount: float = 0
@@ -573,6 +659,50 @@ async def get_overview(user: User = Depends(get_current_user)):
     liquiditaet_2 = None
     ek_quote = None
 
+    # ── Vorjahres-KPIs (YTD bis gleicher Tag im Vorjahr) ──
+    prior_year = current_year - 1
+    prior_date = f"{prior_year}-{today.month:02d}-{today.day:02d}"
+    prior_month_key = f"{prior_year}-{today.month:02d}"
+
+    revenue_ytd_prior = sum(
+        v for mk, v in revenue_by_month.items()
+        if mk.startswith(str(prior_year)) and mk <= prior_month_key
+    )
+
+    expenses_ytd_prior = 0.0
+    try:
+        prior_expenses = await _compute_expenses_by_month(
+            bexio, f"{prior_year}-01-01", prior_date, accounts_map
+        )
+        expenses_ytd_prior = sum(prior_expenses.values())
+    except Exception:
+        pass
+
+    revenue_ytd_net_prior = round(revenue_ytd_prior / (1 + mwst_satz), 2)
+    profit_margin_ytd_prior = None
+    if revenue_ytd_net_prior > 0:
+        profit_margin_ytd_prior = round(
+            (revenue_ytd_net_prior - expenses_ytd_prior) / revenue_ytd_net_prior * 100, 1
+        )
+
+    ebitda_ytd_prior = None
+    personalquote_ytd_prior = None
+    try:
+        cat_prior = await _compute_expenses_by_category(
+            bexio, f"{prior_year}-01-01", prior_date, accounts_map
+        )
+        non_ebitda_cats = {"abschreibungen", "finanzaufwand", "steuern", "ausserordentlich"}
+        op_exp_prior = sum(v for k, v in cat_prior.items() if k not in non_ebitda_cats)
+        ebitda_ytd_prior = round(revenue_ytd_net_prior - op_exp_prior, 2)
+
+        personal_cats = {"loehne", "sozialversicherungen", "pensionskasse", "uvg_ktg",
+                         "spesen_personal", "personalaufwand_sonstig", "uebr_personal"}
+        personal_prior = sum(v for k, v in cat_prior.items() if k in personal_cats)
+        if revenue_ytd_net_prior > 0:
+            personalquote_ytd_prior = round(personal_prior / revenue_ytd_net_prior * 100, 1)
+    except Exception:
+        pass
+
     # Journal-Datenstand ermitteln
     journal_from_str = None
     journal_to_str = None
@@ -621,6 +751,11 @@ async def get_overview(user: User = Depends(get_current_user)):
         dso_days=dso_days,
         liquiditaet_2=liquiditaet_2,
         ek_quote=ek_quote,
+        revenue_ytd_prior=round(revenue_ytd_prior, 2),
+        expenses_ytd_prior=round(expenses_ytd_prior, 2),
+        ebitda_ytd_prior=ebitda_ytd_prior,
+        personalquote_ytd_prior=personalquote_ytd_prior,
+        profit_margin_ytd_prior=profit_margin_ytd_prior,
         journal_data_from=journal_from_str,
         journal_data_to=journal_to_str,
     )
@@ -634,7 +769,13 @@ async def get_cashflow(
     months_forward: int = Query(default=12, ge=1, le=24),
     user: User = Depends(get_current_user),
 ):
-    """Cashflow: Historie (Bexio Journal + Rechnungen) + Prognose (gewichtet 60/40)."""
+    """Cashflow nach direkter Methode (Swiss GAAP FER / OR).
+
+    Alle Bankbewegungen werden nach Gegenkonto kategorisiert:
+    - Operativ (Ertrags-/Aufwandkonten 3xxx-8xxx)
+    - Investitionen (Anlagen 15xx)
+    - Finanzierung (FK/EK 2xxx, inkl. Dividende, Kontokorrent, MWST)
+    """
     cache_key = f"cashflow:{months_back}:{months_forward}"
     cached = _cashflow_cache.get(cache_key)
     if cached is not None:
@@ -646,6 +787,18 @@ async def get_cashflow(
     all_month_keys = _month_range(months_back, months_forward)
     lookback = max(months_back, 12) + 1
 
+    # Bankkonten ermitteln
+    bank_ids: set[int] = set()
+    start_balance = 0.0
+    try:
+        bank_accounts = await bexio.list_bank_accounts()
+        bank_ids = {a.get("account_id") for a in bank_accounts if a.get("account_id")}
+        if bank_ids:
+            start_balance = await _compute_bank_balance(bexio, bank_ids)
+    except Exception as e:
+        logger.warning("Bankkonten nicht verfuegbar: %s", e)
+
+    # Rechnungsdaten fuer Prognose-Basis
     revenue_by_month: dict[str, float] = defaultdict(float)
     try:
         invoices = await _fetch_recent_invoices(bexio, months=lookback)
@@ -653,16 +806,19 @@ async def get_cashflow(
     except Exception as e:
         logger.warning("Rechnungen fuer Cashflow nicht verfuegbar: %s", e)
 
-    expenses_by_month: dict[str, float] = {}
+    # Kontenplan und kategorisierter Cashflow
+    accounts_map: dict[int, int] = {}
+    cat_cf: dict[str, dict] = {}
     try:
         accounts_map = await _get_accounts_map(bexio)
         journal_from = (today.replace(day=1) - timedelta(days=30 * lookback)).strftime("%Y-%m-%d")
-        expenses_by_month = await _compute_expenses_by_month(
-            bexio, journal_from, today.isoformat(), accounts_map
+        cat_cf = await _compute_categorized_cashflow(
+            bexio, bank_ids, journal_from, today.isoformat(), accounts_map
         )
     except Exception as e:
-        logger.warning("Ausgaben aus Journal nicht verfuegbar: %s", e)
+        logger.warning("Kategorisierter Cashflow nicht verfuegbar: %s", e)
 
+    # Toggl fuer laufenden Monat
     current_toggl_revenue = 0.0
     try:
         toggl = _get_toggl_client(user)
@@ -673,25 +829,27 @@ async def get_cashflow(
     except Exception:
         pass
 
-    start_balance = 0.0
-    try:
-        bank_accounts = await bexio.list_bank_accounts()
-        bank_ids = {a.get("account_id") for a in bank_accounts if a.get("account_id")}
-        if bank_ids:
-            start_balance = await _compute_bank_balance(bexio, bank_ids)
-    except Exception:
-        pass
-
+    # Prognose-Basis (abgeschlossene Monate)
     hist_months_12 = _month_range(12, 0)[:-1]
     hist_months_3 = hist_months_12[-3:] if len(hist_months_12) >= 3 else hist_months_12
 
     rev_3m = [revenue_by_month.get(m, 0) for m in hist_months_3 if m < current_month]
     rev_12m = [revenue_by_month.get(m, 0) for m in hist_months_12 if m < current_month]
-    exp_3m = [expenses_by_month.get(m, 0) for m in hist_months_3 if m < current_month]
-    exp_12m = [expenses_by_month.get(m, 0) for m in hist_months_12 if m < current_month]
+
+    # Operative Abfluesse fuer Prognose (ohne Finanz/Investiv)
+    op_exp_3m = [cat_cf.get(m, {}).get("op_outflow", 0) for m in hist_months_3 if m < current_month]
+    op_exp_12m = [cat_cf.get(m, {}).get("op_outflow", 0) for m in hist_months_12 if m < current_month]
+
+    # Finanzierungs- und Investitionsabfluesse fuer Prognose
+    fin_3m = [cat_cf.get(m, {}).get("fin_outflow", 0) for m in hist_months_3 if m < current_month]
+    fin_12m = [cat_cf.get(m, {}).get("fin_outflow", 0) for m in hist_months_12 if m < current_month]
+    inv_3m = [cat_cf.get(m, {}).get("invest_outflow", 0) for m in hist_months_3 if m < current_month]
+    inv_12m = [cat_cf.get(m, {}).get("invest_outflow", 0) for m in hist_months_12 if m < current_month]
 
     forecast_rev = _weighted_forecast(rev_3m, rev_12m)
-    forecast_exp = _weighted_forecast(exp_3m, exp_12m)
+    forecast_exp = _weighted_forecast(op_exp_3m, op_exp_12m)
+    forecast_fin = _weighted_forecast(fin_3m, fin_12m)
+    forecast_inv = _weighted_forecast(inv_3m, inv_12m)
 
     months: list[CashflowMonth] = []
     cumulative = start_balance
@@ -701,30 +859,45 @@ async def get_cashflow(
 
         if mk == current_month:
             rev = current_toggl_revenue if current_toggl_revenue > 0 else revenue_by_month.get(mk, 0)
-            actual_exp = expenses_by_month.get(mk, 0)
-            if today.day <= 15 and actual_exp < forecast_exp * 0.5:
-                exp = forecast_exp
+            cf_data = cat_cf.get(mk, {})
+            actual_op = cf_data.get("op_outflow", 0)
+            if today.day <= 15 and actual_op < forecast_exp * 0.5:
+                op_exp = forecast_exp
             else:
-                exp = actual_exp
+                op_exp = actual_op
+            fin_out = cf_data.get("fin_outflow", 0)
+            inv_out = cf_data.get("invest_outflow", 0)
+            items = [CashflowSpecialItem(**si) for si in cf_data.get("special_items", [])]
             is_fc = False
         elif is_forecast:
             rev = forecast_rev
-            exp = forecast_exp
+            op_exp = forecast_exp
+            fin_out = round(forecast_fin, 2)
+            inv_out = round(forecast_inv, 2)
+            items = []
             is_fc = True
         else:
             rev = revenue_by_month.get(mk, 0)
-            exp = expenses_by_month.get(mk, 0)
+            cf_data = cat_cf.get(mk, {})
+            op_exp = cf_data.get("op_outflow", 0)
+            fin_out = cf_data.get("fin_outflow", 0)
+            inv_out = cf_data.get("invest_outflow", 0)
+            items = [CashflowSpecialItem(**si) for si in cf_data.get("special_items", [])]
             is_fc = False
 
-        delta = rev - exp
+        total_out = op_exp + fin_out + inv_out
+        delta = rev - total_out
         cumulative += delta
         months.append(CashflowMonth(
             month=mk,
             revenue=round(rev, 2),
-            expenses=round(exp, 2),
+            expenses=round(op_exp, 2),
+            fin_outflow=round(fin_out, 2),
+            invest_outflow=round(inv_out, 2),
             delta=round(delta, 2),
             cumulative=round(cumulative, 2),
             is_forecast=is_fc,
+            special_items=items,
         ))
 
     result = CashflowResponse(
@@ -903,6 +1076,9 @@ async def get_toggl_month_summary(
     projects = await toggl.list_projects(active=None)
     proj_map = {p.get("id"): p for p in projects}
 
+    clients = await toggl.list_clients()
+    client_map = {c.get("id"): c.get("name", "") for c in clients}
+
     summary_data = await toggl.get_summary_by_project(
         start.isoformat(), end.isoformat(), billable=True
     )
@@ -935,8 +1111,10 @@ async def get_toggl_month_summary(
                 group_hours += secs / 3600
 
         if group_hours > 0:
+            cid = proj.get("client_id")
             result.append(TogglProjectSummary(
                 project_name=proj.get("name") or f"Projekt {pid}",
+                client_name=client_map.get(cid, "") if cid else "",
                 hours=round(group_hours, 1),
                 rate_per_hour=round(group_rate, 2),
                 amount=round(group_amount, 2),
@@ -1024,6 +1202,173 @@ async def get_expense_categories(user: User = Depends(get_current_user)):
         months_covered=months_covered,
     )
     _cashflow_cache["expense_categories_v2"] = result
+    return result
+
+
+# ── Monatliche Kostenstruktur (Stacked Bar) ───────────────
+
+class ExpenseMonthRow(BaseModel):
+    month: str
+    year: int
+    categories: dict[str, float]
+    total: float = 0
+
+
+class ExpenseMonthlyBreakdownResponse(BaseModel):
+    current_year: int
+    prior_year: int
+    months_current: list[ExpenseMonthRow]
+    months_prior: list[ExpenseMonthRow]
+    category_labels: dict[str, str]
+
+
+@router.get("/expense-monthly-breakdown", response_model=ExpenseMonthlyBreakdownResponse)
+async def get_expense_monthly_breakdown(user: User = Depends(get_current_user)):
+    """Monatliche Kostenverteilung nach KMU-Kategorie, aktuelles Jahr vs. Vorjahr."""
+    cached = _cashflow_cache.get("expense_monthly_breakdown")
+    if cached is not None:
+        return cached
+
+    bexio = _get_bexio_client(user)
+    accounts_map = await _get_accounts_map(bexio)
+    today = date.today()
+    cy = today.year
+    py = cy - 1
+
+    entries = await _get_journal_data(bexio, f"{py}-01-01", today.isoformat())
+
+    monthly_cats: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for e in entries:
+        entry_date = (e.get("date") or "")[:10]
+        if len(entry_date) < 7:
+            continue
+        mk = entry_date[:7]
+        amount = float(e.get("amount", 0))
+        did = e.get("debit_account_id")
+        cid = e.get("credit_account_id")
+        debit_no = accounts_map.get(did, 0)
+        credit_no = accounts_map.get(cid, 0)
+        if _is_expense_account(debit_no):
+            cat = _categorize_account(debit_no)
+            monthly_cats[mk][cat] += amount
+        if _is_expense_account(credit_no):
+            cat = _categorize_account(credit_no)
+            monthly_cats[mk][cat] -= amount
+
+    month_names = ["", "Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                   "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+
+    def _build_rows(year: int) -> list[ExpenseMonthRow]:
+        rows = []
+        for m in range(1, 13):
+            mk = f"{year}-{m:02d}"
+            cats = dict(monthly_cats.get(mk, {}))
+            cats = {k: round(v, 2) for k, v in cats.items() if v > 0}
+            rows.append(ExpenseMonthRow(
+                month=month_names[m],
+                year=year,
+                categories=cats,
+                total=round(sum(cats.values()), 2),
+            ))
+        return rows
+
+    cat_labels = {k: v["label"] for k, v in EXPENSE_CATEGORIES.items()}
+    cat_labels["materialaufwand"] = "Materialaufwand"
+    cat_labels["uebr_personal"] = "Übriger Personalaufwand"
+    cat_labels["sonstige"] = "Sonstige"
+
+    result = ExpenseMonthlyBreakdownResponse(
+        current_year=cy,
+        prior_year=py,
+        months_current=_build_rows(cy),
+        months_prior=_build_rows(py),
+        category_labels=cat_labels,
+    )
+    _cashflow_cache["expense_monthly_breakdown"] = result
+    return result
+
+
+# ── Marge-Trend (YTD-kumuliert + 12-Mt-Rolling) ──────────
+
+class MarginMonth(BaseModel):
+    month: str
+    label: str
+    ytd_margin: float | None = None
+    rolling_12m_margin: float | None = None
+    ytd_margin_prior: float | None = None
+
+
+class MarginTrendResponse(BaseModel):
+    months: list[MarginMonth]
+    current_year: int
+    prior_year: int
+
+
+@router.get("/margin-trend", response_model=MarginTrendResponse)
+async def get_margin_trend(user: User = Depends(get_current_user)):
+    """Gewinnmarge: YTD-kumuliert + 12-Mt-Rolling + Vorjahr als Benchmark."""
+    cached = _cashflow_cache.get("margin_trend")
+    if cached is not None:
+        return cached
+
+    bexio = _get_bexio_client(user)
+    today = date.today()
+    cy = today.year
+    py = cy - 1
+
+    invoices = await _fetch_recent_invoices(bexio, months=30)
+    rev_by_month = _revenue_by_month_from_invoices(invoices)
+
+    accounts_map = await _get_accounts_map(bexio)
+    exp_by_month = await _compute_expenses_by_month(
+        bexio, f"{py - 1}-01-01", today.isoformat(), accounts_map
+    )
+
+    mwst_satz = 0.081
+    month_names = ["", "Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                   "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+
+    def _ytd_margin(year: int, up_to_month: int) -> float | None:
+        rev_sum = sum(rev_by_month.get(f"{year}-{m:02d}", 0) for m in range(1, up_to_month + 1))
+        exp_sum = sum(exp_by_month.get(f"{year}-{m:02d}", 0) for m in range(1, up_to_month + 1))
+        rev_net = rev_sum / (1 + mwst_satz)
+        if rev_net <= 0:
+            return None
+        return round((rev_net - exp_sum) / rev_net * 100, 1)
+
+    def _rolling_12m_margin(year: int, month: int) -> float | None:
+        months_back = []
+        for offset in range(12):
+            m = month - offset
+            y = year
+            while m < 1:
+                m += 12
+                y -= 1
+            months_back.append(f"{y}-{m:02d}")
+        rev_sum = sum(rev_by_month.get(mk, 0) for mk in months_back)
+        exp_sum = sum(exp_by_month.get(mk, 0) for mk in months_back)
+        rev_net = rev_sum / (1 + mwst_satz)
+        if rev_net <= 0:
+            return None
+        return round((rev_net - exp_sum) / rev_net * 100, 1)
+
+    compare_until = today.month if today.day >= 15 else today.month - 1
+
+    months: list[MarginMonth] = []
+    for m in range(1, 13):
+        if m > compare_until:
+            break
+        mk = f"{cy}-{m:02d}"
+        months.append(MarginMonth(
+            month=mk,
+            label=f"{month_names[m]} {str(cy)[2:]}",
+            ytd_margin=_ytd_margin(cy, m),
+            rolling_12m_margin=_rolling_12m_margin(cy, m),
+            ytd_margin_prior=_ytd_margin(py, m),
+        ))
+
+    result = MarginTrendResponse(months=months, current_year=cy, prior_year=py)
+    _cashflow_cache["margin_trend"] = result
     return result
 
 

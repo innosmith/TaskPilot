@@ -25,6 +25,10 @@ class UserSettings(BaseModel):
     inbox_background_url: str | None = None
     agents_background_url: str | None = None
     signale_background_url: str | None = None
+    finance_background_url: str | None = None
+    debtors_background_url: str | None = None
+    creditors_background_url: str | None = None
+    debtor_budgets: dict | None = None
 
 
 SETTINGS_FIELDS = [
@@ -33,6 +37,8 @@ SETTINGS_FIELDS = [
     "show_column_count", "cockpit_background_url", "cockpit_background_type",
     "cockpit_calendar_exclude_categories", "cockpit_calendar_hide_private",
     "inbox_background_url", "agents_background_url", "signale_background_url",
+    "finance_background_url", "debtors_background_url", "creditors_background_url",
+    "debtor_budgets",
 ]
 
 

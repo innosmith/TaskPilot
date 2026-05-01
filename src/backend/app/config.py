@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     isi_secret: str = ""
     isi_port: int = 5432
 
+    # InvoiceInsight (Kreditoren-Analyse)
+    invoiceinsight_api_key: str = ""
+    invoiceinsight_url: str = "http://127.0.0.1:8055/mcp"
+
     # Triage
     triage_interval_seconds: int = 120
 

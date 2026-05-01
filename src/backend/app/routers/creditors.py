@@ -1,0 +1,327 @@
+"""Kreditoren-Modul -- InvoiceInsight-Integration via MCP.
+
+Stellt REST-Endpoints bereit, die den InvoiceInsight MCP-Server abfragen
+und die Daten fuer das Frontend-Dashboard aufbereiten.
+"""
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.auth.deps import get_current_user
+from app.config import get_settings
+from app.models import User
+from app.services.invoiceinsight_client import InvoiceInsightClient
+
+logger = logging.getLogger("taskpilot.creditors")
+
+router = APIRouter(prefix="/api/creditors", tags=["creditors"])
+
+
+def _parse_table_string(text: str, years: list[int] | None = None) -> list[dict]:
+    """Parst pandas DataFrame-Textdarstellungen in strukturierte Dicts."""
+    lines = [l for l in text.strip().split("\n") if l.strip()]
+    if len(lines) < 2:
+        return []
+    try:
+        import re
+        header_parts = re.split(r"\s{2,}", lines[0].strip())
+        results = []
+        for line in lines[1:]:
+            parts = re.split(r"\s{2,}", line.strip())
+            if len(parts) < 2:
+                continue
+            idx_and_name = parts[0]
+            name = re.sub(r"^\d+\s+", "", idx_and_name).strip()
+            values = parts[1:]
+            row: dict[str, Any] = {"name": name}
+            for i, val in enumerate(values):
+                key = header_parts[i + 1] if i + 1 < len(header_parts) else f"col_{i}"
+                try:
+                    row[key] = float(val)
+                except (ValueError, TypeError):
+                    row[key] = val
+            results.append(row)
+        return results
+    except Exception as e:
+        logger.warning("Tabelle konnte nicht geparst werden: %s", e)
+        return []
+
+
+def _get_client(user: User) -> InvoiceInsightClient:
+    settings = user.settings or {}
+    api_key = settings.get("invoiceinsight_api_key") or ""
+    url = settings.get("invoiceinsight_url") or ""
+    if not api_key:
+        cfg = get_settings()
+        api_key = cfg.invoiceinsight_api_key
+        url = url or cfg.invoiceinsight_url
+    if not api_key:
+        raise HTTPException(status_code=400, detail="InvoiceInsight API-Key nicht konfiguriert")
+    url = url or "http://127.0.0.1:8055/mcp"
+    return InvoiceInsightClient(url=url, api_key=api_key)
+
+
+async def _safe_call(coro, fallback: Any = None) -> Any:
+    try:
+        return await coro
+    except Exception as e:
+        logger.warning("InvoiceInsight-Aufruf fehlgeschlagen: %s", e)
+        return fallback
+
+
+@router.get("/dashboard")
+async def get_dashboard(user: User = Depends(get_current_user)):
+    """Aggregierte Dashboard-Sicht: KPIs + Kostenverteilung + Metadata."""
+    client = _get_client(user)
+    kpis = await _safe_call(client.get_kpis(), {})
+    cost_dist = await _safe_call(client.get_cost_distribution(), {})
+    metadata = await _safe_call(client.get_metadata(), {})
+    return {"kpis": kpis, "cost_distribution": cost_dist, "metadata": metadata}
+
+
+@router.get("/invoices")
+async def search_invoices(
+    query: str = Query(default="", description="Suchbegriff"),
+    year: int | None = Query(default=None),
+    category: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    args: dict[str, Any] = {"query": query, "limit": limit}
+    if year:
+        args["year"] = year
+    if category:
+        args["category"] = category
+    return await client.call_tool("search_invoices", args)
+
+
+@router.get("/invoices/filtered")
+async def get_filtered_invoices(
+    year_from: int | None = Query(default=None),
+    year_to: int | None = Query(default=None),
+    categories: str | None = Query(default=None, description="Kommaseparierte Kategorien"),
+    vendors: str | None = Query(default=None, description="Kommaseparierte Kreditoren"),
+    min_amount: float | None = Query(default=None),
+    max_amount: float | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    args: dict[str, Any] = {"limit": limit}
+    if year_from:
+        args["year_from"] = year_from
+    if year_to:
+        args["year_to"] = year_to
+    if categories:
+        args["categories"] = [c.strip() for c in categories.split(",")]
+    if vendors:
+        args["vendors"] = [v.strip() for v in vendors.split(",")]
+    if min_amount is not None:
+        args["min_amount"] = min_amount
+    if max_amount is not None:
+        args["max_amount"] = max_amount
+    return await client.call_tool("get_filtered_invoices", args)
+
+
+@router.get("/invoice/{invoice_id}")
+async def get_invoice_detail(
+    invoice_id: int,
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    return await client.call_tool("get_invoice_details", {"invoice_id": invoice_id})
+
+
+@router.get("/vendors")
+async def get_top_vendors(
+    top_n: int = Query(default=15, ge=1, le=50),
+    year: int | None = Query(default=None),
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    args: dict[str, Any] = {"top_n": top_n}
+    if year:
+        args["year"] = year
+    return await client.call_tool("get_top_vendors", args)
+
+
+@router.get("/vendor/{vendor_name}")
+async def get_vendor_detail(
+    vendor_name: str,
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    return await client.call_tool("get_vendor_details", {"vendor_name": vendor_name})
+
+
+@router.get("/trends")
+async def get_monthly_trend(
+    year: int | None = Query(default=None),
+    category: str | None = Query(default=None),
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    args: dict[str, Any] = {}
+    if year:
+        args["year"] = year
+    if category:
+        args["category"] = category
+    return await client.call_tool("get_monthly_trend", args)
+
+
+@router.get("/category-trend")
+async def get_category_trend(
+    category: str = Query(description="Kategoriename"),
+    years: int = Query(default=3, ge=1, le=10),
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    return await client.call_tool("get_category_trend", {"category": category, "years": years})
+
+
+@router.get("/renewal-calendar")
+async def get_renewal_calendar(user: User = Depends(get_current_user)):
+    """Erneuerungskalender, gruppiert nach Dringlichkeit."""
+    client = _get_client(user)
+    raw = await _safe_call(client.get_renewal_calendar(), [])
+    if isinstance(raw, dict) and any(k in raw for k in ("critical", "warning", "info")):
+        return raw
+    entries = raw if isinstance(raw, list) else []
+    critical, warning, info = [], [], []
+    for e in entries:
+        days = e.get("Tage_bis_Renewal") if isinstance(e, dict) else None
+        if days is not None and days < 0:
+            continue
+        if days is not None and days <= 30:
+            critical.append(e)
+        elif days is not None and days <= 60:
+            warning.append(e)
+        else:
+            info.append(e)
+    return {"critical": critical, "warning": warning, "info": info}
+
+
+@router.get("/upcoming")
+async def get_upcoming_payments(
+    n: int = Query(default=10, ge=1, le=50),
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    return await client.call_tool("get_upcoming_payments", {"n": n})
+
+
+@router.get("/cashflow-forecast")
+async def get_cashflow_forecast(user: User = Depends(get_current_user)):
+    client = _get_client(user)
+    return await client.get_cashflow_forecast()
+
+
+@router.get("/recurring")
+async def get_recurring_vs_onetime(user: User = Depends(get_current_user)):
+    """Aufschlüsselung in wiederkehrende vs. einmalige Kosten."""
+    client = _get_client(user)
+    raw = await _safe_call(client.get_recurring_vs_onetime(), {})
+    if not isinstance(raw, dict):
+        return {"recurring": [], "onetime": [], "recurring_total": 0, "onetime_total": 0}
+
+    def parse_section(data: Any) -> list[dict]:
+        if isinstance(data, list):
+            return data
+        if isinstance(data, str):
+            return _parse_table_string(data)
+        return []
+
+    rec = parse_section(raw.get("recurring", []))
+    one = parse_section(raw.get("onetime", []))
+    rec_total = sum(float(r.get("Total_CHF", r.get("total_chf", 0)) or 0) for r in rec)
+    one_total = sum(float(r.get("Total_CHF", r.get("total_chf", 0)) or 0) for r in one)
+    return {"recurring": rec, "onetime": one, "recurring_total": rec_total, "onetime_total": one_total}
+
+
+@router.get("/anomalies")
+async def get_anomalies(user: User = Depends(get_current_user)):
+    """Anomalien, gruppiert nach Schweregrad."""
+    client = _get_client(user)
+    raw = await _safe_call(client.get_anomalies(), [])
+    if isinstance(raw, dict) and any(k in raw for k in ("critical", "warning", "info")):
+        return raw
+    entries = raw if isinstance(raw, list) else []
+    critical, warning, info = [], [], []
+    severity_map = {"HIGH": critical, "CRITICAL": critical, "MEDIUM": warning, "WARNING": warning}
+    for e in entries:
+        sev = (e.get("severity") or "INFO").upper() if isinstance(e, dict) else "INFO"
+        severity_map.get(sev, info).append(e)
+    return {"critical": critical, "warning": warning, "info": info}
+
+
+@router.get("/yoy")
+async def get_yoy_comparison(user: User = Depends(get_current_user)):
+    """Jahresvergleich der Kosten nach Kategorien."""
+    client = _get_client(user)
+    raw = await _safe_call(client.get_yoy_comparison(), {})
+    if not isinstance(raw, dict):
+        return {"data": [], "years": []}
+    data = raw.get("data")
+    years = raw.get("years", [])
+    categories = []
+    if isinstance(data, list):
+        categories = data
+    elif isinstance(data, str):
+        categories = _parse_table_string(data, years)
+    proj = raw.get("projection_data")
+    proj_cats = []
+    if isinstance(proj, list):
+        proj_cats = proj
+    elif isinstance(proj, str):
+        proj_cats = _parse_table_string(proj, years)
+    return {
+        "categories": categories,
+        "projection": proj_cats,
+        "years": years,
+        "current_year_incomplete": raw.get("current_year_incomplete", False),
+        "current_year_months": raw.get("current_year_months"),
+    }
+
+
+@router.get("/vat")
+async def get_vat_summary(
+    year: int | None = Query(default=None),
+    user: User = Depends(get_current_user),
+):
+    client = _get_client(user)
+    args: dict[str, Any] = {}
+    if year:
+        args["year"] = year
+    return await client.call_tool("get_vat_summary", args)
+
+
+@router.get("/data-quality")
+async def get_data_quality(user: User = Depends(get_current_user)):
+    client = _get_client(user)
+    return await client.get_data_quality()
+
+
+@router.get("/vendor-overview")
+async def get_vendor_overview(user: User = Depends(get_current_user)):
+    client = _get_client(user)
+    return await client.get_vendor_overview()
+
+
+@router.post("/deep-research")
+async def generate_research_prompt(user: User = Depends(get_current_user)):
+    client = _get_client(user)
+    return await client.call_tool("generate_research_prompt")
+
+
+@router.post("/cache/clear")
+async def clear_cache(user: User = Depends(get_current_user)):
+    client = _get_client(user)
+    client.invalidate_cache()
+    try:
+        await client.call_tool("refresh_cache")
+    except Exception as e:
+        logger.warning("Remote cache refresh fehlgeschlagen: %s", e)
+    return {"status": "ok"}

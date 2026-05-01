@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine, Cell, ComposedChart,
-  PieChart, Pie, LineChart, Line, LabelList, Legend,
+  LineChart, Line, LabelList, Legend,
 } from 'recharts';
 import { api } from '../api/client';
+import { BackgroundPicker } from '../components/BackgroundPicker';
 
 // ── Types ────────────────────────────────────────────
 
@@ -29,18 +30,31 @@ interface KpiOverview {
   dso_days: number | null;
   liquiditaet_2: number | null;
   ek_quote: number | null;
+  revenue_ytd_prior: number;
+  expenses_ytd_prior: number;
+  ebitda_ytd_prior: number | null;
+  personalquote_ytd_prior: number | null;
+  profit_margin_ytd_prior: number | null;
   journal_data_from: string | null;
   journal_data_to: string | null;
   currency: string;
+}
+
+interface CashflowSpecialItem {
+  label: string;
+  amount: number;
 }
 
 interface CashflowMonth {
   month: string;
   revenue: number;
   expenses: number;
+  fin_outflow: number;
+  invest_outflow: number;
   delta: number;
   cumulative: number;
   is_forecast: boolean;
+  special_items: CashflowSpecialItem[];
 }
 
 interface CashflowResponse {
@@ -52,6 +66,7 @@ interface CashflowResponse {
 
 interface TogglProject {
   project_name: string;
+  client_name: string;
   hours: number;
   rate_per_hour: number;
   amount: number;
@@ -76,21 +91,6 @@ interface YoyResponse {
   growth_pct: number | null;
 }
 
-interface ExpenseCat {
-  key: string;
-  label: string;
-  total_12m: number;
-  monthly_average: number;
-  recurrence: string;
-}
-
-interface ExpenseCatResponse {
-  categories: ExpenseCat[];
-  period_from: string;
-  period_to: string;
-  months_covered: number;
-}
-
 interface WaterfallStep {
   label: string;
   value: number;
@@ -105,6 +105,35 @@ interface WaterfallResponse {
   result: number;
 }
 
+interface MarginMonth {
+  month: string;
+  label: string;
+  ytd_margin: number | null;
+  rolling_12m_margin: number | null;
+  ytd_margin_prior: number | null;
+}
+
+interface MarginTrendResponse {
+  months: MarginMonth[];
+  current_year: number;
+  prior_year: number;
+}
+
+interface ExpenseMonthRow {
+  month: string;
+  year: number;
+  categories: Record<string, number>;
+  total: number;
+}
+
+interface ExpenseMonthlyBreakdown {
+  current_year: number;
+  prior_year: number;
+  months_current: ExpenseMonthRow[];
+  months_prior: ExpenseMonthRow[];
+  category_labels: Record<string, string>;
+}
+
 // ── Formatierung ────────────────────────────────────
 
 function formatCHF(value: number | null | undefined): string {
@@ -117,17 +146,35 @@ function formatK(value: number): string {
   return value.toFixed(0);
 }
 
+function formatYoyDelta(current: number, prior: number): string {
+  if (!prior || prior === 0) return '';
+  const pct = ((current - prior) / Math.abs(prior)) * 100;
+  const sign = pct >= 0 ? '+' : '';
+  return `${sign}${pct.toFixed(0)}% vs. VJ`;
+}
+
 function formatMonthLabel(month: string): string {
   const [y, m] = month.split('-');
   const names = ['', 'Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
   return `${names[parseInt(m)]} ${y.slice(2)}`;
 }
 
-const DONUT_COLORS = [
+const CATEGORY_COLORS = [
   '#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6',
   '#14b8a6', '#f97316', '#ec4899', '#06b6d4', '#84cc16',
   '#d946ef', '#0ea5e9', '#a3e635',
 ];
+
+const TOOLTIP_STYLE: React.CSSProperties = {
+  borderRadius: '0.5rem',
+  fontSize: '0.8rem',
+  backgroundColor: '#1f2937',
+  color: '#f3f4f6',
+  border: '1px solid #374151',
+  boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+};
+
+const CURSOR_STYLE = { fill: 'rgba(99,102,241,0.06)' };
 
 // ── Hauptkomponente ─────────────────────────────────
 
@@ -136,35 +183,35 @@ export function FinancePage() {
   const [cashflow, setCashflow] = useState<CashflowResponse | null>(null);
   const [togglProjects, setTogglProjects] = useState<TogglProject[]>([]);
   const [yoy, setYoy] = useState<YoyResponse | null>(null);
-  const [expenseCats, setExpenseCats] = useState<ExpenseCat[]>([]);
-  const [expensePeriod, setExpensePeriod] = useState({ from: '', to: '', months: 0 });
   const [waterfall, setWaterfall] = useState<WaterfallResponse | null>(null);
+  const [expenseBreakdown, setExpenseBreakdown] = useState<ExpenseMonthlyBreakdown | null>(null);
+  const [marginTrend, setMarginTrend] = useState<MarginTrendResponse | null>(null);
   const [pnlPeriod, setPnlPeriod] = useState('ytd');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const [bgPickerOpen, setBgPickerOpen] = useState(false);
 
   const loadData = useCallback(async (wfPeriod = 'ytd') => {
     setLoading(true);
     setError(null);
     try {
-      const [ov, cf, tp, yoyR, ec, wf] = await Promise.allSettled([
+      const [ov, cf, tp, yoyR, wf, eb, mt] = await Promise.allSettled([
         api.get<KpiOverview>('/api/finance/overview'),
         api.get<CashflowResponse>('/api/finance/cashflow?months_back=6&months_forward=12'),
         api.get<TogglProject[]>('/api/finance/toggl-summary'),
         api.get<YoyResponse>('/api/finance/yoy'),
-        api.get<ExpenseCatResponse>('/api/finance/expense-categories'),
         api.get<WaterfallResponse>(`/api/finance/pnl-waterfall?period=${wfPeriod}`),
+        api.get<ExpenseMonthlyBreakdown>('/api/finance/expense-monthly-breakdown'),
+        api.get<MarginTrendResponse>('/api/finance/margin-trend'),
       ]);
       if (ov.status === 'fulfilled') setOverview(ov.value);
       if (cf.status === 'fulfilled') setCashflow(cf.value);
       if (tp.status === 'fulfilled') setTogglProjects(tp.value);
       if (yoyR.status === 'fulfilled') setYoy(yoyR.value);
-      if (ec.status === 'fulfilled') {
-        const resp = ec.value;
-        setExpenseCats(resp.categories);
-        setExpensePeriod({ from: resp.period_from, to: resp.period_to, months: resp.months_covered });
-      }
       if (wf.status === 'fulfilled') setWaterfall(wf.value);
+      if (eb.status === 'fulfilled') setExpenseBreakdown(eb.value);
+      if (mt.status === 'fulfilled') setMarginTrend(mt.value);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Laden fehlgeschlagen');
     } finally {
@@ -172,7 +219,12 @@ export function FinancePage() {
     }
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    loadData();
+    api.get<{ finance_background_url: string | null }>('/api/settings')
+      .then(s => setBgUrl(s.finance_background_url))
+      .catch(() => {});
+  }, [loadData]);
 
   const handleRefresh = async () => {
     try {
@@ -183,39 +235,72 @@ export function FinancePage() {
     loadData();
   };
 
+  const handleBgSelect = async (url: string | null) => {
+    await api.patch('/api/settings', { finance_background_url: url });
+    setBgUrl(url);
+  };
+
+  const hasBg = !!bgUrl;
+  const isGradient = bgUrl?.startsWith('gradient:') ?? false;
+  const bgStyle = isGradient
+    ? { background: bgUrl!.slice('gradient:'.length) }
+    : hasBg
+      ? { backgroundImage: `url(${bgUrl})`, backgroundSize: 'cover' as const, backgroundPosition: 'center' }
+      : undefined;
+
   const currentMonth = new Date().toISOString().slice(0, 7);
+  const cardClass = hasBg
+    ? 'bg-black/30 backdrop-blur-xl ring-1 ring-white/10'
+    : 'border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800/50';
+  const sectionClass = `rounded-2xl p-4 sm:p-6 ${cardClass}`;
 
   // Durchschnittswerte fuer Referenzlinien
   const avgRevenue = cashflow?.forecast_revenue_monthly ?? 0;
   const avgExpenses = cashflow?.forecast_expenses_monthly ?? 0;
 
-  // Marge-Trend: 3-Monats-rollierender Durchschnitt
-  const marginData = useMemo(() => {
-    if (!cashflow) return [];
-    const hist = cashflow.months.filter(m => !m.is_forecast && m.revenue > 0);
-    return hist.map((m, i) => {
-      const window = hist.slice(Math.max(0, i - 2), i + 1);
-      const avgRev = window.reduce((s, w) => s + w.revenue, 0) / window.length;
-      const avgExp = window.reduce((s, w) => s + w.expenses, 0) / window.length;
-      return {
-        label: formatMonthLabel(m.month),
-        margin: avgRev > 0 ? Math.round((avgRev - avgExp) / avgRev * 100) : 0,
+  // VJ-Durchschnittsumsatz fuer Referenzlinie
+  const avgRevenuePrior = useMemo(() => {
+    if (!yoy) return 0;
+    const priorMonths = yoy.months.filter(m => m.revenue_prior > 0);
+    if (priorMonths.length === 0) return 0;
+    return priorMonths.reduce((s, m) => s + m.revenue_prior, 0) / priorMonths.length;
+  }, [yoy]);
+
+  // marginTrend kommt direkt vom Backend
+
+  // Stacked-Bar-Daten fuer Kostenstruktur
+  const costBarData = useMemo(() => {
+    if (!expenseBreakdown) return { data: [], keys: [] as string[], labels: {} as Record<string, string> };
+    const labels = expenseBreakdown.category_labels;
+    const allKeys = new Set<string>();
+    const combined: Record<string, number>[] = [];
+    for (let m = 0; m < 12; m++) {
+      const cur = expenseBreakdown.months_current[m];
+      const prior = expenseBreakdown.months_prior[m];
+      if (!cur && !prior) continue;
+      const curCats = cur?.categories || {};
+      const priorCats = prior?.categories || {};
+      Object.keys(curCats).forEach(k => allKeys.add(k));
+      Object.keys(priorCats).forEach(k => allKeys.add(k));
+
+      const row: Record<string, number> = {
+        month: m,
+        _label_cur: cur?.month ? `${cur.month} ${String(expenseBreakdown.current_year).slice(2)}` : '',
+        _label_prior: prior?.month ? `${prior.month} ${String(expenseBreakdown.prior_year).slice(2)}` : '',
+        _total_cur: cur?.total || 0,
+        _total_prior: prior?.total || 0,
       };
+      Object.keys(curCats).forEach(k => { row[`cur_${k}`] = curCats[k]; });
+      Object.keys(priorCats).forEach(k => { row[`prior_${k}`] = priorCats[k]; });
+      combined.push(row);
+    }
+    const sortedKeys = [...allKeys].sort((a, b) => {
+      const sumA = expenseBreakdown.months_current.reduce((s, m) => s + (m.categories[a] || 0), 0);
+      const sumB = expenseBreakdown.months_current.reduce((s, m) => s + (m.categories[b] || 0), 0);
+      return sumB - sumA;
     });
-  }, [cashflow]);
-
-  // Donut-Daten: Monatsdurchschnitt statt Total
-  const donutData = useMemo(() => {
-    return expenseCats
-      .filter(c => c.monthly_average > 0)
-      .map((c, i) => ({
-        name: c.label,
-        value: Math.round(c.monthly_average),
-        fill: DONUT_COLORS[i % DONUT_COLORS.length],
-      }));
-  }, [expenseCats]);
-
-  const donutTotal = useMemo(() => donutData.reduce((s, d) => s + d.value, 0), [donutData]);
+    return { data: combined, keys: sortedKeys, labels };
+  }, [expenseBreakdown]);
 
   // Waterfall-Chart-Daten aufbereiten
   const waterfallChartData = useMemo(() => {
@@ -237,14 +322,18 @@ export function FinancePage() {
   }, [waterfall]);
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div className="relative flex h-full flex-col" style={hasBg ? bgStyle : undefined}>
+      {!hasBg && <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-indigo-50/30 dark:from-gray-950 dark:via-gray-900 dark:to-indigo-950/20" />}
+      {hasBg && !isGradient && <div className="absolute inset-0 bg-black/25 dark:bg-black/40" />}
+      {isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/25" />}
+
       <div className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Finanz-Controlling</h1>
+            <h1 className={`text-2xl font-bold ${hasBg ? 'text-white drop-shadow-sm' : 'text-gray-900 dark:text-white'}`}>Finanz-Controlling</h1>
             {overview && (
-              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+              <p className={`mt-1 text-xs ${hasBg ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'}`}>
                 Datenstand: Journal{' '}
                 {overview.journal_data_from && overview.journal_data_to
                   ? `${formatMonthLabel(overview.journal_data_from.slice(0, 7))} – ${formatMonthLabel(overview.journal_data_to.slice(0, 7))}`
@@ -253,19 +342,28 @@ export function FinancePage() {
               </p>
             )}
             {!overview && (
-              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              <p className={`mt-1 text-sm ${hasBg ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
                 Cashflow-Übersicht, Prognosen und Kostenanalyse
               </p>
             )}
           </div>
-          <button
-            onClick={handleRefresh}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
-          >
-            <RefreshIcon className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            Aktualisieren
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setBgPickerOpen(true)}
+              className={`rounded-lg p-2 transition-colors ${hasBg ? 'text-white/70 hover:bg-white/10 hover:text-white' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
+              title="Hintergrund ändern"
+            >
+              <BgImageIcon className="h-5 w-5" />
+            </button>
+            <button
+              onClick={handleRefresh}
+              disabled={loading}
+              className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${hasBg ? 'bg-white/10 text-white/90 hover:bg-white/20 backdrop-blur-sm' : 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'}`}
+            >
+              <RefreshIcon className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              Aktualisieren
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -302,18 +400,22 @@ export function FinancePage() {
             status="neutral"
           />
           <KpiCard
-            label="Prog. Jahresumsatz"
+            label="Prog. Jahresumsatz (brutto)"
             value={formatCHF(overview?.forecast_year_revenue)}
-            sublabel={`YTD netto: ${formatCHF(overview?.revenue_ytd_net)}`}
+            sublabel={overview?.revenue_ytd_prior
+              ? `YTD: ${formatCHF(overview?.revenue_ytd_net)} · ${formatYoyDelta(overview?.revenue_ytd ?? 0, overview.revenue_ytd_prior)}`
+              : `YTD netto: ${formatCHF(overview?.revenue_ytd_net)}`}
             icon={<TrendIcon />}
             status={overview?.forecast_year_revenue && overview.forecast_year_revenue > 0 ? 'green' : 'neutral'}
           />
           <KpiCard
             label="EBITDA YTD"
             value={formatCHF(overview?.ebitda_ytd)}
-            sublabel={overview?.revenue_ytd_net
-              ? `${((overview.ebitda_ytd ?? 0) / overview.revenue_ytd_net * 100).toFixed(1)}% Marge`
-              : '–'}
+            sublabel={overview?.ebitda_ytd_prior != null
+              ? `VJ: ${formatCHF(overview.ebitda_ytd_prior)} · ${formatYoyDelta(overview?.ebitda_ytd ?? 0, overview.ebitda_ytd_prior)}`
+              : overview?.revenue_ytd_net
+                ? `${((overview.ebitda_ytd ?? 0) / overview.revenue_ytd_net * 100).toFixed(1)}% Marge`
+                : '–'}
             icon={<CashflowIcon />}
             status={overview?.ebitda_ytd != null
               ? (overview.ebitda_ytd > 0 ? 'green' : 'red')
@@ -322,7 +424,9 @@ export function FinancePage() {
           <KpiCard
             label="Personalquote"
             value={overview?.personalquote_ytd != null ? `${overview.personalquote_ytd}%` : '–'}
-            sublabel="Personalaufwand / Netto-Ertrag"
+            sublabel={overview?.personalquote_ytd_prior != null
+              ? `VJ: ${overview.personalquote_ytd_prior}%`
+              : 'Personalaufwand / Netto-Ertrag'}
             icon={<ClockIcon />}
             status={overview?.personalquote_ytd != null
               ? (overview.personalquote_ytd <= 70 ? 'green' : overview.personalquote_ytd <= 85 ? 'yellow' : 'red')
@@ -351,7 +455,9 @@ export function FinancePage() {
           <KpiCard
             label="Gewinnmarge YTD"
             value={overview?.profit_margin_ytd != null ? `${overview.profit_margin_ytd}%` : '–'}
-            sublabel={`Aufwand YTD: ${formatCHF(overview?.expenses_ytd)}`}
+            sublabel={overview?.profit_margin_ytd_prior != null
+              ? `VJ: ${overview.profit_margin_ytd_prior}%`
+              : `Aufwand YTD: ${formatCHF(overview?.expenses_ytd)}`}
             icon={<CashflowIcon />}
             status={overview?.profit_margin_ytd != null
               ? (overview.profit_margin_ytd >= 10 ? 'green' : overview.profit_margin_ytd >= 0 ? 'yellow' : 'red')
@@ -359,38 +465,83 @@ export function FinancePage() {
           />
         </div>
 
-        {/* Cashflow-Chart (verbessert) */}
+        {/* Cashflow-Chart: Dreistufig (Operativ / Finanzierung / Investition) */}
         {cashflow && cashflow.months.length > 0 && (
-          <div className="mb-6 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/50 sm:p-6">
+          <div className={`mb-6 ${sectionClass}`}>
             <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">
-              Einnahmen vs. Ausgaben
+              Cashflow (direkte Methode)
             </h2>
-            <ResponsiveContainer width="100%" height={350}>
+            <ResponsiveContainer width="100%" height={380}>
               <ComposedChart data={cashflow.months.map(m => ({
                 ...m,
                 label: formatMonthLabel(m.month),
-                expensesNeg: -m.expenses,
+                opNeg: -m.expenses,
+                finNeg: -(m.fin_outflow || 0),
+                invNeg: -(m.invest_outflow || 0),
+                hasSpecial: (m.special_items?.length ?? 0) > 0,
               }))}>
                 <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                 <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${formatK(v)}`} />
                 <Tooltip
-                  formatter={(value: number, name: string) => {
-                    const labels: Record<string, string> = {
-                      revenue: 'Einnahmen',
-                      expensesNeg: 'Ausgaben',
-                    };
-                    return [formatCHF(Math.abs(value)), labels[name] || name];
+                  cursor={CURSOR_STYLE}
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0]?.payload;
+                    if (!d) return null;
+                    const items = d.special_items || [];
+                    return (
+                      <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-xs text-gray-100 shadow-lg">
+                        <p className="mb-2 font-semibold text-white">{label}</p>
+                        <div className="space-y-1">
+                          <div className="flex justify-between gap-4">
+                            <span className="text-green-400">Einnahmen (brutto)</span>
+                            <span className="font-medium">{formatCHF(d.revenue)}</span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-red-400">Operativ</span>
+                            <span className="font-medium">-{formatCHF(d.expenses)}</span>
+                          </div>
+                          {d.fin_outflow > 0 && (
+                            <div className="flex justify-between gap-4">
+                              <span className="text-orange-400">Finanzierung</span>
+                              <span className="font-medium">-{formatCHF(d.fin_outflow)}</span>
+                            </div>
+                          )}
+                          {d.invest_outflow > 0 && (
+                            <div className="flex justify-between gap-4">
+                              <span className="text-gray-400">Investitionen</span>
+                              <span className="font-medium">-{formatCHF(d.invest_outflow)}</span>
+                            </div>
+                          )}
+                          {items.length > 0 && (
+                            <>
+                              <hr className="my-1 border-gray-600" />
+                              <p className="text-[10px] font-medium text-gray-400">Sonderposten:</p>
+                              {items.map((si: CashflowSpecialItem, idx: number) => (
+                                <div key={idx} className="flex justify-between gap-4 text-[11px]">
+                                  <span className="text-gray-400">{si.label}</span>
+                                  <span className="font-medium text-orange-400">{formatCHF(si.amount)}</span>
+                                </div>
+                              ))}
+                            </>
+                          )}
+                          <hr className="my-1 border-gray-600" />
+                          <div className="flex justify-between gap-4 font-semibold">
+                            <span className={d.delta >= 0 ? 'text-green-400' : 'text-red-400'}>Delta</span>
+                            <span>{d.delta >= 0 ? '+' : ''}{formatCHF(d.delta)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
                   }}
-                  labelFormatter={(label: string) => label}
-                  contentStyle={{ borderRadius: '0.5rem', fontSize: '0.8rem' }}
                 />
                 {avgRevenue > 0 && (
                   <ReferenceLine
                     y={avgRevenue}
                     stroke="#22c55e"
                     strokeDasharray="6 4"
-                    label={{ value: `Ø ${formatCHF(avgRevenue)}`, position: 'right', fontSize: 10, fill: '#22c55e' }}
+                    label={{ value: `Ø ${formatK(avgRevenue)}`, position: 'insideTopRight', fontSize: 10, fill: '#22c55e' }}
                   />
                 )}
                 {avgExpenses > 0 && (
@@ -398,10 +549,24 @@ export function FinancePage() {
                     y={-avgExpenses}
                     stroke="#ef4444"
                     strokeDasharray="6 4"
-                    label={{ value: `Ø -${formatCHF(avgExpenses)}`, position: 'right', fontSize: 10, fill: '#ef4444' }}
+                    label={{ value: `Ø -${formatK(avgExpenses)}`, position: 'insideBottomRight', fontSize: 10, fill: '#ef4444' }}
                   />
                 )}
-                <ReferenceLine x={formatMonthLabel(currentMonth)} stroke="#6366f1" strokeDasharray="4 4" label={{ value: 'Heute', fontSize: 11, fill: '#6366f1' }} />
+                {avgRevenuePrior > 0 && (
+                  <ReferenceLine
+                    y={avgRevenuePrior}
+                    stroke="#94a3b8"
+                    strokeDasharray="4 4"
+                    label={{ value: `Ø VJ: ${formatK(avgRevenuePrior)}`, position: 'insideTopLeft', fontSize: 9, fill: '#94a3b8' }}
+                  />
+                )}
+                <ReferenceLine
+                  x={formatMonthLabel(currentMonth)}
+                  stroke="#6366f1"
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
+                  label={{ value: '▼ Heute', fontSize: 11, fill: '#6366f1', position: 'top' }}
+                />
                 <Bar dataKey="revenue" name="revenue" radius={[4, 4, 0, 0]}>
                   {cashflow.months.map((m, i) => (
                     <Cell
@@ -419,7 +584,7 @@ export function FinancePage() {
                     formatter={(v: number) => v > 0 ? formatK(v) : ''}
                   />
                 </Bar>
-                <Bar dataKey="expensesNeg" name="expensesNeg" radius={[0, 0, 4, 4]}>
+                <Bar dataKey="opNeg" name="opNeg" stackId="out" radius={[0, 0, 0, 0]}>
                   {cashflow.months.map((m, i) => (
                     <Cell
                       key={i}
@@ -429,14 +594,24 @@ export function FinancePage() {
                     />
                   ))}
                 </Bar>
+                <Bar dataKey="finNeg" name="finNeg" stackId="out" fill="#f97316" radius={[0, 0, 0, 0]}>
+                  {cashflow.months.map((m, i) => (
+                    <Cell key={i} fill={(m.fin_outflow || 0) > 0 ? '#f97316' : 'transparent'} />
+                  ))}
+                </Bar>
+                <Bar dataKey="invNeg" name="invNeg" stackId="out" fill="#9ca3af" radius={[0, 0, 4, 4]}>
+                  {cashflow.months.map((m, i) => (
+                    <Cell key={i} fill={(m.invest_outflow || 0) > 0 ? '#9ca3af' : 'transparent'} />
+                  ))}
+                </Bar>
               </ComposedChart>
             </ResponsiveContainer>
             <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-green-500" /> Einnahmen</span>
-              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-red-500" /> Ausgaben</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-green-500" /> Einnahmen (brutto)</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-red-500" /> Operativ</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-orange-500" /> Finanzierung</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-gray-400" /> Investitionen</span>
               <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded border-2 border-dashed border-green-300 bg-green-200/50" /> Prognose</span>
-              <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 border-t-2 border-dashed border-green-500" /> Ø Einnahmen</span>
-              <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 border-t-2 border-dashed border-red-500" /> Ø Ausgaben</span>
             </div>
           </div>
         )}
@@ -445,9 +620,9 @@ export function FinancePage() {
         <div className="mb-6 grid gap-4 lg:grid-cols-2">
           {/* Vorjahresvergleich */}
           {yoy && (
-            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/50 sm:p-6">
+            <div className={sectionClass}>
               <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Vorjahresvergleich</h2>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Vorjahresvergleich (brutto)</h2>
                 {yoy.growth_pct != null && (
                   <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
                     yoy.growth_pct >= 0
@@ -466,12 +641,12 @@ export function FinancePage() {
                   <Tooltip
                     formatter={(value: number, name: string) => {
                       const labels: Record<string, string> = {
-                        revenue_current: `Umsatz ${yoy.current_year}`,
-                        revenue_prior: `Umsatz ${yoy.prior_year}`,
+                        revenue_current: `Umsatz ${yoy.current_year} (brutto)`,
+                        revenue_prior: `Umsatz ${yoy.prior_year} (brutto)`,
                       };
                       return [formatCHF(value), labels[name] || name];
                     }}
-                    contentStyle={{ borderRadius: '0.5rem', fontSize: '0.8rem' }}
+                    contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE}
                   />
                   <Legend
                     formatter={(value: string) => {
@@ -488,56 +663,62 @@ export function FinancePage() {
             </div>
           )}
 
-          {/* Kostenstruktur-Donut */}
-          {donutData.length > 0 && (
-            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/50 sm:p-6">
+          {/* Kostenstruktur: Stacked Bar (Monatsvergleich) */}
+          {costBarData.data.length > 0 && expenseBreakdown && (
+            <div className={sectionClass}>
               <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">
-                Kostenstruktur Ø/Mt.
-                {expensePeriod.from && expensePeriod.to && (
-                  <span className="ml-2 text-xs font-normal text-gray-400">
-                    ({formatMonthLabel(expensePeriod.from)} – {formatMonthLabel(expensePeriod.to)}, {expensePeriod.months} Mt.)
-                  </span>
-                )}
+                Kostenstruktur {expenseBreakdown.current_year} vs. {expenseBreakdown.prior_year}
               </h2>
-              <div className="flex items-center gap-4">
-                <div className="relative">
-                  <ResponsiveContainer width={200} height={200}>
-                    <PieChart>
-                      <Pie
-                        data={donutData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={55}
-                        outerRadius={90}
-                        dataKey="value"
-                        stroke="none"
-                      >
-                        {donutData.map((entry, i) => (
-                          <Cell key={i} fill={entry.fill} />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(value: number) => [formatCHF(value), 'Ø/Mt.']} contentStyle={{ borderRadius: '0.5rem', fontSize: '0.8rem' }} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="text-center">
-                      <p className="text-xs text-gray-400">Ø/Mt.</p>
-                      <p className="text-sm font-bold text-gray-900 dark:text-white">{formatK(donutTotal)}</p>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex-1 space-y-1.5 overflow-hidden">
-                  {donutData.slice(0, 8).map((d, i) => (
-                    <div key={i} className="flex items-center gap-2 text-xs">
-                      <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: d.fill }} />
-                      <span className="truncate text-gray-600 dark:text-gray-300">{d.name}</span>
-                      <span className="ml-auto shrink-0 font-medium text-gray-900 dark:text-white">{formatCHF(d.value)}</span>
-                    </div>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart
+                  data={costBarData.data.filter(d => (d._total_cur as number) > 0 || (d._total_prior as number) > 0)}
+                  barCategoryGap="15%"
+                  barGap={2}
+                >
+                  <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                  <XAxis dataKey="_label_cur" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => formatK(v)} />
+                  <Tooltip
+                    cursor={CURSOR_STYLE}
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const d = payload[0]?.payload;
+                      if (!d) return null;
+                      return (
+                        <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-xs text-gray-100 shadow-lg">
+                          <p className="mb-2 font-semibold text-white">{label}</p>
+                          <div className="space-y-0.5">
+                            {costBarData.keys.filter(k => (d[`cur_${k}`] || 0) > 0).map((k) => (
+                              <div key={k} className="flex justify-between gap-4">
+                                <span className="text-gray-400">{costBarData.labels[k] || k}</span>
+                                <span className="font-medium">{formatCHF(d[`cur_${k}`])}</span>
+                              </div>
+                            ))}
+                            <hr className="my-1 border-gray-600" />
+                            <div className="flex justify-between gap-4 font-semibold">
+                              <span>Total</span>
+                              <span>{formatCHF(d._total_cur)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }}
+                  />
+                  {costBarData.keys.slice(0, 8).map((k, i) => (
+                    <Bar key={`cur_${k}`} dataKey={`cur_${k}`} stackId="cur" name={costBarData.labels[k] || k}
+                      fill={CATEGORY_COLORS[i % CATEGORY_COLORS.length]}
+                      radius={i === 0 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+                    />
                   ))}
-                  {donutData.length > 8 && (
-                    <p className="text-[10px] text-gray-400">+{donutData.length - 8} weitere</p>
-                  )}
-                </div>
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-gray-500 dark:text-gray-400">
+                {costBarData.keys.slice(0, 8).map((k, i) => (
+                  <span key={k} className="flex items-center gap-1">
+                    <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }} />
+                    {costBarData.labels[k] || k}
+                  </span>
+                ))}
               </div>
             </div>
           )}
@@ -547,10 +728,10 @@ export function FinancePage() {
         <div className="mb-6 grid gap-4 lg:grid-cols-2">
           {/* P&L Wasserfall */}
           {waterfall && waterfallChartData.length > 0 && (
-            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/50 sm:p-6">
+            <div className={sectionClass}>
               <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                  Erfolgsrechnung {waterfall.period_label}
+                  Erfolgsrechnung {waterfall.period_label} (netto)
                 </h2>
                 <div className="flex items-center gap-2">
                   <select
@@ -599,7 +780,7 @@ export function FinancePage() {
                       if (name === 'base') return [null, null];
                       return [formatCHF(value), 'Betrag'];
                     }}
-                    contentStyle={{ borderRadius: '0.5rem', fontSize: '0.8rem' }}
+                    contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE}
                   />
                   <Bar dataKey="base" stackId="stack" fill="transparent" />
                   <Bar dataKey="bar" stackId="stack" radius={[4, 4, 0, 0]}>
@@ -622,38 +803,77 @@ export function FinancePage() {
             </div>
           )}
 
-          {/* Gewinnmarge-Trend */}
-          {marginData.length > 1 && (
-            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/50 sm:p-6">
+          {/* Gewinnmarge-Trend (YTD-kumuliert + VJ-Benchmark) */}
+          {marginTrend && marginTrend.months.length > 1 && (
+            <div className={sectionClass}>
               <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Gewinnmarge (3-Mt. Ø)</h2>
+                <h2 className={`text-lg font-semibold ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>
+                  Gewinnmarge YTD
+                </h2>
                 {overview?.profit_margin_ytd != null && (
                   <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
                     overview.profit_margin_ytd >= 0
                       ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
                       : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
                   }`}>
-                    YTD: {overview.profit_margin_ytd}%
+                    {overview.profit_margin_ytd}%
                   </span>
                 )}
               </div>
               <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={marginData}>
+                <LineChart data={marginTrend.months}>
                   <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${v}%`} domain={['auto', 'auto']} />
                   <Tooltip
-                    formatter={(value: number) => [`${value}%`, 'Marge']}
-                    contentStyle={{ borderRadius: '0.5rem', fontSize: '0.8rem' }}
+                    formatter={(value: number | null, name: string) => {
+                      if (value == null) return ['–', ''];
+                      const labels: Record<string, string> = {
+                        ytd_margin: `YTD ${marginTrend.current_year}`,
+                        ytd_margin_prior: `YTD ${marginTrend.prior_year}`,
+                        rolling_12m_margin: '12-Mt. Rolling',
+                      };
+                      return [`${value}%`, labels[name] || name];
+                    }}
+                    contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE}
+                  />
+                  <Legend
+                    formatter={(value: string) => {
+                      const labels: Record<string, string> = {
+                        ytd_margin: `YTD ${marginTrend.current_year}`,
+                        ytd_margin_prior: `VJ ${marginTrend.prior_year}`,
+                        rolling_12m_margin: '12-Mt. Rolling',
+                      };
+                      return labels[value] || value;
+                    }}
+                    wrapperStyle={{ fontSize: '0.7rem' }}
                   />
                   <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="4 4" label={{ value: 'Break-Even', fontSize: 10, fill: '#94a3b8' }} />
                   <Line
                     type="monotone"
-                    dataKey="margin"
+                    dataKey="ytd_margin"
                     stroke="#6366f1"
                     strokeWidth={2.5}
                     dot={{ r: 4, fill: '#6366f1', stroke: '#fff', strokeWidth: 2 }}
                     activeDot={{ r: 6 }}
+                    connectNulls
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="ytd_margin_prior"
+                    stroke="#94a3b8"
+                    strokeWidth={1.5}
+                    strokeDasharray="6 4"
+                    dot={{ r: 3, fill: '#94a3b8', stroke: '#fff', strokeWidth: 1 }}
+                    connectNulls
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="rolling_12m_margin"
+                    stroke="#22c55e"
+                    strokeWidth={1.5}
+                    dot={false}
+                    connectNulls
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -693,33 +913,29 @@ export function FinancePage() {
           </SourceCard>
 
           <SourceCard title="Toggl Track" subtitle="Leistungserfassung" color="violet" linkUrl="https://track.toggl.com" linkLabel="Toggl öffnen">
-            <div className="space-y-1.5 text-sm">
-              {togglProjects.length === 0 ? (
-                <p className="text-gray-400">Keine Daten für diesen Monat</p>
-              ) : (
-                togglProjects.slice(0, 5).map((p, i) => (
-                  <div key={i} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-gray-600 dark:text-gray-300">{p.project_name}</span>
-                    <span className="shrink-0 text-xs text-gray-400">{p.hours}h</span>
-                    <span className="shrink-0 font-medium text-gray-900 dark:text-white">{formatCHF(p.amount)}</span>
-                  </div>
-                ))
-              )}
-            </div>
+            {togglProjects.length === 0 ? (
+              <p className="text-sm text-gray-400">Keine Daten für diesen Monat</p>
+            ) : (
+              <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-1 text-sm">
+                {togglProjects.slice(0, 5).map((p, i) => (
+                  <React.Fragment key={i}>
+                    <span className="truncate text-gray-600 dark:text-gray-300">
+                      {p.client_name ? `${p.client_name} – ` : ''}{p.project_name}
+                    </span>
+                    <span className="text-right text-xs text-gray-400 tabular-nums">{p.hours}h</span>
+                    <span className="text-right font-medium text-gray-900 tabular-nums dark:text-white">{formatCHF(p.amount)}</span>
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
           </SourceCard>
 
-          <SourceCard title="InvoiceInsight" subtitle="Kreditorenrechnungen" color="rose" comingSoon>
-            <div className="flex flex-col items-center justify-center py-4 text-center text-sm text-gray-400">
-              <ComingSoonIcon className="mb-2 h-8 w-8 text-gray-300 dark:text-gray-600" />
-              <p>Integration in Vorbereitung</p>
-              <p className="mt-1 text-xs">Wiederkehrende Zahlungen, fällige Rechnungen, Deep Research</p>
-            </div>
-          </SourceCard>
+          <InvoiceInsightPreview />
         </div>
 
         {/* Detailtabelle */}
         {cashflow && (
-          <div className="rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800/50">
+          <div className={`rounded-2xl ${cardClass}`}>
             <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700 sm:px-6">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Monatsübersicht</h2>
             </div>
@@ -728,58 +944,70 @@ export function FinancePage() {
                 <thead>
                   <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:text-gray-400">
                     <th className="px-4 py-3 sm:px-6">Monat</th>
-                    <th className="px-4 py-3 text-right sm:px-6">Einnahmen</th>
-                    <th className="px-4 py-3 text-right sm:px-6">Ausgaben</th>
+                    <th className="px-4 py-3 text-right sm:px-6">Einnahmen (brutto)</th>
+                    <th className="px-4 py-3 text-right sm:px-6">Operativ</th>
+                    <th className="hidden px-4 py-3 text-right sm:table-cell sm:px-6">Finanz.</th>
                     <th className="px-4 py-3 text-right sm:px-6">Delta</th>
-                    <th className="px-4 py-3 text-right sm:px-6">Marge</th>
                     <th className="px-4 py-3 text-right sm:px-6">Kum. Saldo</th>
                     <th className="px-4 py-3 sm:px-6"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
                   {cashflow.months.map((m) => {
-                    const margin = m.revenue > 0 ? Math.round((m.revenue - m.expenses) / m.revenue * 100) : null;
+                    const hasSpecials = (m.special_items?.length ?? 0) > 0;
                     return (
-                      <tr
-                        key={m.month}
-                        className={`transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/40 ${
-                          m.month === currentMonth ? 'bg-indigo-50/50 dark:bg-indigo-950/20'
-                            : m.is_forecast ? 'bg-amber-50/30 dark:bg-amber-950/10' : ''
-                        }`}
-                      >
-                        <td className="whitespace-nowrap px-4 py-2.5 font-medium text-gray-900 dark:text-white sm:px-6">
-                          {formatMonthLabel(m.month)}
-                          {m.is_forecast && (
-                            <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
-                              Schätzung
-                            </span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2.5 text-right text-green-600 dark:text-green-400 sm:px-6">
-                          {formatCHF(m.revenue)}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2.5 text-right text-red-500 dark:text-red-400 sm:px-6">
-                          {formatCHF(m.expenses)}
-                        </td>
-                        <td className={`whitespace-nowrap px-4 py-2.5 text-right font-medium sm:px-6 ${
-                          m.delta >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'
-                        }`}>
-                          {m.delta >= 0 ? '+' : ''}{formatCHF(m.delta)}
-                        </td>
-                        <td className={`whitespace-nowrap px-4 py-2.5 text-right text-xs sm:px-6 ${
-                          margin != null && margin >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'
-                        }`}>
-                          {margin != null ? `${margin}%` : '–'}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-white sm:px-6">
-                          {formatCHF(m.cumulative)}
-                        </td>
-                        <td className="px-4 py-2.5 sm:px-6">
-                          {m.month === currentMonth && (
-                            <span className="inline-block h-2 w-2 rounded-full bg-indigo-500" title="Aktueller Monat" />
-                          )}
-                        </td>
-                      </tr>
+                      <React.Fragment key={m.month}>
+                        <tr
+                          className={`transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/40 ${
+                            m.month === currentMonth ? 'bg-indigo-50/50 dark:bg-indigo-950/20'
+                              : m.is_forecast ? 'bg-amber-50/30 dark:bg-amber-950/10' : ''
+                          }`}
+                        >
+                          <td className="whitespace-nowrap px-4 py-2.5 font-medium text-gray-900 dark:text-white sm:px-6">
+                            {formatMonthLabel(m.month)}
+                            {m.is_forecast && (
+                              <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
+                                Schätzung
+                              </span>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2.5 text-right text-green-600 dark:text-green-400 sm:px-6">
+                            {formatCHF(m.revenue)}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2.5 text-right text-red-500 dark:text-red-400 sm:px-6">
+                            {formatCHF(m.expenses)}
+                          </td>
+                          <td className="hidden whitespace-nowrap px-4 py-2.5 text-right text-orange-500 sm:table-cell sm:px-6">
+                            {(m.fin_outflow || 0) > 0 ? formatCHF(m.fin_outflow) : '–'}
+                          </td>
+                          <td className={`whitespace-nowrap px-4 py-2.5 text-right font-medium sm:px-6 ${
+                            m.delta >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'
+                          }`}>
+                            {m.delta >= 0 ? '+' : ''}{formatCHF(m.delta)}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-white sm:px-6">
+                            {formatCHF(m.cumulative)}
+                          </td>
+                          <td className="px-4 py-2.5 sm:px-6">
+                            {m.month === currentMonth && (
+                              <span className="inline-block h-2 w-2 rounded-full bg-indigo-500" title="Aktueller Monat" />
+                            )}
+                          </td>
+                        </tr>
+                        {hasSpecials && (
+                          <tr className="bg-orange-50/40 dark:bg-orange-950/10">
+                            <td colSpan={7} className="px-8 py-1.5 sm:px-10">
+                              <div className="flex flex-wrap gap-x-5 gap-y-0.5 text-xs text-orange-600 dark:text-orange-400">
+                                {m.special_items.map((si, idx) => (
+                                  <span key={idx}>
+                                    {si.label}: {formatCHF(si.amount)}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -794,6 +1022,13 @@ export function FinancePage() {
           </div>
         )}
       </div>
+
+      <BackgroundPicker
+        isOpen={bgPickerOpen}
+        onClose={() => setBgPickerOpen(false)}
+        currentUrl={bgUrl}
+        onSelect={(url) => { handleBgSelect(url); setBgPickerOpen(false); }}
+      />
     </div>
   );
 }
@@ -928,6 +1163,14 @@ function RunwayIcon() {
   );
 }
 
+function BgImageIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5a2.25 2.25 0 0 0 2.25-2.25V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Zm6-13.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z" />
+    </svg>
+  );
+}
+
 function ExternalLinkIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -936,10 +1179,59 @@ function ExternalLinkIcon({ className }: { className?: string }) {
   );
 }
 
-function ComingSoonIcon({ className }: { className?: string }) {
+function InvoiceInsightPreview() {
+  const [kpis, setKpis] = useState<Record<string, unknown> | null>(null);
+  const [upcoming, setUpcoming] = useState<Record<string, unknown>[]>([]);
+
+  useEffect(() => {
+    api.get<{ kpis: Record<string, unknown> }>('/api/creditors/dashboard')
+      .then(d => setKpis(d.kpis))
+      .catch(() => {});
+    api.get<unknown>('/api/creditors/upcoming?n=3')
+      .then(data => {
+        const raw = Array.isArray(data) ? data : (data as Record<string, unknown>)?.payments as Record<string, unknown>[] || [];
+        setUpcoming(raw.map((p: Record<string, unknown>) => ({
+          vendor: (p.vendor ?? p.Kreditor ?? '–') as string,
+          amount_chf: (p.amount_chf ?? p.Betrag_CHF) as number | undefined,
+        })));
+      })
+      .catch(() => {});
+  }, []);
+
+  const totalVol = (kpis?.total_spend_chf ?? kpis?.total_volume_chf ?? kpis?.total_volume ?? 0) as number;
+  const invoiceN = (kpis?.invoice_count ?? kpis?.total_invoices ?? 0) as number;
+
   return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" />
-    </svg>
+    <SourceCard title="InvoiceInsight" subtitle="Kreditorenrechnungen" color="rose" linkUrl="/kreditoren" linkLabel="Kreditoren öffnen">
+      {kpis ? (
+        <div className="space-y-3">
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-500 dark:text-gray-400">Gesamtausgaben</span>
+            <span className="font-medium text-gray-900 dark:text-white">{formatCHF(totalVol)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-500 dark:text-gray-400">Rechnungen</span>
+            <span className="font-medium text-gray-900 dark:text-white">{invoiceN}</span>
+          </div>
+          {upcoming.length > 0 && (
+            <>
+              <div className="border-t border-gray-200 pt-2 dark:border-gray-700">
+                <p className="mb-1 text-xs font-medium text-gray-400">Nächste Zahlungen:</p>
+                {upcoming.map((p, i) => (
+                  <div key={i} className="flex justify-between text-xs">
+                    <span className="text-gray-600 dark:text-gray-300">{(p.vendor as string) || '–'}</span>
+                    <span className="font-medium text-gray-900 dark:text-white">
+                      {p.amount_chf != null ? formatCHF(p.amount_chf as number) : '–'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <p className="py-2 text-center text-sm text-gray-400">Laden...</p>
+      )}
+    </SourceCard>
   );
 }

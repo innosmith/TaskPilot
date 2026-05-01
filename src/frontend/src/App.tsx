@@ -18,6 +18,8 @@ import { InboxPage } from './pages/InboxPage';
 
 import { SignalePage } from './pages/SignalePage';
 import { FinancePage } from './pages/FinancePage';
+import DebtorsPage from './pages/DebtorsPage';
+import CreditorsPage from './pages/CreditorsPage';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -59,6 +61,8 @@ export default function App() {
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/signale" element={<SignalePage />} />
           <Route path="/finanzen" element={<FinancePage />} />
+          <Route path="/debitoren" element={<DebtorsPage />} />
+          <Route path="/kreditoren" element={<CreditorsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 

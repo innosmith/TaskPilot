@@ -217,6 +217,12 @@ export function Sidebar({
               <NavLink to="/finanzen" className={collapsedLinkClasses} onClick={onClose} title="Finanzen">
                 <FinanceIcon className="h-5 w-5" />
               </NavLink>
+              <NavLink to="/debitoren" className={collapsedLinkClasses} onClick={onClose} title="Debitoren">
+                <DebtorsIcon className="h-5 w-5" />
+              </NavLink>
+              <NavLink to="/kreditoren" className={collapsedLinkClasses} onClick={onClose} title="Kreditoren">
+                <CreditorsIcon className="h-5 w-5" />
+              </NavLink>
             </>
           ) : (
             <>
@@ -302,6 +308,16 @@ export function Sidebar({
               <NavLink to="/finanzen" className={linkClasses} onClick={onClose}>
                 <FinanceIcon className="h-5 w-5" />
                 <span className="flex-1">Finanzen</span>
+              </NavLink>
+
+              <NavLink to="/debitoren" className={linkClasses} onClick={onClose}>
+                <DebtorsIcon className="h-5 w-5" />
+                <span className="flex-1">Debitoren</span>
+              </NavLink>
+
+              <NavLink to="/kreditoren" className={linkClasses} onClick={onClose}>
+                <CreditorsIcon className="h-5 w-5" />
+                <span className="flex-1">Kreditoren</span>
               </NavLink>
             </>
           )}
@@ -522,6 +538,22 @@ function FinanceIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" />
+    </svg>
+  );
+}
+
+function DebtorsIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+    </svg>
+  );
+}
+
+function CreditorsIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
     </svg>
   );
 }

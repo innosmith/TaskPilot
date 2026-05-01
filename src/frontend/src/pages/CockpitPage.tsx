@@ -592,6 +592,9 @@ export function CockpitPage() {
           {/* ── Zone 2b: Finanz-Übersicht (kompakt) ── */}
           <FinanceCompactCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
 
+          {/* ── Zone 2c: Fällige Kreditoren-Zahlungen ── */}
+          <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
+
           {/* ── Zone 3: Freigaben (kompakt, aufklappbar) ── */}
           {approvalJobs.length > 0 && (
             <section>
@@ -1388,6 +1391,88 @@ function FinanceCompactCard({ cardClass, textSecondary, textMuted }: FinanceComp
             );
           })}
         </div>
+      </div>
+    </section>
+  );
+}
+
+
+// ── Fällige Kreditoren-Zahlungen (kompakt, im Cockpit) ──
+
+interface UpcomingPayment {
+  vendor: string;
+  product?: string;
+  next_date?: string;
+  days_until?: number;
+  amount_chf?: number;
+  cycle?: string;
+}
+
+function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted }: {
+  cardClass: string; textSecondary: string; textMuted: string;
+}) {
+  const navigate = useNavigate();
+  const [payments, setPayments] = useState<UpcomingPayment[]>([]);
+
+  useEffect(() => {
+    api.get<unknown>('/api/creditors/upcoming?n=5')
+      .then(data => {
+        const raw = Array.isArray(data) ? data : (data as Record<string, unknown>)?.payments as Record<string, unknown>[] || [];
+        setPayments(raw.map((p: Record<string, unknown>) => ({
+          vendor: (p.vendor ?? p.Kreditor ?? '–') as string,
+          product: (p.product ?? p.Produkt) as string | undefined,
+          next_date: (p.next_date ?? p.Renewal_Date_Parsed ?? p.Renewal_Date) as string | undefined,
+          days_until: (p.days_until ?? p.Tage_bis_Renewal) as number | undefined,
+          amount_chf: (p.amount_chf ?? p.Betrag_CHF) as number | undefined,
+          cycle: (p.cycle ?? p.Abrechnungszyklus) as string | undefined,
+        })));
+      })
+      .catch(() => {});
+  }, []);
+
+  if (payments.length === 0) return null;
+
+  const urgentCount = payments.filter(p => (p.days_until ?? 999) < 7).length;
+
+  return (
+    <section className={`rounded-xl border p-4 ${cardClass}`}>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+          Fällige Zahlungen
+          {urgentCount > 0 && (
+            <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700 dark:bg-red-900/40 dark:text-red-400">
+              {urgentCount}
+            </span>
+          )}
+        </h2>
+        <button
+          onClick={() => navigate('/kreditoren')}
+          className={`text-xs font-medium ${textMuted} transition-colors hover:text-indigo-500`}
+        >
+          Alle →
+        </button>
+      </div>
+      <div className="space-y-2">
+        {payments.slice(0, 5).map((p, i) => (
+          <div key={i} className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2">
+              {(p.days_until ?? 999) < 7 && <span className="h-2 w-2 rounded-full bg-red-500" />}
+              {(p.days_until ?? 999) >= 7 && (p.days_until ?? 999) < 30 && <span className="h-2 w-2 rounded-full bg-amber-500" />}
+              {(p.days_until ?? 999) >= 30 && <span className="h-2 w-2 rounded-full bg-green-500" />}
+              <span className="text-gray-900 dark:text-white">{p.vendor}{p.product ? ` – ${p.product}` : ''}</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className={`text-xs tabular-nums ${textMuted}`}>
+                {p.days_until != null ? `${p.days_until}d` : p.next_date || '–'}
+              </span>
+              {p.amount_chf != null && (
+                <span className="font-medium tabular-nums text-gray-900 dark:text-white">
+                  {new Intl.NumberFormat('de-CH', { style: 'currency', currency: 'CHF' }).format(p.amount_chf)}
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );
