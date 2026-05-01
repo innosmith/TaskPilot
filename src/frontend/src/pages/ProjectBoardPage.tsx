@@ -461,7 +461,7 @@ export function ProjectBoardPage() {
         >
           <div
             className="flex gap-4"
-            style={{ minHeight: 'calc(100vh - 180px)' }}
+            style={{ minHeight: 'calc(100dvh - 180px)' }}
           >
             <SortableContext
               items={board.columns.map((col) => col.id)}

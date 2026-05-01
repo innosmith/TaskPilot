@@ -243,13 +243,13 @@ export function SearchDialog({
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === backdropRef.current) onClose();
       }}
     >
       <div
-        className="mt-[12vh] flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
+        className="mt-16 flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:mt-[12dvh] dark:border-gray-700 dark:bg-gray-900"
         onKeyDown={handleKeyDown}
       >
         {/* Suchfeld */}
@@ -272,7 +272,7 @@ export function SearchDialog({
         </div>
 
         {/* Ergebnisse */}
-        <div ref={listRef} className="max-h-[60vh] overflow-y-auto">
+        <div ref={listRef} className="max-h-[60dvh] overflow-y-auto">
           {!query.trim() && (
             <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-gray-400 dark:text-gray-500">
               <span className="flex items-center gap-1.5">

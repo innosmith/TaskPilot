@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { Sidebar } from '../components/Sidebar';
 import { MobileHeader } from '../components/MobileHeader';
@@ -6,6 +6,7 @@ import { BottomTabBar } from '../components/BottomTabBar';
 import { SearchDialog } from '../components/SearchDialog';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { useBadgeData, BadgeProvider } from '../hooks/useBadges';
+import { useScrollDirection } from '../hooks/useScrollDirection';
 import { api } from '../api/client';
 
 interface AppSettings {
@@ -78,9 +79,13 @@ export function AppLayout() {
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const openSearch = useCallback(() => setSearchOpen(true), []);
 
+  const mainRef = useRef<HTMLElement>(null);
+  const scrollDir = useScrollDirection(mainRef);
+  const tabBarHidden = scrollDir === 'down';
+
   return (
     <BadgeProvider value={badges}>
-      <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 via-indigo-50/30 to-sky-50/40 dark:from-gray-950 dark:via-indigo-950/20 dark:to-gray-950">
+      <div className="app-shell flex h-dvh overflow-hidden bg-gradient-to-br from-slate-50 via-indigo-50/30 to-sky-50/40 dark:from-gray-950 dark:via-indigo-950/20 dark:to-gray-950">
         <Sidebar
           isOpen={sidebarOpen}
           collapsed={sidebarCollapsed}
@@ -95,11 +100,11 @@ export function AppLayout() {
         <div className="flex flex-1 flex-col overflow-hidden">
           <MobileHeader onMenuOpen={openSidebar} onSearchOpen={openSearch} />
 
-          <main className="flex-1 overflow-hidden lg:pt-0 lg:pb-0" style={{ paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))', paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}>
+          <main ref={mainRef} className="flex-1 overflow-hidden transition-[padding] duration-300 lg:pt-0 lg:pb-0" style={{ paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))', paddingBottom: tabBarHidden ? '0px' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}>
             <Outlet context={{ refreshSidebar, refreshAppSettings }} />
           </main>
 
-          <BottomTabBar onMoreOpen={openSidebar} />
+          <BottomTabBar onMoreOpen={openSidebar} hidden={tabBarHidden} />
         </div>
 
         <SearchDialog

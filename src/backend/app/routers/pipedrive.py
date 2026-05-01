@@ -26,10 +26,10 @@ router = APIRouter(prefix="/api/pipedrive", tags=["pipedrive"])
 # ── Cache-Layer ──────────────────────────────────────
 # Personen-Stammdaten (Name, Bild, Firma) aendern extrem selten → 24h TTL
 _person_cache: TTLCache = TTLCache(maxsize=2000, ttl=86400)
-# Listen (Deals, Leads, Activities) sind dynamischer → 2 Min TTL
-_list_cache: TTLCache = TTLCache(maxsize=100, ttl=120)
-# Pipelines/Stages aendern fast nie → 5 Min TTL
-_static_cache: TTLCache = TTLCache(maxsize=50, ttl=300)
+# Listen (Deals, Leads, Activities) aendern sich selten → 1h TTL
+_list_cache: TTLCache = TTLCache(maxsize=100, ttl=3600)
+# Pipelines/Stages aendern fast nie → 1h TTL
+_static_cache: TTLCache = TTLCache(maxsize=50, ttl=3600)
 
 
 def _get_pipedrive_client(user: User) -> PipedriveClient:

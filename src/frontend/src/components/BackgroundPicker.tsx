@@ -130,7 +130,7 @@ export function BackgroundPicker({ isOpen, onClose, currentUrl, onSelect }: Back
           ))}
         </div>
 
-        <div ref={scrollRef} className="max-h-[60vh] overflow-y-auto p-6">
+        <div ref={scrollRef} className="max-h-[60dvh] overflow-y-auto p-6">
           {tab === 'gradients' && (
             <div className="grid grid-cols-4 gap-3">
               {GRADIENTS.map((g) => (

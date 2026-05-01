@@ -5,6 +5,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import or_, select
@@ -19,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "pipedrive"))
 from app.routers.pipedrive import _extract_pic_url
 
 logger = logging.getLogger("taskpilot.search")
+
+_search_cache: TTLCache = TTLCache(maxsize=200, ttl=300)
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -88,7 +91,12 @@ class SignaHit(BaseModel):
 
 
 async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
-    """Pipedrive-Suche mit Timeout und Fallback (blockiert nie die lokale Suche)."""
+    """Pipedrive-Suche mit Timeout, Cache und Fallback (blockiert nie die lokale Suche)."""
+    cache_key = term.strip().lower()
+    cached_result = _search_cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
     try:
         from pipedrive_client import PipedriveClient, PipedriveConfig  # noqa: E402
         from app.routers.pipedrive import _person_cache
@@ -151,6 +159,7 @@ async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
                 email=email,
                 pic_url=pic_url,
             ))
+        _search_cache[cache_key] = results
         return results
     except Exception as exc:
         logger.debug("Pipedrive-Suche fehlgeschlagen (wird ignoriert): %s", exc)

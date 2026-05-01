@@ -206,8 +206,26 @@ export function CockpitPage() {
   const [editingProject, setEditingProject] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [senderAvatars, setSenderAvatars] = useState<Record<string, { pic_url: string | null; person_id: number | null; name: string | null }>>({});
+  const lookedUpEmails = useRef<Set<string>>(new Set());
 
-  const fetchData = useCallback(async () => {
+  const fetchPipedriveData = useCallback(async () => {
+    try {
+      const [pdDeals, pdLeads, pdActs] = await Promise.allSettled([
+        api.get<PipedriveDealSummary[]>('/api/pipedrive/deals?status=open&limit=20'),
+        api.get<PipedriveLeadSummary[]>('/api/pipedrive/leads?limit=100'),
+        api.get<PipedriveActivitySummary[]>('/api/pipedrive/activities?done=false&limit=8'),
+      ]);
+      let anyOk = false;
+      if (pdDeals.status === 'fulfilled') { setPipedriveDeals(pdDeals.value); anyOk = true; }
+      if (pdLeads.status === 'fulfilled') { setPipedriveLeads(pdLeads.value); anyOk = true; }
+      if (pdActs.status === 'fulfilled') { setPipedriveActivities(pdActs.value); anyOk = true; }
+      setPipedriveConnected(anyOk);
+    } catch {
+      setPipedriveConnected(false);
+    }
+  }, []);
+
+  const fetchAppData = useCallback(async () => {
     try {
       const now = new Date();
       const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
@@ -251,30 +269,15 @@ export function CockpitPage() {
         const focusCol = pipelineData.columns.find(c => c.position === 0) || pipelineData.columns[0];
         setFocusTasks(focusCol?.tasks ?? []);
       }
-
-      try {
-        const [pdDeals, pdLeads, pdActs] = await Promise.allSettled([
-          api.get<PipedriveDealSummary[]>('/api/pipedrive/deals?status=open&limit=20'),
-          api.get<PipedriveLeadSummary[]>('/api/pipedrive/leads?limit=100'),
-          api.get<PipedriveActivitySummary[]>('/api/pipedrive/activities?done=false&limit=8'),
-        ]);
-        let anyOk = false;
-        if (pdDeals.status === 'fulfilled') { setPipedriveDeals(pdDeals.value); anyOk = true; }
-        if (pdLeads.status === 'fulfilled') { setPipedriveLeads(pdLeads.value); anyOk = true; }
-        if (pdActs.status === 'fulfilled') { setPipedriveActivities(pdActs.value); anyOk = true; }
-        setPipedriveConnected(anyOk);
-      } catch {
-        setPipedriveConnected(false);
-      }
     } catch { /* */ }
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchAppData(); fetchPipedriveData(); }, [fetchAppData, fetchPipedriveData]);
 
   useSSE((event) => {
     if (['agent_jobs_changed', 'tasks_changed', 'email_triage_changed'].includes(event)) {
-      fetchData();
+      fetchAppData();
     }
   });
 
@@ -305,9 +308,11 @@ export function CockpitPage() {
     for (const job of approvalJobs) {
       const meta = (job.metadata_json || {}) as Record<string, string>;
       const email = meta.from_address;
-      if (email && !senderAvatars[email]) unknownEmails.push(email);
+      if (email && !senderAvatars[email] && !lookedUpEmails.current.has(email)) unknownEmails.push(email);
     }
     if (unknownEmails.length === 0) return;
+
+    for (const email of unknownEmails) lookedUpEmails.current.add(email);
 
     const placeholder: Record<string, { pic_url: string | null; person_id: number | null; name: string | null }> = {};
     for (const email of unknownEmails) placeholder[email] = { pic_url: null, person_id: null, name: null };
@@ -351,7 +356,7 @@ export function CockpitPage() {
     setProcessing(prev => new Set(prev).add(jobId));
     try {
       await api.patch(`/api/agent-jobs/${jobId}`, { status: 'completed' });
-      fetchData();
+      fetchAppData();
     } catch { /* */ }
     finally { setProcessing(prev => { const n = new Set(prev); n.delete(jobId); return n; }); }
   };
@@ -360,7 +365,7 @@ export function CockpitPage() {
     setProcessing(prev => new Set(prev).add(jobId));
     try {
       await api.patch(`/api/agent-jobs/${jobId}`, { status: 'failed', error_message: 'Vom Benutzer abgelehnt' });
-      fetchData();
+      fetchAppData();
     } catch { /* */ }
     finally { setProcessing(prev => { const n = new Set(prev); n.delete(jobId); return n; }); }
   };
@@ -371,14 +376,14 @@ export function CockpitPage() {
       const body: Record<string, string> = {};
       if (newProjectId && newProjectId !== task.project_id) body.project_id = newProjectId;
       await api.post(`/api/tasks/${task.id}/confirm`, body);
-      fetchData();
+      fetchAppData();
     } catch { /* */ }
   };
 
   const handleDismissTask = async (taskId: string) => {
     try {
       await api.delete(`/api/tasks/${taskId}`);
-      fetchData();
+      fetchAppData();
     } catch { /* */ }
   };
 
@@ -784,7 +789,7 @@ export function CockpitPage() {
                               }}
                               onSentAfterEdit={() => {
                                 setEditingJobId(null);
-                                fetchData();
+                                fetchAppData();
                               }}
                               onCancel={() => setEditingJobId(null)}
                             />
@@ -1168,7 +1173,7 @@ export function CockpitPage() {
         <TaskDetailDialog
           taskId={selectedTaskId}
           onClose={() => setSelectedTaskId(null)}
-          onUpdated={() => { setSelectedTaskId(null); fetchData(); }}
+          onUpdated={() => { setSelectedTaskId(null); fetchAppData(); }}
         />
       )}
 

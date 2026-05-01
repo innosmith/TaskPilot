@@ -3,9 +3,10 @@ import { useBadges } from '../hooks/useBadges';
 
 interface BottomTabBarProps {
   onMoreOpen: () => void;
+  hidden?: boolean;
 }
 
-export function BottomTabBar({ onMoreOpen }: BottomTabBarProps) {
+export function BottomTabBar({ onMoreOpen, hidden = false }: BottomTabBarProps) {
   const { pathname } = useLocation();
   const { pendingDecisions, focusTaskCount, unreadMailCount } = useBadges();
 
@@ -13,7 +14,7 @@ export function BottomTabBar({ onMoreOpen }: BottomTabBarProps) {
 
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-30 border-t border-white/20 bg-white/75 backdrop-blur-xl dark:border-gray-800/60 dark:bg-gray-950/75 lg:hidden"
+      className={`fixed inset-x-0 bottom-0 z-30 border-t border-white/20 bg-white/75 backdrop-blur-xl transition-transform duration-300 dark:border-gray-800/60 dark:bg-gray-950/75 lg:hidden ${hidden ? 'translate-y-full' : 'translate-y-0'}`}
       style={{ paddingBottom: 'env(safe-area-inset-bottom)', paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)' }}
     >
       <div className="mx-auto flex h-14 max-w-lg items-stretch justify-around">

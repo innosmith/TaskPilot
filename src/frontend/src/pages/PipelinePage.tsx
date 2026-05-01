@@ -284,7 +284,7 @@ export function PipelinePage() {
           onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}
         >
-          <div className="flex gap-4" style={{ minHeight: 'calc(100vh - 180px)' }}>
+          <div className="flex gap-4" style={{ minHeight: 'calc(100dvh - 180px)' }}>
             <SortableContext
               items={columns.map((col) => col.id)}
               strategy={horizontalListSortingStrategy}

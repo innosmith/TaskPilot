@@ -257,14 +257,14 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
     mode === 'fullscreen'
       ? 'fixed inset-0 z-50'
       : mode === 'modal'
-        ? 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm'
+        ? 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm'
         : 'fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm';
 
   const panelClass =
     mode === 'fullscreen'
-      ? 'flex h-full w-full flex-col overflow-hidden bg-white dark:bg-gray-950'
+      ? 'flex h-full w-full flex-col overflow-hidden bg-white pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] dark:bg-gray-950'
       : mode === 'modal'
-        ? 'flex w-full max-w-4xl max-h-[90vh] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-950'
+        ? 'flex w-full max-w-4xl max-h-[90dvh] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-950'
         : 'flex h-full w-full max-w-2xl flex-col overflow-hidden bg-white shadow-2xl dark:bg-gray-950';
 
   const boardColumns: BoardColumn[] = currentProject?.board_columns?.sort((a, b) => a.position - b.position) || [];

@@ -10,6 +10,11 @@ html, body, #root {
 
 html {
   scroll-behavior: smooth;
+  background-color: #030712;
+}
+
+html.standalone .app-shell {
+  height: 100vh !important;
 }
 
 body {
