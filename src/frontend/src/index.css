@@ -2,6 +2,12 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+html, body, #root {
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
+}
+
 html {
   scroll-behavior: smooth;
 }
@@ -44,6 +50,14 @@ body {
   background-color: transparent !important;
   background-image: none !important;
   font-family: inherit !important;
+}
+
+.signa-content {
+  color: inherit;
+}
+.dark .signa-content,
+.signa-content.prose-invert {
+  color: rgba(255, 255, 255, 0.92);
 }
 
 .signa-content h1 {
@@ -147,4 +161,19 @@ body {
   margin: 1em 0;
   font-style: italic;
   opacity: 0.9;
+}
+
+/* Pull-down filter sheet animation */
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Hide scrollbar but keep scroll functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
 }

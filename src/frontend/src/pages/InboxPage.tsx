@@ -384,7 +384,7 @@ export function InboxPage() {
 
       <div className="relative z-10 flex h-full flex-col">
       {/* Header */}
-      <div className={`border-b px-6 py-4 backdrop-blur-xl ${hasBg ? 'border-white/10 bg-black/35' : 'border-gray-200/60 bg-white/80 dark:border-gray-800/60 dark:bg-gray-900/80'}`}>
+      <div className={`border-b px-4 py-4 sm:px-6 backdrop-blur-xl ${hasBg ? 'border-white/10 bg-black/35' : 'border-gray-200/60 bg-white/80 dark:border-gray-800/60 dark:bg-gray-900/80'}`}>
         <div className="flex items-center justify-between">
           <div>
             <h1 className={`text-xl font-bold ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>Posteingang</h1>
@@ -427,11 +427,36 @@ export function InboxPage() {
         </div>
       </div>
 
-      {/* E-Mail-Inhalt (direkt, ohne Tabs) */}
+      {/* Mobile folder tabs */}
+      <div className={`scrollbar-hide flex items-stretch gap-1 overflow-x-auto border-b px-3 md:hidden ${hasBg ? 'border-white/10 bg-black/30 backdrop-blur-sm' : 'border-gray-200/60 bg-white/60 backdrop-blur-sm dark:border-gray-800/60 dark:bg-gray-900/60'}`}>
+        {[
+          { id: 'inbox', name: 'Posteingang' },
+          { id: 'drafts', name: 'Entwürfe' },
+          { id: 'sentitems', name: 'Gesendet' },
+          ...folders
+            .filter(f => !['Inbox', 'Drafts', 'Sent Items', 'Deleted Items', 'Junk Email'].includes(f.display_name))
+            .map(f => ({ id: f.id, name: f.display_name })),
+        ].map(folder => (
+          <button
+            key={folder.id}
+            onClick={() => { setActiveFolder(folder.id); setSelectedEmail(null); }}
+            className={`relative shrink-0 whitespace-nowrap px-3 py-2.5 text-xs font-medium transition-colors ${
+              activeFolder === folder.id
+                ? hasBg ? 'text-white' : 'text-indigo-600 dark:text-indigo-400'
+                : hasBg ? 'text-white/50' : 'text-gray-500 dark:text-gray-400'
+            }`}
+          >
+            {folder.name}
+            {activeFolder === folder.id && <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-indigo-500" />}
+          </button>
+        ))}
+      </div>
+
+      {/* E-Mail-Inhalt */}
       <>
       {/* Triage-Statistik-Leiste */}
       {triageStats && triageStats.total_pending > 0 && (
-        <div className={`flex items-center gap-4 border-b px-6 py-2.5 text-xs backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-gray-200/60 bg-white/60 dark:border-gray-800/60 dark:bg-gray-900/60'}`}>
+        <div className={`flex items-center gap-4 border-b px-4 py-2.5 text-xs sm:px-6 backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-gray-200/60 bg-white/60 dark:border-gray-800/60 dark:bg-gray-900/60'}`}>
           <span className={`font-semibold ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>Triage:</span>
           {Object.entries(triageStats.by_class).map(([cls, count]) => {
             const cfg = TRIAGE_CONFIG[cls];

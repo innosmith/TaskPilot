@@ -162,7 +162,7 @@ export function AgentQueuePage() {
         </div>
       </div>
 
-      <div className={`relative z-20 border-b px-6 py-3 backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-white/40 bg-white/50 dark:border-gray-800 dark:bg-gray-900/50'}`}>
+      <div className={`relative z-10 border-b px-4 py-3 sm:px-6 backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-white/40 bg-white/50 dark:border-gray-800 dark:bg-gray-900/50'}`}>
         <div className="flex items-center justify-between">
           <div className="flex gap-2">
             {(['all', 'active', 'completed', 'failed'] as FilterStatus[]).map((f) => (
@@ -257,7 +257,7 @@ export function AgentQueuePage() {
         </div>
       </div>
 
-      <div className="relative z-0 flex-1 overflow-y-auto p-6">
+      <div className="relative z-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {/* Replay-Panel */}
         <div className="mb-4">
           <ReplayPanel onJobCreated={fetchJobs} />

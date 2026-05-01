@@ -202,6 +202,7 @@ export function SignalePage() {
 
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
+  const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { saveFilters({ typeFilter, timeRange, minScore, topicFilter, personaFilter }); }, [typeFilter, timeRange, minScore, topicFilter, personaFilter]);
@@ -309,6 +310,17 @@ export function SignalePage() {
 
   const handleBgSelect = async (url: string | null) => { await api.patch('/api/settings', { signale_background_url: url }); setBgUrl(url); };
 
+  const activeFilterCount = [typeFilter, timeRange, minScore > 0, topicFilter, personaFilter, debouncedSearch].filter(Boolean).length;
+
+  const resetFilters = () => {
+    setTypeFilter('');
+    setTimeRange('');
+    setMinScore(0);
+    setTopicFilter('');
+    setPersonaFilter('');
+    setSearchTerm('');
+  };
+
   const hasBg = !!bgUrl;
   const isGradient = bgUrl?.startsWith('gradient:') ?? false;
   const bgStyle = isGradient ? { background: bgUrl!.slice('gradient:'.length) } : hasBg ? { backgroundImage: `url(${bgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined;
@@ -328,8 +340,8 @@ export function SignalePage() {
       {isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/25" />}
 
       <div className="relative z-10 flex h-full flex-col">
-        {/* Header */}
-        <div className={`border-b px-6 py-4 ${glass}`}>
+        {/* Header (desktop only) */}
+        <div className={`hidden border-b px-4 py-3 sm:px-6 sm:py-4 md:block ${glass}`}>
           <div className="mx-auto flex max-w-3xl items-center justify-between">
             <div>
               <div className="flex items-center gap-3">
@@ -352,8 +364,8 @@ export function SignalePage() {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className={`border-b px-6 ${glass}`}>
+        {/* Tabs (desktop only) */}
+        <div className={`hidden border-b px-4 sm:px-6 md:block ${glass}`}>
           <div className="mx-auto flex max-w-3xl items-center gap-1">
             {([{ id: 'signals' as TabId, label: 'Signale' }, { id: 'briefings' as TabId, label: 'Briefings' }]).map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} className={`relative px-4 py-3 text-sm font-medium transition-colors ${tab === t.id ? (hasBg ? 'text-white' : 'text-indigo-600 dark:text-indigo-400') : (hasBg ? 'text-white/50 hover:text-white/80' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300')}`}>
@@ -364,10 +376,51 @@ export function SignalePage() {
           </div>
         </div>
 
+        {/* Mobile: combined tabs + filter in one line */}
+        <div className={`flex items-center justify-between border-b px-3 md:hidden ${glass}`}>
+          <div className="flex items-center">
+            {([{ id: 'signals' as TabId, label: 'Signale' }, { id: 'briefings' as TabId, label: 'Briefings' }]).map(t => (
+              <button key={t.id} onClick={() => setTab(t.id)} className={`relative px-3 py-2.5 text-[13px] font-medium transition-colors ${tab === t.id ? (hasBg ? 'text-white' : 'text-indigo-600 dark:text-indigo-400') : (hasBg ? 'text-white/50' : 'text-gray-500 dark:text-gray-400')}`}>
+                {t.label}
+                {tab === t.id && <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-indigo-500" />}
+              </button>
+            ))}
+          </div>
+          {tab === 'signals' && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setMobileFilterOpen(v => !v)}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                  mobileFilterOpen
+                    ? 'bg-indigo-600 text-white'
+                    : hasBg
+                      ? 'bg-white/15 text-white/80 active:bg-white/25'
+                      : 'bg-gray-100 text-gray-600 active:bg-gray-200 dark:bg-gray-800 dark:text-gray-300'
+                }`}
+              >
+                <FilterIcon className="h-3 w-3" />
+                Filter
+                {activeFilterCount > 0 && (
+                  <span className="flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-indigo-500 px-0.5 text-[9px] font-bold leading-none text-white">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </button>
+              {activeFilterCount > 0 && (
+                <button onClick={resetFilters} className={`text-[11px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`}>
+                  ×
+                </button>
+              )}
+              <span className={`text-[11px] tabular-nums ${textMuted}`}>{signalTotal.toLocaleString('de-CH')}</span>
+            </div>
+          )}
+        </div>
+
         {/* ── Signals Tab ── */}
         {tab === 'signals' && (
-          <div className="flex-1 overflow-y-auto">
-            <div className={`sticky top-0 z-20 border-b px-6 py-3 ${glass}`}>
+          <div className="relative flex-1 overflow-y-auto" onScroll={() => { if (mobileFilterOpen) setMobileFilterOpen(false); }}>
+            {/* Desktop filter bar */}
+            <div className={`sticky top-0 z-10 hidden border-b px-4 py-3 sm:px-6 md:block ${glass}`}>
               <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
                 <PillGroup options={[{ value: '', label: 'Alle' }, { value: 'today', label: 'Heute' }, { value: 'week', label: 'Woche' }, { value: '2weeks', label: '2 Wochen' }]} value={timeRange} onChange={v => setTimeRange(v as TimeRange)} hasBg={hasBg} />
                 <Sep hasBg={hasBg} />
@@ -389,7 +442,50 @@ export function SignalePage() {
               </div>
             </div>
 
-            <div className="mx-auto max-w-3xl px-6 py-6">
+            {/* Mobile pull-down filter sheet */}
+            {mobileFilterOpen && (
+              <>
+                <div className="fixed inset-0 z-20 md:hidden" onClick={() => setMobileFilterOpen(false)} />
+                <div className={`absolute inset-x-0 top-0 z-20 animate-[slideDown_150ms_ease-out] border-b px-4 py-4 md:hidden ${glass}`}>
+                  <div className="space-y-3">
+                    <div>
+                      <label className={`mb-1.5 block text-[10px] font-semibold uppercase tracking-wider ${textMuted}`}>Zeitraum</label>
+                      <PillGroup options={[{ value: '', label: 'Alle' }, { value: 'today', label: 'Heute' }, { value: 'week', label: 'Woche' }, { value: '2weeks', label: '2 Wo.' }]} value={timeRange} onChange={v => setTimeRange(v as TimeRange)} hasBg={hasBg} />
+                    </div>
+                    <div>
+                      <label className={`mb-1.5 block text-[10px] font-semibold uppercase tracking-wider ${textMuted}`}>Typ</label>
+                      <PillGroup options={[{ value: '', label: 'Alle' }, { value: 'rss', label: 'Artikel' }, { value: 'youtube', label: 'Videos' }]} value={typeFilter} onChange={v => setTypeFilter(v as TypeFilter)} hasBg={hasBg} />
+                    </div>
+                    <div>
+                      <label className={`mb-1.5 block text-[10px] font-semibold uppercase tracking-wider ${textMuted}`}>Score</label>
+                      <PillGroup options={[{ value: '0', label: 'Alle' }, { value: '7', label: '\u2265 7' }, { value: '8', label: '\u2265 8' }, { value: '9', label: 'MUST-READ', accent: true }]} value={String(minScore)} onChange={v => setMinScore(Number(v) as ScoreFilter)} hasBg={hasBg} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className={`mb-1.5 block text-[10px] font-semibold uppercase tracking-wider ${textMuted}`}>Topic</label>
+                        <select value={topicFilter} onChange={e => setTopicFilter(e.target.value)} className={`w-full rounded-lg border px-2.5 py-2 text-xs ${hasBg ? 'border-white/15 bg-white/10 text-white' : 'border-gray-200 bg-white text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300'}`}>
+                          <option value="">Alle</option>
+                          {topics.map(t => <option key={t.id} value={t.topic_name}>{t.topic_name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className={`mb-1.5 block text-[10px] font-semibold uppercase tracking-wider ${textMuted}`}>Persona</label>
+                        <select value={personaFilter} onChange={e => setPersonaFilter(e.target.value)} className={`w-full rounded-lg border px-2.5 py-2 text-xs ${hasBg ? 'border-white/15 bg-white/10 text-white' : 'border-gray-200 bg-white text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300'}`}>
+                          <option value="">Alle</option>
+                          {personas.map(p => <option key={p.id} value={p.persona_name}>{p.persona_name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className={`mb-1.5 block text-[10px] font-semibold uppercase tracking-wider ${textMuted}`}>Suche</label>
+                      <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Suchbegriff..." className={`w-full rounded-lg border px-3 py-2 text-xs outline-none transition-colors ${hasBg ? 'border-white/15 bg-white/10 text-white placeholder:text-white/40 focus:border-white/30' : 'border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-800 dark:text-white'}`} />
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="mx-auto max-w-3xl px-4 py-4 sm:px-6 sm:py-6">
               {initialLoad && loadingSignals ? (
                 <div className="grid gap-5">{Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} hasBg={hasBg} />)}</div>
               ) : signals.length === 0 && !loadingSignals ? (
@@ -520,7 +616,8 @@ export function SignalePage() {
         {/* ── Briefings Tab ── */}
         {tab === 'briefings' && (
           <div className="flex flex-1 overflow-hidden">
-            <div className={`flex flex-col ${selectedDetail ? 'w-[340px] shrink-0' : 'w-full'}`}>
+            {/* Left: Briefing list -- hidden on mobile when detail is open */}
+            <div className={`flex flex-col ${selectedDetail ? 'hidden md:flex md:w-[340px] md:shrink-0' : 'w-full'}`}>
               <div className={`flex items-center gap-2 border-b px-4 py-3 ${glass}`}>
                 <PillGroup options={[{ value: 'all', label: 'Alle' }, { value: 'daily', label: 'Daily' }, { value: 'deep-dive', label: 'Deep Dives' }]} value={briefingFilter} onChange={v => { setBriefingFilter(v as BriefingFilter); setDdPersonaFilter(''); setSelectedDetail(null); }} hasBg={hasBg} />
                 {briefingFilter !== 'daily' && (
@@ -565,23 +662,29 @@ export function SignalePage() {
                 )}
               </div>
             </div>
+            {/* Right: Briefing detail -- full width on mobile */}
             {selectedDetail && (
-              <div className={`flex-1 overflow-y-auto border-l p-6 ${glass}`}>
+              <div className={`flex-1 overflow-y-auto border-l p-4 sm:p-6 ${hasBg ? 'border-white/10 bg-black/60 backdrop-blur-xl' : 'border-gray-200/60 bg-white/70 backdrop-blur-xl dark:border-gray-800 dark:bg-gray-900/60'}`}>
                 <div className="flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      {selectedDetail.type === 'daily' ? (
-                        <span className="rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">Daily Report</span>
-                      ) : (
-                        <span className="rounded-full bg-purple-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-purple-600 dark:text-purple-300">Deep Dive</span>
-                      )}
-                      <h2 className={`text-lg font-bold ${textPrimary}`}>{new Date(selectedDetail.date).toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h2>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <button onClick={() => setSelectedDetail(null)} className={`shrink-0 rounded-lg p-1.5 transition-colors md:hidden ${hasBg ? 'text-white/60 active:bg-white/10' : 'text-gray-500 active:bg-gray-100 dark:active:bg-gray-800'}`} aria-label="Zurück">
+                      <BackIcon className="h-5 w-5" />
+                    </button>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        {selectedDetail.type === 'daily' ? (
+                          <span className="shrink-0 rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">Daily Report</span>
+                        ) : (
+                          <span className="shrink-0 rounded-full bg-purple-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-purple-600 dark:text-purple-300">Deep Dive</span>
+                        )}
+                        <h2 className={`truncate text-base font-bold sm:text-lg ${textPrimary}`}>{new Date(selectedDetail.date).toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h2>
+                      </div>
+                      {selectedDetail.persona_name && <p className={`mt-1 text-sm ${textSecondary}`}>{selectedDetail.persona_name}</p>}
                     </div>
-                    {selectedDetail.persona_name && <p className={`mt-1 text-sm ${textSecondary}`}>{selectedDetail.persona_name}</p>}
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <CopyButton text={selectedDetail.briefing_text || ''} hasBg={hasBg} />
-                    <button onClick={() => setSelectedDetail(null)} className={`rounded-lg p-1.5 transition-colors ${hasBg ? 'text-white/50 hover:bg-white/10' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}><CloseIcon className="h-4 w-4" /></button>
+                    <button onClick={() => setSelectedDetail(null)} className={`hidden rounded-lg p-1.5 transition-colors md:flex ${hasBg ? 'text-white/50 hover:bg-white/10' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}><CloseIcon className="h-4 w-4" /></button>
                   </div>
                 </div>
                 {selectedDetail.audio_url && (
@@ -745,9 +848,11 @@ function TypeBadge({ type }: { type: string | null }) {
 
 function ImageIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5a2.25 2.25 0 0 0 2.25-2.25V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>; }
 function CloseIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>; }
+function BackIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>; }
 function ChevronDownIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>; }
 function LinkIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" /></svg>; }
 function PlayIcon({ className }: { className?: string }) { return <svg className={className} fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>; }
 function SignalIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>; }
 function ClipboardIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>; }
 function CheckIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>; }
+function FilterIcon({ className }: { className?: string }) { return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" /></svg>; }

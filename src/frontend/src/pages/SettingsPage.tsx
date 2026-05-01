@@ -97,6 +97,7 @@ export function SettingsPage() {
   const { refreshAppSettings } = useOutletContext<{ refreshAppSettings: () => void }>();
 
   const [displayName, setDisplayName] = useState('');
+  const [profileEmail, setProfileEmail] = useState('');
   const [currentPw, setCurrentPw] = useState('');
   const [newPw, setNewPw] = useState('');
   const [confirmPw, setConfirmPw] = useState('');
@@ -148,6 +149,7 @@ export function SettingsPage() {
       setProfile(p);
       setSettings(s);
       setDisplayName(p.display_name);
+      setProfileEmail(p.email);
       if (p.role === 'owner') {
         const [u, ts] = await Promise.all([
           api.get<ManagedUser[]>('/api/auth/users'),
@@ -197,10 +199,13 @@ export function SettingsPage() {
   }, [tab]);
 
   const saveProfile = async () => {
-    if (!displayName.trim()) return;
+    if (!displayName.trim() || !profileEmail.trim()) return;
     try {
-      const updated = await api.patch<UserProfile>('/api/auth/me', { display_name: displayName.trim() });
+      const body: Record<string, string> = { display_name: displayName.trim() };
+      if (profileEmail.trim() !== profile?.email) body.email = profileEmail.trim();
+      const updated = await api.patch<UserProfile>('/api/auth/me', body);
       setProfile(updated);
+      setProfileEmail(updated.email);
       setProfileMsg({ type: 'ok', text: 'Profil gespeichert' });
       setTimeout(() => setProfileMsg(null), 3000);
     } catch {
@@ -401,17 +406,17 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-white/40 bg-white/50 px-6 py-4 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
+      <div className="border-b border-white/40 bg-white/50 px-4 py-4 sm:px-6 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
         <h1 className="text-xl font-bold text-gray-900 dark:text-white">Einstellungen</h1>
       </div>
 
-      <div className="border-b border-white/40 bg-white/50 px-6 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
-        <div className="flex gap-4">
+      <div className="border-b border-white/40 bg-white/50 px-4 sm:px-6 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
+        <div className="scrollbar-hide flex gap-4 overflow-x-auto">
           {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`border-b-2 px-1 py-3 text-sm font-medium transition-colors ${
+              className={`shrink-0 whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition-colors ${
                 tab === t.id
                   ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
                   : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
@@ -423,7 +428,7 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         <div className="mx-auto max-w-2xl space-y-8 rounded-2xl border border-white/40 bg-white/60 p-6 shadow-sm backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/60">
 
           {/* ── Profil ── */}
@@ -468,7 +473,7 @@ export function SettingsPage() {
                       />
                       <button
                         onClick={saveProfile}
-                        disabled={!displayName.trim() || displayName === profile.display_name}
+                        disabled={!displayName.trim() || !profileEmail.trim() || (displayName === profile.display_name && profileEmail === profile.email)}
                         className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"
                       >
                         Speichern
@@ -482,9 +487,10 @@ export function SettingsPage() {
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">E-Mail</label>
                     <input
-                      value={profile.email}
-                      disabled
-                      className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400"
+                      value={profileEmail}
+                      onChange={e => setProfileEmail(e.target.value)}
+                      type="email"
+                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
                     />
                   </div>
                 </div>

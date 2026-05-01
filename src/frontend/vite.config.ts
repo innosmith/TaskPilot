@@ -10,6 +10,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
+      devOptions: { enabled: true },
       manifest: {
         name: 'TaskPilot Cockpit',
         short_name: 'TaskPilot',
@@ -17,11 +18,13 @@ export default defineConfig({
         theme_color: '#4F46E5',
         background_color: '#030712',
         display: 'standalone',
+        scope: '/',
+        id: '/',
         start_url: '/',
         icons: [
-          { src: '/pwa-192.svg', sizes: '192x192', type: 'image/svg+xml' },
-          { src: '/pwa-512.svg', sizes: '512x512', type: 'image/svg+xml' },
-          { src: '/pwa-512.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'maskable' },
+          { src: '/pwa-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/pwa-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       workbox: {
@@ -40,6 +43,7 @@ export default defineConfig({
     }),
   ],
   server: {
+    allowedHosts: ['tp.innosmith.ai'],
     proxy: {
       '/api': 'http://localhost:8000',
       '/uploads': 'http://localhost:8000',

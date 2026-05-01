@@ -274,7 +274,7 @@ export function ProjectBoardPage() {
       )}
 
       <div
-        className={`relative z-20 border-b px-6 py-4 ${
+        className={`relative z-10 border-b px-4 py-4 sm:px-6 ${
           hasBg
             ? 'border-white/10 bg-black/20 text-white backdrop-blur-sm'
             : 'border-gray-200 dark:border-gray-800'
@@ -451,7 +451,7 @@ export function ProjectBoardPage() {
         </div>
       </div>
 
-      <div className="relative z-10 flex-1 overflow-x-auto p-6">
+      <div className="relative z-10 flex-1 overflow-x-auto p-4 sm:p-6">
         <DndContext
           sensors={sensors}
           collisionDetection={closestCorners}

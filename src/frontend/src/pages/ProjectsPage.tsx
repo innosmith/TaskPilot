@@ -120,7 +120,7 @@ export function ProjectsPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-gray-200 px-6 py-4 dark:border-gray-800">
+      <div className="border-b border-gray-200 px-4 py-4 sm:px-6 dark:border-gray-800">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold text-gray-900 dark:text-white">Projekte</h1>
@@ -154,7 +154,7 @@ export function ProjectsPage() {
       </div>
 
       {showForm && (
-        <div className="border-b border-gray-200 bg-gray-50 px-6 py-4 dark:border-gray-800 dark:bg-gray-900/50">
+        <div className="border-b border-gray-200 bg-gray-50 px-4 py-4 sm:px-6 dark:border-gray-800 dark:bg-gray-900/50">
           <form onSubmit={handleCreate} className="flex flex-wrap items-end gap-4">
             <div className="min-w-[200px] flex-1">
               <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -210,7 +210,7 @@ export function ProjectsPage() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         {displayedProjects.length === 0 ? (
           <div className="flex h-48 items-center justify-center text-gray-400 dark:text-gray-600">
             <p>{showArchived ? 'Kein archiviertes Projekt vorhanden' : 'Noch keine Projekte vorhanden'}</p>

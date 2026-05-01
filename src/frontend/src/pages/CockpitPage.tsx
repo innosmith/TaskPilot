@@ -414,7 +414,7 @@ export function CockpitPage() {
       {isGradient && <div className="absolute inset-0 bg-black/5 dark:bg-black/20" />}
 
       {/* Header */}
-      <div className={`relative z-20 border-b px-6 py-4 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 dark:border-gray-800'}`}>
+      <div className={`relative z-10 border-b px-4 py-4 sm:px-6 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 dark:border-gray-800'}`}>
         <div className="flex items-center justify-between">
           <div>
             <h1 className={`text-xl font-bold ${textPrimary}`}>Cockpit</h1>
@@ -457,7 +457,7 @@ export function CockpitPage() {
       </div>
 
       {/* Inhalt */}
-      <div className="relative z-10 flex-1 overflow-y-auto p-6">
+      <div className="relative z-10 flex-1 overflow-y-auto p-4 sm:p-6">
         <div className="mx-auto max-w-6xl space-y-6">
 
           {/* ── Zone 1: KPI-Übersicht ── */}

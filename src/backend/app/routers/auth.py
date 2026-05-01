@@ -67,6 +67,7 @@ async def me(user: User = Depends(get_current_user)) -> UserOut:
 class ProfileUpdateBody(BaseModel):
     display_name: str | None = None
     avatar_url: str | None = None
+    email: str | None = None
 
 
 @router.patch("/me", response_model=UserOut)

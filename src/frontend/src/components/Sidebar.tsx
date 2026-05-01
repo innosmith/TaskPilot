@@ -3,10 +3,10 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { useSSE } from '../hooks/useSSE';
+import { useBadges } from '../hooks/useBadges';
 import { ThemeToggle } from './ThemeToggle';
 import { ProjectIcon } from './ProjectIcon';
-import type { AgentJob, Project } from '../types';
+import type { Project } from '../types';
 
 const SIDEBAR_COLORS: Record<string, { light: string; dark: string }> = {
   default: { light: 'bg-white', dark: 'dark:bg-gray-950' },
@@ -41,61 +41,13 @@ export function Sidebar({
   sidebarColor,
 }: SidebarProps) {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [activeJobCount, setActiveJobCount] = useState(0);
-  const [unreadMailCount, setUnreadMailCount] = useState(0);
-  const [pendingDecisions, setPendingDecisions] = useState(0);
-  const [focusTaskCount, setFocusTaskCount] = useState(0);
+  const { activeJobCount, unreadMailCount, pendingDecisions, focusTaskCount } = useBadges();
   const { logout } = useAuth();
   const navigate = useNavigate();
 
-  const refreshBadges = useCallback(() => {
-    api
-      .get<AgentJob[]>('/api/agent-jobs')
-      .then((jobs) => {
-        const active = jobs.filter((j) => ['queued', 'running', 'awaiting_approval'].includes(j.status));
-        setActiveJobCount(active.length);
-        setPendingDecisions(active.filter((j) => j.status === 'awaiting_approval').length);
-      })
-      .catch(() => {});
-
-    api
-      .get<{ unread_count?: number }>('/api/emails/unread-count')
-      .then((r) => setUnreadMailCount(r.unread_count ?? 0))
-      .catch(() => {});
-
-    api
-      .get<{ columns: { position: number; tasks: unknown[] }[] }>('/api/pipeline')
-      .then((data) => {
-        const focusCol = data.columns?.find(c => c.position === 0) || data.columns?.[0];
-        setFocusTaskCount(focusCol?.tasks?.length ?? 0);
-      })
-      .catch(() => {});
-  }, []);
-
   useEffect(() => {
     api.get<Project[]>('/api/projects').then(setProjects).catch(() => {});
-    refreshBadges();
-  }, [refreshKey, refreshBadges]);
-
-  useSSE((event) => {
-    if (event === 'agent_jobs_changed') {
-      refreshBadges();
-    } else if (event === 'email_triage_changed') {
-      api
-        .get<{ unread_count?: number }>('/api/emails/unread-count')
-        .then((r) => setUnreadMailCount(r.unread_count ?? 0))
-        .catch(() => {});
-    } else if (event === 'tasks_changed') {
-      api.get<Project[]>('/api/projects').then(setProjects).catch(() => {});
-      api
-        .get<{ columns: { position: number; tasks: unknown[] }[] }>('/api/pipeline')
-        .then((data) => {
-          const focusCol = data.columns?.find(c => c.position === 0) || data.columns?.[0];
-          setFocusTaskCount(focusCol?.tasks?.length ?? 0);
-        })
-        .catch(() => {});
-    }
-  });
+  }, [refreshKey]);
 
   const handleLogout = () => {
     logout();
@@ -130,8 +82,8 @@ export function Sidebar({
       )}
 
       <aside
-        className={`fixed top-0 left-0 z-40 flex h-full ${w} flex-col border-r border-gray-200 ${bgClasses.light} ${bgClasses.dark} transition-all duration-200 dark:border-gray-800 lg:static lg:translate-x-0 ${
-          isOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`fixed top-0 left-0 z-40 flex h-full ${w} flex-col border-r border-gray-200 ${bgClasses.light} ${bgClasses.dark} transition-[transform,visibility] duration-200 dark:border-gray-800 lg:static lg:visible lg:translate-x-0 ${
+          isOpen ? 'visible translate-x-0' : 'invisible -translate-x-full'
         }`}
       >
         {/* Logo + Collapse Toggle */}
