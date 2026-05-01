@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.auth.deps import get_current_user
 from app.database import get_db
@@ -56,6 +57,7 @@ async def update_settings(
         else:
             current[field] = value
     user.settings = current
+    flag_modified(user, "settings")
     await db.flush()
     return UserSettings(**{f: current.get(f) for f in SETTINGS_FIELDS})
 
@@ -97,6 +99,7 @@ async def update_triage_settings(
         else:
             current[field] = value
     user.settings = current
+    flag_modified(user, "settings")
     await db.flush()
     return TriageSettings(**{f: current.get(f) for f in TRIAGE_FIELDS})
 
@@ -155,6 +158,7 @@ async def update_integration_settings(
         else:
             current[field] = value
     user.settings = current
+    flag_modified(user, "settings")
     await db.flush()
     return IntegrationSettings(
         pipedrive_api_token=_mask_token(current.get("pipedrive_api_token") or ""),

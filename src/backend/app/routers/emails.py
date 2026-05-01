@@ -153,6 +153,9 @@ async def search_emails(
     return EmailListResponse(emails=emails, total=len(emails))
 
 
+_DEFAULT_HIDDEN_FOLDERS = {"Inbox", "Drafts", "Sent Items", "Deleted Items", "Junk Email"}
+
+
 @router.get("/folders", response_model=list[FolderInfo])
 async def list_folders(
     user: User = Depends(get_current_user),
@@ -164,6 +167,10 @@ async def list_folders(
         folders = await client.list_folders()
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    user_hidden: list[str] = (user.settings or {}).get("inbox_hidden_folders") or []
+    hidden = _DEFAULT_HIDDEN_FOLDERS | set(user_hidden)
+
     return [
         FolderInfo(
             id=f.get("id", ""),
@@ -172,6 +179,7 @@ async def list_folders(
             unread_count=f.get("unreadItemCount", 0),
         )
         for f in folders
+        if f.get("displayName", "") not in hidden
     ]
 
 

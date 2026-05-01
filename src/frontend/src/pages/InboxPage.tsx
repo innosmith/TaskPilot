@@ -287,7 +287,7 @@ export function InboxPage() {
     api.get<FolderInfo[]>('/api/emails/folders').then(setFolders).catch(() => {});
     api.get<{ inbox_hidden_folders: string[] | null }>('/api/settings/triage')
       .then(s => { if (s.inbox_hidden_folders) setHiddenFolders(s.inbox_hidden_folders); })
-      .catch(() => {});
+      .catch(err => { console.warn('Triage-Einstellungen konnten nicht geladen werden:', err); });
   }, [fetchTriage, fetchActivity, fetchApprovals, fetchPendingReview]);
 
   /* -- SSE für Live-Updates -- */
