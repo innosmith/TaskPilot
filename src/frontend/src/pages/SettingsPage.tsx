@@ -35,6 +35,7 @@ interface TriageSettingsData {
   triage_prompt: string | null;
   triage_interval_seconds: number | null;
   triage_enabled: boolean | null;
+  inbox_hidden_folders: string[] | null;
 }
 
 interface TriageTestResult {
@@ -116,6 +117,8 @@ export function SettingsPage() {
   const [triageMsg, setTriageMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [triageTestResults, setTriageTestResults] = useState<TriageTestResult[] | null>(null);
   const [triageTesting, setTriageTesting] = useState(false);
+  const [hiddenFolders, setHiddenFolders] = useState<string[]>(['ArchivSorted', 'Conversation History', 'Outbox']);
+  const [hiddenFolderInput, setHiddenFolderInput] = useState('');
 
   const [memFiles, setMemFiles] = useState<MemoryFile[]>([]);
   const [heartbeat, setHeartbeat] = useState<HeartbeatStatus | null>(null);
@@ -159,6 +162,7 @@ export function SettingsPage() {
         if (ts.triage_prompt) setTriagePrompt(ts.triage_prompt);
         if (ts.triage_interval_seconds) setTriageInterval(Math.round(ts.triage_interval_seconds / 60));
         if (ts.triage_enabled !== null && ts.triage_enabled !== undefined) setTriageEnabled(ts.triage_enabled);
+        if (ts.inbox_hidden_folders) setHiddenFolders(ts.inbox_hidden_folders);
       }
     } catch { /* */ }
     finally { setLoading(false); }
@@ -273,6 +277,7 @@ export function SettingsPage() {
         triage_prompt: triagePrompt || null,
         triage_interval_seconds: triageInterval * 60,
         triage_enabled: triageEnabled,
+        inbox_hidden_folders: hiddenFolders.length > 0 ? hiddenFolders : null,
       });
       setTriageMsg({ type: 'ok', text: 'Triage-Einstellungen gespeichert' });
       setTimeout(() => setTriageMsg(null), 3000);
@@ -428,7 +433,7 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
         <div className="mx-auto max-w-2xl space-y-8 rounded-2xl border border-white/40 bg-white/60 p-6 shadow-sm backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/60">
 
           {/* ── Profil ── */}
@@ -943,6 +948,54 @@ export function SettingsPage() {
                     placeholder="Standard-Prompt wird verwendet wenn leer..."
                     className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-white font-mono"
                   />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Ausgeblendete Posteingangs-Ordner
+                  </label>
+                  <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                    Diese Ordner werden im Posteingang nicht angezeigt.
+                  </p>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {hiddenFolders.map(f => (
+                      <span key={f} className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+                        {f}
+                        <button
+                          onClick={() => setHiddenFolders(prev => prev.filter(x => x !== f))}
+                          className="ml-0.5 text-gray-400 hover:text-red-500"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={hiddenFolderInput}
+                      onChange={e => setHiddenFolderInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && hiddenFolderInput.trim()) {
+                          const name = hiddenFolderInput.trim();
+                          if (!hiddenFolders.includes(name)) setHiddenFolders(prev => [...prev, name]);
+                          setHiddenFolderInput('');
+                        }
+                      }}
+                      placeholder="Ordnername eingeben..."
+                      className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                    />
+                    <button
+                      onClick={() => {
+                        const name = hiddenFolderInput.trim();
+                        if (name && !hiddenFolders.includes(name)) setHiddenFolders(prev => [...prev, name]);
+                        setHiddenFolderInput('');
+                      }}
+                      className="shrink-0 rounded-lg bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                    >
+                      Hinzufügen
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-3">

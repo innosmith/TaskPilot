@@ -6,6 +6,11 @@ html, body, #root {
   overflow-x: hidden;
   width: 100%;
   max-width: 100%;
+  overscroll-behavior-x: none;
+}
+
+.app-shell {
+  overscroll-behavior: none;
 }
 
 html {

@@ -179,6 +179,7 @@ function getCategoryClass(cat: string): string {
 export function InboxPage() {
   const [emails, setEmails] = useState<EmailSummary[]>([]);
   const [folders, setFolders] = useState<FolderInfo[]>([]);
+  const [hiddenFolders, setHiddenFolders] = useState<string[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<EmailDetail | null>(null);
   const [activeFolder, setActiveFolder] = useState('inbox');
   const [loading, setLoading] = useState(true);
@@ -284,6 +285,9 @@ export function InboxPage() {
     fetchApprovals();
     fetchPendingReview();
     api.get<FolderInfo[]>('/api/emails/folders').then(setFolders).catch(() => {});
+    api.get<{ inbox_hidden_folders: string[] | null }>('/api/settings/triage')
+      .then(s => { if (s.inbox_hidden_folders) setHiddenFolders(s.inbox_hidden_folders); })
+      .catch(() => {});
   }, [fetchTriage, fetchActivity, fetchApprovals, fetchPendingReview]);
 
   /* -- SSE für Live-Updates -- */
@@ -435,7 +439,7 @@ export function InboxPage() {
           { id: 'drafts', name: 'Entwürfe' },
           { id: 'sentitems', name: 'Gesendet' },
           ...folders
-            .filter(f => !['Inbox', 'Drafts', 'Sent Items', 'Deleted Items', 'Junk Email'].includes(f.display_name))
+            .filter(f => !['Inbox', 'Drafts', 'Sent Items', 'Deleted Items', 'Junk Email', ...hiddenFolders].includes(f.display_name))
             .map(f => ({ id: f.id, name: f.display_name })),
         ].map(folder => (
           <button
@@ -492,7 +496,7 @@ export function InboxPage() {
               { id: 'drafts', name: 'Entwürfe' },
               { id: 'sentitems', name: 'Gesendet' },
               ...(folders
-                .filter((f) => !['Inbox', 'Drafts', 'Sent Items', 'Deleted Items', 'Junk Email'].includes(f.display_name))
+                .filter((f) => !['Inbox', 'Drafts', 'Sent Items', 'Deleted Items', 'Junk Email', ...hiddenFolders].includes(f.display_name))
                 .map((f) => ({ id: f.id, name: f.display_name }))),
             ].map((folder) => (
               <button
@@ -515,7 +519,7 @@ export function InboxPage() {
         </div>
 
         {/* Email list */}
-        <div className={`${selectedEmail ? 'hidden md:block md:w-[380px]' : 'w-full'} shrink-0 overflow-y-auto border-r ${hasBg ? 'border-white/10' : 'border-gray-200/60 dark:border-gray-800/60'}`}>
+        <div className={`${selectedEmail ? 'hidden md:block md:w-[380px]' : 'w-full'} shrink-0 overflow-y-auto overflow-x-hidden overscroll-x-none border-r ${hasBg ? 'border-white/10' : 'border-gray-200/60 dark:border-gray-800/60'}`}>
           {loading ? (
             <div className="flex h-full items-center justify-center">
               <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
@@ -627,7 +631,7 @@ export function InboxPage() {
         </div>
 
         {/* Detail pane */}
-        <div className={`${selectedEmail ? 'flex-1' : 'hidden md:flex md:flex-1'} overflow-y-auto ${hasBg ? 'bg-black/20 backdrop-blur-sm' : 'bg-white/40 dark:bg-gray-900/20'}`}>
+        <div className={`${selectedEmail ? 'flex-1' : 'hidden md:flex md:flex-1'} overflow-y-auto overflow-x-hidden overscroll-x-none ${hasBg ? 'bg-black/20 backdrop-blur-sm' : 'bg-white/40 dark:bg-gray-900/20'}`}>
           {detailLoading ? (
             <div className="flex h-full items-center justify-center">
               <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />

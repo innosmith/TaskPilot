@@ -422,7 +422,7 @@ export function CockpitPage() {
       </div>
 
       {/* Inhalt */}
-      <div className="relative z-10 flex-1 overflow-y-auto p-4 sm:p-6">
+      <div className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
         <div className="mx-auto max-w-6xl space-y-6">
 
           {/* ── Zone 1: KPI-Übersicht ── */}
@@ -858,10 +858,12 @@ export function CockpitPage() {
                           </div>
                         )}
                       </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
                       <select
                         value={editingProject[task.id] || task.project_id}
                         onChange={e => setEditingProject(prev => ({ ...prev, [task.id]: e.target.value }))}
-                        className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                        className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
                       >
                         {projects.map(p => (
                           <option key={p.id} value={p.id}>{p.name}</option>
@@ -869,13 +871,13 @@ export function CockpitPage() {
                       </select>
                       <button
                         onClick={() => handleConfirmTask(task)}
-                        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                        className="shrink-0 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
                       >
                         Übernehmen
                       </button>
                       <button
                         onClick={() => handleDismissTask(task.id)}
-                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                        className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
                       >
                         Verwerfen
                       </button>

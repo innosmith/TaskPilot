@@ -66,9 +66,10 @@ class TriageSettings(BaseModel):
     triage_prompt: str | None = None
     triage_interval_seconds: int | None = None
     triage_enabled: bool | None = None
+    inbox_hidden_folders: list[str] | None = None
 
 
-TRIAGE_FIELDS = ["triage_prompt", "triage_interval_seconds", "triage_enabled"]
+TRIAGE_FIELDS = ["triage_prompt", "triage_interval_seconds", "triage_enabled", "inbox_hidden_folders"]
 
 
 @router.get("/triage", response_model=TriageSettings)

@@ -258,7 +258,7 @@ export function AgentQueuePage() {
         </div>
       </div>
 
-      <div className="relative z-0 flex-1 overflow-y-auto p-4 sm:p-6">
+      <div className="relative z-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
         {/* Replay-Panel */}
         <div className="mb-4">
           <ReplayPanel onJobCreated={fetchJobs} />

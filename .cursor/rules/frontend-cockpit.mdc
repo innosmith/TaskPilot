@@ -48,6 +48,11 @@ alwaysApply: false
 | CrmBadge | `components/CrmBadge.tsx` | Pipedrive-Kontaktinfo neben Absender (Bild, Name, Link) |
 | SearchDialog | `components/SearchDialog.tsx` | Globale Suche (Tasks, Projekte, CRM via `/`) |
 
+## Dev-Server
+- Frontend MUSS immer auf **Port 5173** laufen (`npm run dev -- --port 5173 --strictPort`)
+- Backend läuft auf Port 8000
+- Vor dem Starten sicherstellen, dass Port 5173 frei ist (`lsof -ti :5173 | xargs -r kill -9`)
+
 ## API-Kommunikation
 - Alle Backend-Calls über `fetch()` an `http://localhost:8000/api/`
 - Auth via Bearer Token im Authorization-Header

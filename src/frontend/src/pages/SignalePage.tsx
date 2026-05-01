@@ -418,7 +418,7 @@ export function SignalePage() {
 
         {/* ── Signals Tab ── */}
         {tab === 'signals' && (
-          <div className="relative flex-1 overflow-y-auto" onScroll={() => { if (mobileFilterOpen) setMobileFilterOpen(false); }}>
+          <div className="relative flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none" onScroll={() => { if (mobileFilterOpen) setMobileFilterOpen(false); }}>
             {/* Desktop filter bar */}
             <div className={`sticky top-0 z-10 hidden border-b px-4 py-3 sm:px-6 md:block ${glass}`}>
               <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
