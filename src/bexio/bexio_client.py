@@ -1,8 +1,8 @@
 """Bexio Buchhaltungs-API Client (async, httpx-basiert).
 
 Authentifizierung via Bearer Token (persönlicher API-Token).
-API v2.0 für Kontakte, Aufträge, Projekte.
-API v3.0 für /users/me.
+API v2.0 für Kontakte, Aufträge, Projekte, Kontenplan.
+API v3.0 für /users/me, Banking, Journal.
 """
 
 import asyncio
@@ -148,16 +148,100 @@ class BexioClient:
 
     # ── Rechnungen (kb_invoice) ──────────────────────────────
 
-    async def list_invoices(self, contact_id: int | None = None, limit: int = 50) -> list[dict]:
-        params = {"limit": str(limit)}
+    async def list_invoices(
+        self,
+        contact_id: int | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        params: dict[str, str] = {"limit": str(limit), "offset": str(offset)}
         if contact_id:
             params["contact_id"] = str(contact_id)
         data = await self._get_v2("/kb_invoice", params)
         return data if isinstance(data, list) else []
 
+    async def search_invoices(
+        self,
+        status: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> list[dict]:
+        """Rechnungen filtern. status: 'draft','pending','partial','paid','overdue','cancelled'."""
+        criteria: list[dict] = []
+        if status:
+            criteria.append({"field": "kb_item_status_id", "value": status, "criteria": "="})
+        if from_date:
+            criteria.append({"field": "is_valid_from", "value": from_date, "criteria": ">="})
+        if to_date:
+            criteria.append({"field": "is_valid_from", "value": to_date, "criteria": "<="})
+        if not criteria:
+            return await self.list_invoices(limit=200)
+        data = await self._post_v2("/kb_invoice/search", criteria)
+        return data if isinstance(data, list) else []
+
     async def get_invoice(self, invoice_id: int) -> dict:
         data = await self._get_v2(f"/kb_invoice/{invoice_id}")
         return data if isinstance(data, dict) else {}
+
+    # ── Bankkonten ────────────────────────────────────────────
+
+    async def list_bank_accounts(self) -> list[dict]:
+        """Alle Bankkonten abrufen (v3 Banking API)."""
+        data = await self._get_v3("/banking/accounts")
+        return data if isinstance(data, list) else []
+
+    async def get_bank_account(self, account_id: int) -> dict:
+        """Einzelnes Bankkonto mit Saldo."""
+        data = await self._get_v3(f"/banking/accounts/{account_id}")
+        return data if isinstance(data, dict) else {}
+
+    # ── Kontenplan (Accounting, v2) ──────────────────────────
+
+    async def list_accounts(self, limit: int = 500) -> list[dict]:
+        """Kontenplan (Chart of Accounts) laden."""
+        data = await self._get_v2("/accounts", {"limit": str(limit)})
+        return data if isinstance(data, list) else []
+
+    async def search_accounts(self, criteria: list[dict]) -> list[dict]:
+        """Konten suchen (POST /2.0/accounts/search)."""
+        data = await self._post_v2("/accounts/search", criteria)
+        return data if isinstance(data, list) else []
+
+    # ── Journal (Accounting, v3) ──────────────────────────────
+
+    async def get_journal(
+        self,
+        from_date: str,
+        to_date: str,
+        limit: int = 2000,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Buchhaltungsjournal laden (alle Buchungen im Zeitraum).
+
+        Jede Buchung enthaelt: debit_account_id, credit_account_id,
+        amount, date, ref_class, description.
+        """
+        all_entries: list[dict] = []
+        current_offset = offset
+        while True:
+            params = {
+                "from": from_date,
+                "to": to_date,
+                "limit": str(limit),
+                "offset": str(current_offset),
+            }
+            data = await self._get_v3("/accounting/journal", params)
+            batch = data if isinstance(data, list) else []
+            all_entries.extend(batch)
+            if len(batch) < limit:
+                break
+            current_offset += limit
+        return all_entries
+
+    async def get_business_years(self) -> list[dict]:
+        """Geschaeftsjahre laden (Start/Ende/Status)."""
+        data = await self._get_v3("/accounting/business_years")
+        return data if isinstance(data, list) else []
 
     # ── Projekte ─────────────────────────────────────────────
 

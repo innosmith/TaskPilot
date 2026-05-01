@@ -1,5 +1,9 @@
-from pydantic_settings import BaseSettings
+from pathlib import Path
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
@@ -78,7 +82,10 @@ class Settings(BaseSettings):
     # Triage
     triage_interval_seconds: int = 120
 
-    model_config = {"env_file": ".env.dev", "env_prefix": "TP_"}
+    model_config = {
+        "env_file": str(_PROJECT_ROOT / ".env.dev"),
+        "env_prefix": "TP_",
+    }
 
 
 @lru_cache

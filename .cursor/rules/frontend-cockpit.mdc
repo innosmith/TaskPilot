@@ -32,6 +32,7 @@ alwaysApply: false
 | `/agenten` | AgentQueuePage | `pages/AgentQueuePage.tsx` |
 | `/project/:id` | ProjectBoardPage | `pages/ProjectBoardPage.tsx` |
 | `/inbox` | InboxPage | `pages/InboxPage.tsx` |
+| `/finanzen` | FinancePage | `pages/FinancePage.tsx` |
 | `/einstellungen` | SettingsPage | `pages/SettingsPage.tsx` |
 | `/admin` | AdminPage | `pages/AdminPage.tsx` |
 

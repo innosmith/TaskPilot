@@ -214,3 +214,63 @@ class TogglClient:
         if isinstance(data, dict):
             return data.get("time_entries", data.get("data", []))
         return []
+
+    # ── Billable Rates & Summary Reports ─────────────────────
+
+    async def get_project_with_rate(
+        self, project_id: int, workspace_id: int | None = None
+    ) -> dict:
+        """Einzelprojekt inkl. rate (Cents) und currency."""
+        ws = workspace_id or self.config.workspace_id
+        if not ws:
+            return {}
+        data = await self._get(f"/workspaces/{ws}/projects/{project_id}")
+        return data if isinstance(data, dict) else {}
+
+    async def get_projects_summary(
+        self,
+        start_date: str,
+        end_date: str,
+        workspace_id: int | None = None,
+    ) -> dict:
+        """Projekt-Summary: billable_amount_in_cents, rates[], billable_seconds.
+
+        POST /reports/api/v3/workspace/{ws}/projects/summary
+        """
+        ws = workspace_id or self.config.workspace_id
+        if not ws:
+            return {}
+        body = {"start_date": start_date, "end_date": end_date}
+        data = await self._post_reports(f"/workspace/{ws}/projects/summary", body)
+        return data if isinstance(data, dict) else {}
+
+    async def get_summary_by_project(
+        self,
+        start_date: str,
+        end_date: str,
+        workspace_id: int | None = None,
+        billable: bool | None = True,
+    ) -> list[dict]:
+        """Summary Report gruppiert nach Projekt mit sum, rate, cur, time.
+
+        POST /reports/api/v3/workspace/{ws}/summary/time_entries
+        Response-Gruppen enthalten: title, time, cur, sum, rate
+        """
+        ws = workspace_id or self.config.workspace_id
+        if not ws:
+            return []
+        body: dict = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "grouping": "projects",
+            "sub_grouping": "time_entries",
+            "distinguish_rates": True,
+        }
+        if billable is not None:
+            body["billable"] = billable
+        data = await self._post_reports(f"/workspace/{ws}/summary/time_entries", body)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("groups", data.get("data", []))
+        return []

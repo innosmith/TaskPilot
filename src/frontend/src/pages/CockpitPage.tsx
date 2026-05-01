@@ -589,6 +589,9 @@ export function CockpitPage() {
             </section>
           </div>
 
+          {/* ── Zone 2b: Finanz-Übersicht (kompakt) ── */}
+          <FinanceCompactCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
+
           {/* ── Zone 3: Freigaben (kompakt, aufklappbar) ── */}
           {approvalJobs.length > 0 && (
             <section>
@@ -1301,5 +1304,91 @@ function ChevronUpIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
     </svg>
+  );
+}
+
+// ── Finanz-Übersicht (kompakt, im Cockpit) ──────────
+
+interface FinanceCompactProps {
+  cardClass: string;
+  textSecondary: string;
+  textMuted: string;
+}
+
+interface MiniCashflow {
+  month: string;
+  delta: number;
+  cumulative: number;
+  is_forecast: boolean;
+}
+
+function FinanceCompactCard({ cardClass, textSecondary, textMuted }: FinanceCompactProps) {
+  const navigate = useNavigate();
+  const [data, setData] = useState<{ balance: number | null; months: MiniCashflow[] } | null>(null);
+
+  useEffect(() => {
+    api.get<{ months: MiniCashflow[]; start_balance: number }>('/api/finance/cashflow?months_back=6&months_forward=3')
+      .then(cf => {
+        setData({ balance: cf.start_balance, months: cf.months });
+      })
+      .catch(() => {});
+  }, []);
+
+  if (!data) return null;
+
+  const trend = data.months.length >= 2
+    ? data.months[data.months.length - 1].cumulative - data.months[0].cumulative
+    : 0;
+
+  const maxAbs = Math.max(...data.months.map(m => Math.abs(m.delta)), 1);
+
+  const formatK = (v: number) => {
+    if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(0)}k`;
+    return v.toFixed(0);
+  };
+
+  return (
+    <section className={`rounded-xl border p-4 ${cardClass}`}>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+          Finanz-Übersicht
+        </h2>
+        <button
+          onClick={() => navigate('/finanzen')}
+          className={`text-xs font-medium ${textMuted} transition-colors hover:text-indigo-500`}
+        >
+          Details →
+        </button>
+      </div>
+      <div className="flex items-center gap-4">
+        <div className="flex-1">
+          <p className={`text-xs ${textMuted}`}>Saldo</p>
+          <p className="text-xl font-bold text-gray-900 dark:text-white">
+            {data.balance != null ? `CHF ${formatK(data.balance)}` : '–'}
+          </p>
+          <p className={`mt-0.5 text-xs ${trend >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+            {trend >= 0 ? '↑' : '↓'} CHF {formatK(Math.abs(trend))} Trend
+          </p>
+        </div>
+        {/* Mini-Sparkline */}
+        <div className="flex h-12 items-end gap-0.5">
+          {data.months.map((m, i) => {
+            const h = Math.max(4, (Math.abs(m.delta) / maxAbs) * 48);
+            return (
+              <div
+                key={i}
+                className={`w-2 rounded-t ${
+                  m.delta >= 0
+                    ? m.is_forecast ? 'bg-green-200 dark:bg-green-900' : 'bg-green-500'
+                    : m.is_forecast ? 'bg-red-200 dark:bg-red-900' : 'bg-red-500'
+                }`}
+                style={{ height: `${h}px` }}
+                title={`${m.month}: CHF ${m.delta.toFixed(0)}`}
+              />
+            );
+          })}
+        </div>
+      </div>
+    </section>
   );
 }

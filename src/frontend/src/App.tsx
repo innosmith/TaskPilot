@@ -17,6 +17,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { InboxPage } from './pages/InboxPage';
 
 import { SignalePage } from './pages/SignalePage';
+import { FinancePage } from './pages/FinancePage';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -57,6 +58,7 @@ export default function App() {
           <Route path="/projects/:id" element={<ProjectBoardPage />} />
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/signale" element={<SignalePage />} />
+          <Route path="/finanzen" element={<FinancePage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 

@@ -16,6 +16,7 @@ from app.routers import (
     bexio,
     calendar,
     emails,
+    finance,
     intelligence,
     memory,
     models,
@@ -115,6 +116,7 @@ app.include_router(models.router)
 app.include_router(pipedrive.router)
 app.include_router(toggl.router)
 app.include_router(bexio.router)
+app.include_router(finance.router)
 app.include_router(intelligence.router)
 app.include_router(signa.router)
 
