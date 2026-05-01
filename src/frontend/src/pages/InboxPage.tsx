@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
+import { FormattedOutput } from '../components/FormattedOutput';
 import { RichTextEditor } from '../components/RichTextEditor';
 
 /* ---------- Typen ---------- */
@@ -1315,8 +1316,8 @@ function ApprovalsTab({
                   {!preview && hasFailed && job.output && (
                     <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
                       <div className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">Agent-Output (Entwurf konnte nicht geladen werden)</div>
-                      <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-40 overflow-y-auto">
-                        {job.output}
+                      <div className="text-sm text-gray-600 dark:text-gray-400 max-h-40 overflow-y-auto">
+                        <FormattedOutput output={job.output} />
                       </div>
                     </div>
                   )}

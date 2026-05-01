@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { CrmBadge } from '../components/CrmBadge';
 import { DraftEditor } from '../components/DraftEditor';
+import { FormattedOutput } from '../components/FormattedOutput';
 import { ReplayPanel } from '../components/ReplayPanel';
 import { TracePanel } from '../components/TracePanel';
 import { useSSE } from '../hooks/useSSE';
@@ -361,8 +362,8 @@ export function AgentQueuePage() {
                       {job.output && (
                         <div>
                           <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400">Output</h4>
-                          <div className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
-                            {job.output}
+                          <div className="mt-1 max-h-64 overflow-y-auto rounded-lg bg-gray-50 p-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+                            <FormattedOutput output={job.output} />
                           </div>
                         </div>
                       )}

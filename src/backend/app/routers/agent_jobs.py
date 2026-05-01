@@ -145,6 +145,11 @@ async def get_draft_preview(
             "source_from": meta.get("from_address"),
         }
     except Exception as e:
+        if job.status == "awaiting_approval":
+            job.status = "completed"
+            job.output = (job.output or "") + "\n\n--- Entwurf wurde in Outlook gesendet oder gelöscht. Job automatisch abgeschlossen. ---"
+            job.completed_at = datetime.now(timezone.utc)
+            await db.commit()
         raise HTTPException(status_code=502, detail=f"Draft konnte nicht geladen werden: {e}")
     finally:
         await client.close()
@@ -377,14 +382,14 @@ async def get_agent_job_trace(
     _user: User = Depends(get_current_user),
 ) -> dict:
     """Session-Trace eines Agent-Jobs: Tool-Aufrufe, Reasoning, Fehler."""
-    from pathlib import Path
+    from app.routers.memory import NANOBOT_WORKSPACE
 
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Agent job not found")
 
-    sessions_dir = Path.home() / ".nanobot" / "workspace" / "sessions"
+    sessions_dir = NANOBOT_WORKSPACE / "sessions"
     prefix = f"{job.job_type or 'generic'}_{job_id}_"
     session_file = None
     if sessions_dir.exists():

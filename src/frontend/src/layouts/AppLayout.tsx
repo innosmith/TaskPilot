@@ -7,6 +7,7 @@ import { SearchDialog } from '../components/SearchDialog';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { useBadgeData, BadgeProvider } from '../hooks/useBadges';
 import { useScrollDirection } from '../hooks/useScrollDirection';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 import { api } from '../api/client';
 
 interface AppSettings {
@@ -82,6 +83,7 @@ export function AppLayout() {
   const mainRef = useRef<HTMLElement>(null);
   const scrollDir = useScrollDirection(mainRef);
   const tabBarHidden = scrollDir === 'down';
+  const isMobile = useMediaQuery('(max-width: 1023px)');
 
   return (
     <BadgeProvider value={badges}>
@@ -100,7 +102,7 @@ export function AppLayout() {
         <div className="flex flex-1 flex-col overflow-hidden">
           <MobileHeader onMenuOpen={openSidebar} onSearchOpen={openSearch} />
 
-          <main ref={mainRef} className="flex-1 overflow-hidden transition-[padding] duration-300 lg:pt-0 lg:pb-0" style={{ paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))', paddingBottom: tabBarHidden ? '0px' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}>
+          <main ref={mainRef} className="flex-1 overflow-hidden transition-[padding] duration-300" style={isMobile ? { paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))', paddingBottom: tabBarHidden ? '0px' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' } : undefined}>
             <Outlet context={{ refreshSidebar, refreshAppSettings }} />
           </main>
 

@@ -28,7 +28,7 @@ from nanobot import Nanobot
 from sqlalchemy import select, update
 
 from app.database import async_session
-from app.models import AgentJob, BoardColumn, EmailTriage, Project, Task
+from app.models import AgentJob, BoardColumn, EmailTriage, Project, Task, User
 
 logger = logging.getLogger("taskpilot.nanobot_worker")
 
@@ -37,9 +37,12 @@ _bot: Nanobot | None = None
 
 POLL_INTERVAL = 10
 REAP_INTERVAL = 60
+DRAFT_CLEANUP_INTERVAL = 300  # 5 Minuten
+DREAM_INTERVAL = 2 * 3600  # 2 Stunden
 STALE_TIMEOUT_MINUTES = 30
-NANOBOT_CONFIG = Path.home() / ".nanobot" / "config.json"
-TRIAGE_SKILL = Path.home() / ".nanobot" / "workspace" / "skills" / "mail-triage.md"
+_NANOBOT_HOME = Path(os.environ.get("TP_NANOBOT_WORKSPACE", os.path.expanduser("~/.nanobot/workspace")))
+NANOBOT_CONFIG = _NANOBOT_HOME.parent / "config.json"
+TRIAGE_SKILL = _NANOBOT_HOME / "skills" / "mail-triage.md"
 
 PIPELINE_COLUMNS = {
     "focus": "a0000000-0000-0000-0000-000000000001",
@@ -87,6 +90,17 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     """
     skill_text = _load_triage_skill()
     projects_context = await _load_projects_context()
+
+    custom_triage_prompt = ""
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(User.settings).where(User.role == "owner").limit(1)
+            )
+            owner_settings = result.scalar_one_or_none() or {}
+        custom_triage_prompt = (owner_settings.get("triage_prompt") or "").strip()
+    except Exception:
+        logger.warning("Konnte triage_prompt nicht aus User-Settings laden")
 
     meta = job.metadata_json or {}
     email_id = meta.get("email_message_id", "")
@@ -154,7 +168,7 @@ Führe jetzt den Triage-Ablauf durch:
 8. Gib den PFLICHT-JSON-Block aus (Schritt 8 im Skill)
 9. Aktualisiere das Absender-Profil (Schritt 9 im Skill)
 10. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
-"""
+""" + (f"\n\n## ZUSÄTZLICHE BENUTZER-REGELN (haben Vorrang!)\n{custom_triage_prompt}" if custom_triage_prompt else "")
 
 
 def _extract_json_block(content: str) -> dict | None:
@@ -244,6 +258,21 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
         reply_expected = True
     elif triage_class == "bedenkzeit":
         triage_class = "task"
+
+    # Konsistenz-Checks zwischen triage_class, draft_id und task_title
+    if draft_id and triage_class != "auto_reply":
+        logger.warning("Job %s: draft_id vorhanden aber triage_class=%s, korrigiere zu auto_reply", job_id, triage_class)
+        triage_class = "auto_reply"
+
+    if triage_class == "auto_reply" and not draft_id:
+        logger.warning("Job %s: auto_reply ohne draft_id, Fallback auf task", job_id)
+        triage_class = "task"
+        if not task_title:
+            task_title = meta.get("subject", "E-Mail Triage")
+
+    if triage_class == "task" and not task_title:
+        task_title = meta.get("subject", "E-Mail Triage (kein Titel)")
+        logger.warning("Job %s: task ohne task_title, verwende Subject: %s", job_id, task_title)
 
     logger.info(
         "Job %s: JSON parsed -- label=%s, triage_class=%s, reply_expected=%s, draft_id=%s",
@@ -442,6 +471,19 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
             )
             await db.commit()
 
+        # Session-Ergebnis in history.jsonl archivieren fuer Dream
+        try:
+            store = bot._loop.context.memory
+            subject = meta.get("subject", "")
+            from_addr = meta.get("from_address", "")
+            summary = f"E-Mail-Triage: '{subject}' von {from_addr} → {status}"
+            if content:
+                summary += f"\n{content[:500]}"
+            store.append_history(summary)
+            logger.info("Session-Summary fuer Job %s in history.jsonl geschrieben", job_id)
+        except Exception:
+            logger.warning("Session-Archivierung fehlgeschlagen fuer Job %s", job_id)
+
     except Exception as e:
         logger.exception("Job %s fehlgeschlagen", job_id)
         async with async_session() as db:
@@ -461,6 +503,68 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
                     .values(status="dismissed")
                 )
             await db.commit()
+
+
+async def _cleanup_orphaned_drafts() -> int:
+    """Schliesst awaiting_approval-Jobs ab, deren Draft in Outlook nicht mehr existiert."""
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
+    from graph_client import GraphClient, GraphConfig
+    from app.config import get_settings
+
+    s = get_settings()
+    if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):
+        return 0
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(AgentJob).where(
+                AgentJob.status == "awaiting_approval",
+                AgentJob.job_type.in_(["email_triage", "send_email"]),
+            )
+        )
+        jobs = list(result.scalars().all())
+
+    if not jobs:
+        return 0
+
+    config = GraphConfig(
+        tenant_id=s.graph_tenant_id,
+        client_id=s.graph_client_id,
+        client_secret=s.graph_client_secret,
+        user_email=s.graph_user_email,
+    )
+    client = GraphClient(config)
+    resolved = 0
+
+    try:
+        for job in jobs:
+            meta = job.metadata_json or {}
+            draft_id = meta.get("draft_id")
+            if not draft_id:
+                continue
+            try:
+                await client.get_email(draft_id)
+            except Exception:
+                async with async_session() as db:
+                    await db.execute(
+                        update(AgentJob)
+                        .where(AgentJob.id == job.id)
+                        .values(
+                            status="completed",
+                            output=(job.output or "") + "\n\n--- Entwurf wurde in Outlook gesendet oder gelöscht. Job automatisch abgeschlossen. ---",
+                            completed_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    await db.commit()
+                resolved += 1
+                logger.info("Draft-Cleanup: Job %s automatisch abgeschlossen (Draft nicht mehr in Outlook)", job.id)
+    finally:
+        await client.close()
+
+    if resolved:
+        logger.info("Draft-Cleanup: %d verwaiste Jobs abgeschlossen", resolved)
+    return resolved
 
 
 async def _reap_stale_jobs() -> int:
@@ -503,13 +607,33 @@ async def _worker_loop() -> None:
     logger.info("Nanobot-Worker gestartet -- pollt alle %ds nach queued Jobs", POLL_INTERVAL)
 
     last_reap = time.monotonic()
+    last_draft_cleanup = time.monotonic()
+    last_dream = time.monotonic()
 
     while True:
         try:
-            # Reaper periodisch ausführen
             if time.monotonic() - last_reap >= REAP_INTERVAL:
                 await _reap_stale_jobs()
                 last_reap = time.monotonic()
+
+            if time.monotonic() - last_draft_cleanup >= DRAFT_CLEANUP_INTERVAL:
+                try:
+                    await _cleanup_orphaned_drafts()
+                except Exception:
+                    logger.exception("Draft-Cleanup fehlgeschlagen")
+                last_draft_cleanup = time.monotonic()
+
+            if time.monotonic() - last_dream >= DREAM_INTERVAL:
+                try:
+                    dream = bot._loop.dream
+                    ran = await dream.run()
+                    if ran:
+                        logger.info("Dream-Zyklus abgeschlossen -- MEMORY.md aktualisiert")
+                    else:
+                        logger.debug("Dream-Zyklus: keine neuen History-Eintraege zu verarbeiten")
+                except Exception:
+                    logger.exception("Dream-Zyklus fehlgeschlagen")
+                last_dream = time.monotonic()
 
             async with async_session() as db:
                 result = await db.execute(

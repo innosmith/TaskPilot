@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { CrmBadge } from '../components/CrmBadge';
 import { DraftEditor } from '../components/DraftEditor';
+import { FormattedOutput } from '../components/FormattedOutput';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { TracePanel } from '../components/TracePanel';
 import { useSSE } from '../hooks/useSSE';
@@ -111,47 +112,6 @@ const JOB_TYPE_LABELS: Record<string, string> = {
   create_task_from_email: 'Aufgabe erstellen',
   auto_reply: 'Auto-Antwort',
 };
-
-function FormattedOutput({ output }: { output: string }) {
-  try {
-    const parsed = JSON.parse(output);
-    if (parsed.body_html) {
-      return <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: parsed.body_html }} />;
-    }
-    if (parsed.body || parsed.text || parsed.message) {
-      return <p className="whitespace-pre-wrap">{parsed.body || parsed.text || parsed.message}</p>;
-    }
-    if (parsed.draft_id || parsed.subject) {
-      return (
-        <div className="space-y-1">
-          {parsed.subject && <p><span className="font-medium">Betreff:</span> {parsed.subject}</p>}
-          {parsed.to && <p><span className="font-medium">An:</span> {Array.isArray(parsed.to) ? parsed.to.join(', ') : parsed.to}</p>}
-          {parsed.body_preview && <p className="mt-2 whitespace-pre-wrap">{parsed.body_preview}</p>}
-          {parsed.rationale && <p className="mt-2 italic">{parsed.rationale}</p>}
-        </div>
-      );
-    }
-    const relevantKeys = Object.entries(parsed).filter(([k]) => !['id', 'draft_id', 'conversation_id'].includes(k));
-    if (relevantKeys.length > 0) {
-      return (
-        <div className="space-y-1">
-          {relevantKeys.map(([key, val]) => (
-            <p key={key}>
-              <span className="font-medium capitalize">{key.replace(/_/g, ' ')}:</span>{' '}
-              {typeof val === 'string' ? val : JSON.stringify(val)}
-            </p>
-          ))}
-        </div>
-      );
-    }
-  } catch {
-    // not JSON
-  }
-  if (output.includes('<') && output.includes('>')) {
-    return <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: output }} />;
-  }
-  return <p className="whitespace-pre-wrap">{output}</p>;
-}
 
 function formatTime(iso: string | null): string {
   if (!iso) return '';
