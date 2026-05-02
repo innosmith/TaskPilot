@@ -38,6 +38,12 @@ def _parse_content(result: Any) -> Any:
     return result
 
 
+def _build_args(**kwargs: Any) -> dict[str, Any] | None:
+    """Baut ein Argument-Dict nur aus gesetzten (nicht-None) Werten."""
+    args = {k: v for k, v in kwargs.items() if v is not None}
+    return args or None
+
+
 class InvoiceInsightClient:
     """Async Client fuer den InvoiceInsight MCP-Server."""
 
@@ -82,32 +88,77 @@ class InvoiceInsightClient:
                     _tool_cache[cache_key] = data
                 return data
 
-    async def get_kpis(self) -> dict:
-        return await self.read_resource("invoices://kpis")
+    # ── Filterbare Tools (ehemals Resources) ─────────────
 
-    async def get_renewal_calendar(self) -> Any:
-        return await self.read_resource("invoices://renewal-calendar")
+    async def get_kpis(
+        self, year_from: int | None = None, year_to: int | None = None,
+    ) -> dict:
+        return await self.call_tool(
+            "get_kpis",
+            _build_args(year_from=year_from, year_to=year_to),
+            use_cache=True,
+        )
+
+    async def get_cost_distribution(
+        self,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        categories: list[str] | None = None,
+    ) -> Any:
+        return await self.call_tool(
+            "get_cost_distribution",
+            _build_args(year_from=year_from, year_to=year_to, categories=categories),
+            use_cache=True,
+        )
+
+    async def get_anomalies(
+        self, year_from: int | None = None, year_to: int | None = None,
+    ) -> Any:
+        return await self.call_tool(
+            "get_anomalies",
+            _build_args(year_from=year_from, year_to=year_to),
+            use_cache=True,
+        )
+
+    async def get_yoy_comparison(
+        self, year_from: int | None = None, year_to: int | None = None,
+    ) -> Any:
+        return await self.call_tool(
+            "get_yoy_comparison",
+            _build_args(year_from=year_from, year_to=year_to),
+            use_cache=True,
+        )
+
+    async def get_recurring_vs_onetime(
+        self, year_from: int | None = None, year_to: int | None = None,
+    ) -> Any:
+        return await self.call_tool(
+            "get_recurring_vs_onetime",
+            _build_args(year_from=year_from, year_to=year_to),
+            use_cache=True,
+        )
+
+    async def get_renewal_calendar(
+        self,
+        vendors: list[str] | None = None,
+        months_ahead: int | None = None,
+    ) -> Any:
+        return await self.call_tool(
+            "get_renewal_calendar",
+            _build_args(vendors=vendors, months_ahead=months_ahead),
+            use_cache=True,
+        )
+
+    # ── Reine Resources (ohne Filterparameter) ──────────
 
     async def get_cashflow_forecast(self) -> Any:
         return await self.read_resource("invoices://cashflow-forecast")
 
-    async def get_cost_distribution(self) -> Any:
-        return await self.read_resource("invoices://cost-distribution")
-
     async def get_vendor_overview(self) -> Any:
         return await self.read_resource("invoices://vendor-overview")
 
-    async def get_recurring_vs_onetime(self) -> Any:
-        return await self.read_resource("invoices://recurring-vs-onetime")
-
     async def get_data_quality(self) -> Any:
         return await self.read_resource("invoices://data-quality")
-
-    async def get_yoy_comparison(self) -> Any:
-        return await self.read_resource("invoices://yoy-comparison")
-
-    async def get_anomalies(self) -> Any:
-        return await self.read_resource("invoices://anomalies")
 
     async def get_metadata(self) -> Any:
         return await self.read_resource("invoices://metadata")

@@ -72,11 +72,19 @@ async def _safe_call(coro, fallback: Any = None) -> Any:
 
 
 @router.get("/dashboard")
-async def get_dashboard(user: User = Depends(get_current_user)):
+async def get_dashboard(
+    year_from: int | None = Query(default=None),
+    year_to: int | None = Query(default=None),
+    categories: str | None = Query(default=None, description="Kommaseparierte Kategorien"),
+    user: User = Depends(get_current_user),
+):
     """Aggregierte Dashboard-Sicht: KPIs + Kostenverteilung + Metadata."""
     client = _get_client(user)
-    kpis = await _safe_call(client.get_kpis(), {})
-    cost_dist = await _safe_call(client.get_cost_distribution(), {})
+    cat_list = [c.strip() for c in categories.split(",")] if categories else None
+    kpis = await _safe_call(client.get_kpis(year_from=year_from, year_to=year_to), {})
+    cost_dist = await _safe_call(
+        client.get_cost_distribution(year_from=year_from, year_to=year_to, categories=cat_list), {},
+    )
     metadata = await _safe_call(client.get_metadata(), {})
     return {"kpis": kpis, "cost_distribution": cost_dist, "metadata": metadata}
 
@@ -160,33 +168,57 @@ async def get_vendor_detail(
 @router.get("/trends")
 async def get_monthly_trend(
     year: int | None = Query(default=None),
+    year_from: int | None = Query(default=None),
+    year_to: int | None = Query(default=None),
     category: str | None = Query(default=None),
+    categories: str | None = Query(default=None, description="Kommaseparierte Kategorien (Alias)"),
     user: User = Depends(get_current_user),
 ):
     client = _get_client(user)
     args: dict[str, Any] = {}
     if year:
         args["year"] = year
-    if category:
-        args["category"] = category
+    if year_from:
+        args["year_from"] = year_from
+    if year_to:
+        args["year_to"] = year_to
+    effective_cat = category or (categories.split(",")[0].strip() if categories else None)
+    if effective_cat:
+        args["category"] = effective_cat
     return await client.call_tool("get_monthly_trend", args)
 
 
 @router.get("/category-trend")
 async def get_category_trend(
-    category: str = Query(description="Kategoriename"),
+    category: str | None = Query(default=None, description="Kategoriename"),
     years: int = Query(default=3, ge=1, le=10),
+    year_from: int | None = Query(default=None),
+    year_to: int | None = Query(default=None),
     user: User = Depends(get_current_user),
 ):
     client = _get_client(user)
-    return await client.call_tool("get_category_trend", {"category": category, "years": years})
+    args: dict[str, Any] = {"years": years}
+    if category:
+        args["category"] = category
+    if year_from:
+        args["year_from"] = year_from
+    if year_to:
+        args["year_to"] = year_to
+    return await client.call_tool("get_category_trend", args)
 
 
 @router.get("/renewal-calendar")
-async def get_renewal_calendar(user: User = Depends(get_current_user)):
+async def get_renewal_calendar(
+    vendors: str | None = Query(default=None, description="Kommaseparierte Kreditoren"),
+    months_ahead: int | None = Query(default=None),
+    user: User = Depends(get_current_user),
+):
     """Erneuerungskalender, gruppiert nach Dringlichkeit."""
     client = _get_client(user)
-    raw = await _safe_call(client.get_renewal_calendar(), [])
+    vendor_list = [v.strip() for v in vendors.split(",")] if vendors else None
+    raw = await _safe_call(
+        client.get_renewal_calendar(vendors=vendor_list, months_ahead=months_ahead), [],
+    )
     if isinstance(raw, dict) and any(k in raw for k in ("critical", "warning", "info")):
         return raw
     entries = raw if isinstance(raw, list) else []
@@ -220,10 +252,16 @@ async def get_cashflow_forecast(user: User = Depends(get_current_user)):
 
 
 @router.get("/recurring")
-async def get_recurring_vs_onetime(user: User = Depends(get_current_user)):
+async def get_recurring_vs_onetime(
+    year_from: int | None = Query(default=None),
+    year_to: int | None = Query(default=None),
+    user: User = Depends(get_current_user),
+):
     """Aufschlüsselung in wiederkehrende vs. einmalige Kosten."""
     client = _get_client(user)
-    raw = await _safe_call(client.get_recurring_vs_onetime(), {})
+    raw = await _safe_call(
+        client.get_recurring_vs_onetime(year_from=year_from, year_to=year_to), {},
+    )
     if not isinstance(raw, dict):
         return {"recurring": [], "onetime": [], "recurring_total": 0, "onetime_total": 0}
 
@@ -242,10 +280,16 @@ async def get_recurring_vs_onetime(user: User = Depends(get_current_user)):
 
 
 @router.get("/anomalies")
-async def get_anomalies(user: User = Depends(get_current_user)):
+async def get_anomalies(
+    year_from: int | None = Query(default=None),
+    year_to: int | None = Query(default=None),
+    user: User = Depends(get_current_user),
+):
     """Anomalien, gruppiert nach Schweregrad."""
     client = _get_client(user)
-    raw = await _safe_call(client.get_anomalies(), [])
+    raw = await _safe_call(
+        client.get_anomalies(year_from=year_from, year_to=year_to), [],
+    )
     if isinstance(raw, dict) and any(k in raw for k in ("critical", "warning", "info")):
         return raw
     entries = raw if isinstance(raw, list) else []
@@ -258,10 +302,16 @@ async def get_anomalies(user: User = Depends(get_current_user)):
 
 
 @router.get("/yoy")
-async def get_yoy_comparison(user: User = Depends(get_current_user)):
+async def get_yoy_comparison(
+    year_from: int | None = Query(default=None),
+    year_to: int | None = Query(default=None),
+    user: User = Depends(get_current_user),
+):
     """Jahresvergleich der Kosten nach Kategorien."""
     client = _get_client(user)
-    raw = await _safe_call(client.get_yoy_comparison(), {})
+    raw = await _safe_call(
+        client.get_yoy_comparison(year_from=year_from, year_to=year_to), {},
+    )
     if not isinstance(raw, dict):
         return {"data": [], "years": []}
     data = raw.get("data")
@@ -314,6 +364,27 @@ async def get_vendor_overview(user: User = Depends(get_current_user)):
 async def generate_research_prompt(user: User = Depends(get_current_user)):
     client = _get_client(user)
     return await client.call_tool("generate_research_prompt")
+
+
+@router.get("/invoice/{invoice_id}/pdf")
+async def get_invoice_pdf(
+    invoice_id: int,
+    user: User = Depends(get_current_user),
+):
+    """Proxy fuer PDF-Dateipfade aus InvoiceInsight."""
+    client = _get_client(user)
+    try:
+        detail = await client.call_tool("get_invoice_details", {"invoice_id": invoice_id})
+        pdf_path = None
+        if isinstance(detail, dict):
+            pdf_path = detail.get("pdf_path") or detail.get("Dateipfad")
+        if not pdf_path:
+            raise HTTPException(status_code=404, detail="Kein PDF verfuegbar")
+        return {"pdf_path": pdf_path, "note": "PDF-Dateipfad vom MCP-Server"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/cache/clear")
