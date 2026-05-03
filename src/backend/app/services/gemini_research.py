@@ -5,6 +5,7 @@ Multi-Step-Recherche mit Streaming-Support.
 """
 
 import logging
+import time
 from typing import AsyncGenerator
 
 import httpx
@@ -87,6 +88,8 @@ async def stream_research(query: str, model: str | None = None) -> AsyncGenerato
 
     Yields dicts: {"type": "thought"|"text"|"status"|"error"|"done", "content": ...}
     """
+    import json
+
     api_key = _get_api_key()
     agent = model or DEFAULT_MODEL
 
@@ -102,78 +105,101 @@ async def stream_research(query: str, model: str | None = None) -> AsyncGenerato
     }
 
     interaction_id = None
-    last_event_id = None
+    event_type = ""
+    start_time = time.time()
+    last_status_time = start_time
 
-    async with httpx.AsyncClient(timeout=660.0) as client:
-        async with client.stream(
-            "POST",
-            f"{INTERACTIONS_URL}?alt=sse",
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": api_key,
-            },
-        ) as resp:
-            if resp.status_code not in (200, 201):
-                body = await resp.aread()
-                raise RuntimeError(f"Gemini Stream-Fehler: {resp.status_code} — {body.decode()[:200]}")
+    async with httpx.AsyncClient(timeout=1200.0) as client:
+        try:
+            async with client.stream(
+                "POST",
+                f"{INTERACTIONS_URL}?alt=sse",
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                },
+            ) as resp:
+                if resp.status_code not in (200, 201):
+                    body = await resp.aread()
+                    logger.error("Gemini Deep Research Stream-Fehler: %d — %s", resp.status_code, body.decode()[:300])
+                    raise RuntimeError(f"Gemini Stream-Fehler: {resp.status_code} — {body.decode()[:200]}")
 
-            async for line in resp.aiter_lines():
-                if not line.strip():
-                    continue
-
-                if line.startswith("id:"):
-                    last_event_id = line[3:].strip()
-                    continue
-
-                if line.startswith("event:"):
-                    event_type = line[6:].strip()
-                    continue
-
-                if line.startswith("data:"):
-                    import json
-                    try:
-                        data = json.loads(line[5:].strip())
-                    except json.JSONDecodeError:
+                async for line in resp.aiter_lines():
+                    if not line.strip():
                         continue
 
-                    if event_type == "interaction.start":
-                        interaction_id = data.get("id")
-                        yield {"type": "status", "content": "Recherche gestartet..."}
+                    if line.startswith("id:"):
+                        continue
 
-                    elif event_type == "content.delta":
-                        delta = data.get("delta", {})
-                        delta_type = delta.get("type", "")
+                    if line.startswith("event:"):
+                        event_type = line[6:].strip()
+                        continue
 
-                        if delta_type == "thought_summary":
-                            text = delta.get("content", {}).get("text", "") if isinstance(delta.get("content"), dict) else delta.get("text", "")
-                            if text:
-                                yield {"type": "thought", "content": text}
+                    if line.startswith("data:"):
+                        try:
+                            data = json.loads(line[5:].strip())
+                        except json.JSONDecodeError:
+                            continue
 
-                        elif delta_type == "text":
-                            text = delta.get("text", "")
-                            if text:
-                                yield {"type": "text", "content": text}
+                        logger.debug("[DeepResearch] event=%s data_keys=%s", event_type, list(data.keys())[:5])
 
-                    elif event_type == "interaction.complete":
-                        outputs = data.get("outputs", [])
-                        final_text = ""
-                        for out in outputs:
-                            if out.get("type") == "text":
-                                final_text += out.get("text", "")
-                        yield {"type": "done", "content": final_text, "interaction_id": interaction_id}
-                        return
+                        if event_type == "interaction.start":
+                            interaction_id = data.get("id")
+                            yield {"type": "status", "content": "Recherche gestartet..."}
 
-                    elif event_type == "error":
-                        yield {"type": "error", "content": data.get("message", "Unbekannter Fehler")}
-                        return
+                        elif event_type == "content.delta":
+                            delta = data.get("delta", {})
+                            delta_type = delta.get("type", "")
 
-    # Falls Stream abbricht, Polling-Fallback
+                            if delta_type == "thought_summary":
+                                text = delta.get("content", {}).get("text", "") if isinstance(delta.get("content"), dict) else delta.get("text", "")
+                                if text:
+                                    yield {"type": "thought", "content": text}
+
+                                now = time.time()
+                                if now - last_status_time > 60:
+                                    elapsed_min = int((now - start_time) / 60)
+                                    yield {"type": "status", "content": f"Recherche aktiv — Denkphase seit {elapsed_min} Min..."}
+                                    last_status_time = now
+
+                            elif delta_type == "text":
+                                text = delta.get("text", "")
+                                if text:
+                                    yield {"type": "text", "content": text}
+
+                        elif event_type == "interaction.complete":
+                            outputs = data.get("outputs", [])
+                            final_text = ""
+                            for out in outputs:
+                                if out.get("type") == "text":
+                                    final_text += out.get("text", "")
+                            elapsed = int(time.time() - start_time)
+                            logger.info("Gemini Deep Research abgeschlossen in %ds (interaction=%s)", elapsed, interaction_id)
+                            yield {"type": "done", "content": final_text, "interaction_id": interaction_id}
+                            return
+
+                        elif event_type == "error":
+                            yield {"type": "error", "content": data.get("message", "Unbekannter Fehler")}
+                            return
+
+        except httpx.ReadTimeout:
+            elapsed = int(time.time() - start_time)
+            logger.warning("Gemini Deep Research Timeout nach %ds (interaction=%s)", elapsed, interaction_id)
+            if not interaction_id:
+                yield {"type": "error", "content": f"Zeitüberschreitung nach {elapsed}s — keine Interaction-ID erhalten"}
+                return
+            yield {"type": "status", "content": f"Stream-Timeout nach {elapsed}s — Ergebnis wird per Polling abgeholt..."}
+
     if interaction_id:
         import asyncio
-        for _ in range(120):
+        for attempt in range(120):
             await asyncio.sleep(10)
-            result = await poll_research(interaction_id)
+            try:
+                result = await poll_research(interaction_id)
+            except Exception as e:
+                logger.warning("Polling-Fehler (Versuch %d): %s", attempt, e)
+                continue
             status = result.get("status")
             if status == "completed":
                 outputs = result.get("outputs", [])
@@ -186,5 +212,6 @@ async def stream_research(query: str, model: str | None = None) -> AsyncGenerato
             elif status == "failed":
                 yield {"type": "error", "content": result.get("error", "Recherche fehlgeschlagen")}
                 return
-            else:
-                yield {"type": "status", "content": f"Recherche läuft... (Status: {status})"}
+            elif attempt % 6 == 0:
+                elapsed = int(time.time() - start_time)
+                yield {"type": "status", "content": f"Recherche läuft... ({elapsed}s, Status: {status})"}

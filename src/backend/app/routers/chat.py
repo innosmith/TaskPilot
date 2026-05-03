@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
+def _should_enable_thinking(model_id: str) -> bool:
+    """Prüft via LiteLLM-Library ob ein Modell Reasoning/Thinking unterstützt."""
+    try:
+        return litellm.supports_reasoning(model=model_id)
+    except Exception:
+        return False
+
+
 @router.get("/conversations")
 async def list_conversations(
     skip: int = Query(0, ge=0),
@@ -402,10 +410,13 @@ async def send_message(
         cost_usd = 0.0
 
         extra_params: dict = {}
-        if model.startswith("anthropic/"):
-            extra_params["thinking"] = {"type": "enabled", "budget_tokens": 8192}
-        elif model.startswith("gemini/"):
-            extra_params["thinking"] = {"type": "enabled"}
+        if not model.startswith("ollama/"):
+            thinking_enabled = _should_enable_thinking(model)
+            if thinking_enabled:
+                if model.startswith("anthropic/"):
+                    extra_params["thinking"] = {"type": "enabled", "budget_tokens": 8192}
+                else:
+                    extra_params["thinking"] = {"type": "enabled"}
 
         try:
             response = await litellm.acompletion(
@@ -417,10 +428,25 @@ async def send_message(
                 **extra_params,
             )
 
+            _first_delta_logged = False
             async for chunk in response:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta:
+                    if not _first_delta_logged:
+                        _attrs = {k: v for k, v in vars(delta).items() if v is not None and k != "content"}
+                        if _attrs:
+                            logger.debug("[Thinking-Debug] model=%s first delta attrs: %s", model, _attrs)
+                        _first_delta_logged = True
+
                     rc = getattr(delta, "reasoning_content", None)
+                    if not rc:
+                        rc = getattr(delta, "thinking", None)
+                    if not rc and hasattr(delta, "thinking_blocks"):
+                        blocks = delta.thinking_blocks or []
+                        if blocks and isinstance(blocks, list):
+                            block = blocks[0]
+                            rc = block.get("thinking", "") if isinstance(block, dict) else getattr(block, "thinking", "")
+
                     if rc:
                         full_thinking += rc
                         yield {

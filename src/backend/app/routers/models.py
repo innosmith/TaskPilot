@@ -21,10 +21,6 @@ LITELLM_PROXY_BASE = "http://localhost:4000"
 
 OLLAMA_BASE = "http://localhost:11434"
 
-KNOWN_ANTHROPIC_MODELS = [
-    ("claude-sonnet-4-20250514", "Claude Sonnet 4"),
-    ("claude-3-5-haiku-20241022", "Claude 3.5 Haiku"),
-]
 
 KNOWN_PERPLEXITY_MODELS = [
     ("sonar-pro", "Sonar Pro (Web Search)"),
@@ -198,14 +194,18 @@ async def _fetch_gemini_models(litellm_caps: dict | None = None) -> list[dict]:
 
 
 def _get_anthropic_models(litellm_caps: dict | None = None) -> list[dict]:
-    """Bekannte Anthropic-Modelle (kein kostenloser List-Endpoint)."""
+    """Anthropic-Modelle dynamisch via LiteLLM-Library."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         return []
-    return [
-        _make_entry(f"anthropic/{mid}", name, "cloud", "anthropic", litellm_caps)
-        for mid, name in KNOWN_ANTHROPIC_MODELS
-    ]
+    raw_models = litellm.models_by_provider.get("anthropic", [])
+    models = []
+    for mid in sorted(raw_models):
+        model_id = f"anthropic/{mid}"
+        friendly = mid.replace("-", " ").replace("20", " 20").strip()
+        friendly = " ".join(w.capitalize() if not w[0].isdigit() else w for w in friendly.split())
+        models.append(_make_entry(model_id, friendly, "cloud", "anthropic", litellm_caps))
+    return models
 
 
 def _get_perplexity_models(litellm_caps: dict | None = None) -> list[dict]:
