@@ -176,6 +176,7 @@ async def get_conversation(
                 "conversation_id": str(msg.conversation_id),
                 "role": msg.role,
                 "content": msg.content,
+                "model": msg.model,
                 "tokens": msg.tokens,
                 "cost_usd": float(msg.cost_usd) if msg.cost_usd else None,
                 "attachments": msg.attachments,
@@ -238,6 +239,44 @@ async def update_conversation(
     }
 
 
+@router.post("/conversations/{conversation_id}/messages/batch")
+async def batch_save_messages(
+    conversation_id: uuid.UUID,
+    body: dict,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mehrere Nachrichten synchron speichern (fuer Web-Suche etc.)."""
+    result = await db.execute(
+        select(LlmConversation).where(LlmConversation.id == conversation_id)
+    )
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Konversation nicht gefunden")
+
+    messages_data = body.get("messages", [])
+    saved = []
+    for m in messages_data:
+        msg = LlmMessage(
+            conversation_id=conv.id,
+            role=m.get("role", "user"),
+            content=m.get("content", ""),
+            tokens=m.get("tokens"),
+            cost_usd=m.get("cost_usd"),
+            citations=m.get("citations", []),
+        )
+        db.add(msg)
+        await db.flush()
+        saved.append({"id": str(msg.id), "role": msg.role})
+
+    if not conv.title and messages_data:
+        first_user = next((m for m in messages_data if m.get("role") == "user"), None)
+        if first_user:
+            conv.title = (first_user["content"][:80] + "...") if len(first_user["content"]) > 80 else first_user["content"]
+
+    return {"ok": True, "saved": saved}
+
+
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(
     conversation_id: uuid.UUID,
@@ -293,6 +332,67 @@ async def send_message(
         if s.perplexity_api_key:
             os.environ["PERPLEXITYAI_API_KEY"] = s.perplexity_api_key
 
+    def _is_gemini_deep_research(m: str) -> bool:
+        return m.startswith("gemini/deep-research") or m in (
+            "deep-research-preview-04-2026",
+            "deep-research-max-preview-04-2026",
+        )
+
+    async def generate_gemini_research():
+        """Gemini Deep Research via Interactions API."""
+        from app.services.gemini_research import stream_research
+
+        full_response = ""
+        full_thinking = ""
+        gemini_model = model.replace("gemini/", "") if model.startswith("gemini/") else None
+
+        try:
+            async for event in stream_research(user_content, model=gemini_model):
+                if event["type"] == "thought":
+                    full_thinking += event["content"] + "\n"
+                    yield {"event": "thinking", "data": json.dumps({"content": event["content"]})}
+                elif event["type"] == "text":
+                    full_response += event["content"]
+                    yield {"event": "chunk", "data": json.dumps({"content": event["content"]})}
+                elif event["type"] == "status":
+                    yield {"event": "status", "data": json.dumps({"content": event["content"]})}
+                elif event["type"] == "error":
+                    yield {"event": "error", "data": json.dumps({"error": event["content"]})}
+                    return
+                elif event["type"] == "done":
+                    if event.get("content") and not full_response:
+                        full_response = event["content"]
+        except Exception as e:
+            logger.exception("Gemini Deep Research Fehler")
+            yield {"event": "error", "data": json.dumps({"error": str(e)})}
+            return
+
+        async with async_session() as save_db:
+            assistant_msg = LlmMessage(
+                conversation_id=uuid.UUID(conv_id_str),
+                role="assistant",
+                content=full_response,
+                tokens=0,
+                cost_usd=None,
+            )
+            save_db.add(assistant_msg)
+            await save_db.commit()
+
+        yield {
+            "event": "done",
+            "data": json.dumps({
+                "message_id": str(assistant_msg.id),
+                "tokens": 0,
+                "reasoning_tokens": 0,
+                "cost_usd": None,
+                "content": full_response,
+                "thinking": full_thinking.strip() if full_thinking else None,
+            }),
+        }
+
+    if _is_gemini_deep_research(model):
+        return EventSourceResponse(generate_gemini_research())
+
     async def generate():
         _setup_api_keys()
         full_response = ""
@@ -301,13 +401,20 @@ async def send_message(
         reasoning_tokens = 0
         cost_usd = 0.0
 
+        extra_params: dict = {}
+        if model.startswith("anthropic/"):
+            extra_params["thinking"] = {"type": "enabled", "budget_tokens": 8192}
+        elif model.startswith("gemini/"):
+            extra_params["thinking"] = {"type": "enabled"}
+
         try:
             response = await litellm.acompletion(
                 model=model,
                 messages=messages_for_llm,
-                temperature=temperature,
+                temperature=temperature if not extra_params.get("thinking") else 1.0,
                 stream=True,
                 api_base="http://localhost:11434" if model.startswith("ollama/") else None,
+                **extra_params,
             )
 
             async for chunk in response:
@@ -349,11 +456,21 @@ async def send_message(
         except Exception:
             pass
 
+        # <think>-Tags aus dem Content separieren (Perplexity Deep Research)
+        import re
+        clean_response = full_response
+        think_match = re.search(r"<think>(.*?)</think>", full_response, re.DOTALL)
+        if think_match:
+            if not full_thinking:
+                full_thinking = think_match.group(1).strip()
+            clean_response = re.sub(r"<think>.*?</think>\s*", "", full_response, flags=re.DOTALL).strip()
+
         async with async_session() as save_db:
             assistant_msg = LlmMessage(
                 conversation_id=uuid.UUID(conv_id_str),
                 role="assistant",
-                content=full_response,
+                content=clean_response,
+                model=model,
                 tokens=total_tokens_used,
                 cost_usd=cost_usd if cost_usd > 0 else None,
             )
@@ -375,8 +492,9 @@ async def send_message(
                 "tokens": total_tokens_used,
                 "reasoning_tokens": reasoning_tokens,
                 "cost_usd": round(cost_usd, 6) if cost_usd > 0 else None,
-                "content": full_response,
+                "content": clean_response,
                 "thinking": full_thinking if full_thinking else None,
+                "model": model,
             }),
         }
 
@@ -454,7 +572,7 @@ async def create_task_from_message(
     return {"task_id": str(task.id), "title": task.title, "project_id": str(project_id)}
 
 
-MAX_AGENT_TIMEOUT = 120
+MAX_AGENT_TIMEOUT = 600
 _NANOBOT_HOME = os.path.expanduser("~/.nanobot")
 _NANOBOT_CONFIG = os.path.join(_NANOBOT_HOME, "config.json")
 

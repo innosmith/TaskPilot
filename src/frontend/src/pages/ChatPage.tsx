@@ -44,6 +44,7 @@ interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  model?: string | null;
   tokens: number | null;
   cost_usd: number | null;
   reasoning_tokens?: number | null;
@@ -205,6 +206,7 @@ export function ChatPage() {
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const mcpPopoverRef = useRef<HTMLDivElement>(null);
   const skipNextFetchRef = useRef(false);
+  const sendingRef = useRef(false);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -308,8 +310,28 @@ export function ChatPage() {
   const showModelControls = mode !== 'web_search';
 
   const handleWebSearch = async (query: string) => {
-    const cid = activeId || '_search';
-    updateAgentState(cid, { isStreaming: true, status: 'running' });
+    let convId = activeId;
+
+    if (!convId) {
+      try {
+        const conv = await api.post<Conversation>('/api/chat/conversations', {
+          model: 'tavily', mode: 'web_search',
+        });
+        setConversations(prev => [conv, ...prev]);
+        convId = conv.id;
+        skipNextFetchRef.current = true;
+        setActiveId(conv.id);
+      } catch (err) {
+        setMessages(prev => [...prev, {
+          id: crypto.randomUUID(), role: 'assistant',
+          content: `Konversation konnte nicht erstellt werden: ${(err as Error).message}`,
+          tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+        }]);
+        return;
+      }
+    }
+
+    updateAgentState(convId, { isStreaming: true, status: 'running' });
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(), role: 'user', content: query,
       tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
@@ -321,23 +343,37 @@ export function ChatPage() {
       const resp = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ query, search_depth: 'basic', max_results: 5 }),
+        body: JSON.stringify({ query, search_depth: 'basic', max_results: 5, conversation_id: convId }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
 
       let content = '';
       if (data.answer) content += `**Zusammenfassung:** ${data.answer}\n\n`;
-      content += `### Suchergebnisse (${data.result_count})\n\n`;
-      for (const r of data.results || []) {
-        content += `**[${r.title}](${r.url})**\n${r.content}\n\n`;
+      if ((data.results || []).length > 0) {
+        content += `### Suchergebnisse (${data.result_count})\n\n`;
+        content += '| # | Quelle | Auszug |\n|---|--------|--------|\n';
+        for (let i = 0; i < (data.results || []).length; i++) {
+          const r = data.results[i];
+          const snippet = (r.content || '').replace(/\n/g, ' ').slice(0, 200);
+          content += `| ${i + 1} | [${r.title}](${r.url}) | ${snippet}${r.content?.length > 200 ? '...' : ''} |\n`;
+        }
+        content += '\n';
       }
-      content += `\n---\n*Quelle: Tavily · ${data.credits_used} Credit(s)*`;
+      content += `---\n*Quelle: Tavily · ${data.credits_used} Credit(s)*`;
 
-      setMessages(prev => [...prev, {
+      const assistantMsg: ChatMessage = {
         id: crypto.randomUUID(), role: 'assistant', content,
         tokens: null, cost_usd: null, citations: data.results, created_at: new Date().toISOString(),
-      }]);
+      };
+      setMessages(prev => [...prev, assistantMsg]);
+
+      api.post(`/api/chat/conversations/${convId}/messages/batch`, {
+        messages: [
+          { role: 'user', content: query },
+          { role: 'assistant', content, citations: data.results },
+        ],
+      }).catch(() => {});
     } catch (err) {
       setMessages(prev => [...prev, {
         id: crypto.randomUUID(), role: 'assistant',
@@ -345,7 +381,7 @@ export function ChatPage() {
         tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
       }]);
     } finally {
-      updateAgentState(cid, { isStreaming: false, status: 'done' });
+      updateAgentState(convId, { isStreaming: false, status: 'done' });
     }
   };
 
@@ -387,7 +423,8 @@ export function ChatPage() {
           } else if (evt === 'done') {
             setMessages(prev => [...prev, {
               id: data.message_id || crypto.randomUUID(), role: 'assistant',
-              content: data.content || acc, tokens: data.tokens, cost_usd: data.cost_usd || null,
+              content: data.content || acc, model: data.model || null,
+              tokens: data.tokens, cost_usd: data.cost_usd || null,
               reasoning_tokens: data.reasoning_tokens || null,
               thinking: data.thinking || thinkAcc || null,
               tool_trace: traceAcc.length > 0 ? traceAcc : null,
@@ -523,7 +560,8 @@ export function ChatPage() {
 
   const handleSend = async () => {
     let content = input.trim();
-    if (!content || isStreaming) return;
+    if (!content || isStreaming || sendingRef.current) return;
+    sendingRef.current = true;
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
@@ -535,6 +573,7 @@ export function ChatPage() {
 
     if (mode === 'web_search') {
       await handleWebSearch(content);
+      sendingRef.current = false;
       return;
     }
 
@@ -556,6 +595,7 @@ export function ChatPage() {
           content: `Konversation konnte nicht erstellt werden: ${(err as Error).message || 'Unbekannter Fehler'}`,
           tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
         }]);
+        sendingRef.current = false;
         return;
       }
     }
@@ -602,6 +642,8 @@ export function ChatPage() {
           tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
         }]);
         loadConversations();
+      } finally {
+        sendingRef.current = false;
       }
     } else {
       abortControllerRef.current?.abort();
@@ -631,6 +673,7 @@ export function ChatPage() {
       } finally {
         updateAgentState(convId, { isStreaming: false, streamingContent: '', thinkingContent: '', status: 'done' });
         loadConversations();
+        sendingRef.current = false;
       }
     }
   };
@@ -1048,8 +1091,13 @@ export function ChatPage() {
                       </div>
                     )}
 
-                    {msg.role === 'assistant' && (msg.tokens || msg.cost_usd || msg.elapsed_s) && (
+                    {msg.role === 'assistant' && (msg.tokens || msg.cost_usd || msg.elapsed_s || msg.model) && (
                       <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-gray-200/60 pt-2 text-[10px] text-gray-400 dark:border-gray-700/40 dark:text-gray-500">
+                        {msg.model && (
+                          <span className="flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-500 dark:bg-gray-700/50 dark:text-gray-400" title="Modell">
+                            {msg.model.split('/').pop()}
+                          </span>
+                        )}
                         {msg.elapsed_s && (
                           <span className="flex items-center gap-1" title="Dauer">
                             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>

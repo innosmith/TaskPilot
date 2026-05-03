@@ -285,6 +285,7 @@ class LlmMessage(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("llm_conversations.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str | None] = mapped_column(Text)
     tokens: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[float | None] = mapped_column(Numeric(10, 6))
     attachments: Mapped[dict] = mapped_column(JSONB, server_default="[]")

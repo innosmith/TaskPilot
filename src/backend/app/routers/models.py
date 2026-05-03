@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/models", tags=["models"])
 
 _cache: dict = {"data": None, "expires_at": 0.0}
+_litellm_caps_cache: dict = {"data": None, "expires_at": 0.0}
 CACHE_TTL_SECONDS = 300
+LITELLM_PROXY_BASE = "http://localhost:4000"
 
 OLLAMA_BASE = "http://localhost:11434"
 
@@ -32,9 +34,44 @@ KNOWN_PERPLEXITY_MODELS = [
     ("sonar-reasoning", "Sonar Reasoning"),
 ]
 
+KNOWN_GEMINI_RESEARCH_MODELS = [
+    ("deep-research-preview-04-2026", "Gemini Deep Research"),
+    ("deep-research-max-preview-04-2026", "Gemini Deep Research Max"),
+]
 
-def _get_capabilities(model_id: str) -> list[str]:
-    """Welche Modi ein Modell unterstützt — dynamisch via litellm."""
+
+async def _fetch_litellm_capabilities() -> dict[str, dict]:
+    """LiteLLM Proxy /model/info abfragen fuer dynamische Capabilities (gecacht)."""
+    now = time.time()
+    if _litellm_caps_cache["data"] and now < _litellm_caps_cache["expires_at"]:
+        return _litellm_caps_cache["data"]
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{LITELLM_PROXY_BASE}/v1/model/info")
+            if resp.status_code == 200:
+                data = resp.json()
+                caps = {}
+                for m in data.get("data", []):
+                    name = m["model_name"]
+                    info = m.get("model_info", {})
+                    params = info.get("supported_openai_params") or []
+                    caps[name] = {
+                        "supports_reasoning": info.get("supports_reasoning") is True,
+                        "has_reasoning_effort": "reasoning_effort" in params,
+                        "has_thinking_param": "thinking" in params,
+                    }
+                _litellm_caps_cache["data"] = caps
+                _litellm_caps_cache["expires_at"] = now + CACHE_TTL_SECONDS
+                return caps
+    except Exception as e:
+        logger.warning("LiteLLM Proxy nicht erreichbar fuer Capabilities: %s", e)
+
+    return _litellm_caps_cache.get("data") or {}
+
+
+def _get_capabilities(model_id: str, litellm_caps: dict | None = None) -> list[str]:
+    """Welche Modi ein Modell unterstützt — dynamisch via LiteLLM-Proxy."""
     caps = ["chat"]
     provider = model_id.split("/")[0] if "/" in model_id else ""
     model = model_id.split("/")[-1] if "/" in model_id else model_id
@@ -48,26 +85,31 @@ def _get_capabilities(model_id: str) -> list[str]:
         if "deep-research" in model:
             caps.append("deep_research")
 
-    try:
-        if litellm.supports_reasoning(model=model_id):
+    if litellm_caps and model_id in litellm_caps:
+        info = litellm_caps[model_id]
+        if info.get("supports_reasoning") or info.get("has_reasoning_effort"):
             caps.append("thinking")
-    except Exception:
-        pass
+    else:
+        try:
+            if litellm.supports_reasoning(model=model_id):
+                caps.append("thinking")
+        except Exception:
+            pass
 
     return caps
 
 
-def _make_entry(model_id: str, friendly_name: str, model_type: str, provider: str) -> dict:
+def _make_entry(model_id: str, friendly_name: str, model_type: str, provider: str, litellm_caps: dict | None = None) -> dict:
     return {
         "id": model_id,
         "name": friendly_name,
         "type": model_type,
         "provider": provider,
-        "capabilities": _get_capabilities(model_id),
+        "capabilities": _get_capabilities(model_id, litellm_caps),
     }
 
 
-async def _fetch_ollama_models() -> list[dict]:
+async def _fetch_ollama_models(litellm_caps: dict | None = None) -> list[dict]:
     """Alle lokal verfuegbaren Ollama-Modelle abfragen."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -81,14 +123,14 @@ async def _fetch_ollama_models() -> list[dict]:
                     size_gb = m.get("size", 0) / (1024 ** 3)
                     size_label = f" ({size_gb:.0f}GB)" if size_gb > 1 else ""
                     friendly = name.replace(":", " ").replace("-", " ").title() + size_label
-                    models.append(_make_entry(model_id, friendly, "local", "ollama"))
+                    models.append(_make_entry(model_id, friendly, "local", "ollama", litellm_caps))
                 return models
     except Exception as e:
         logger.warning("Ollama nicht erreichbar: %s", e)
     return []
 
 
-async def _fetch_openai_models() -> list[dict]:
+async def _fetch_openai_models(litellm_caps: dict | None = None) -> list[dict]:
     """OpenAI-Modelle via /v1/models abfragen (kostenloser API-Call)."""
     settings = get_settings()
     if not settings.openai_api_key:
@@ -113,7 +155,7 @@ async def _fetch_openai_models() -> list[dict]:
                     if any(x in mid for x in EXCLUDE):
                         continue
                     model_id = f"openai/{mid}"
-                    models.append(_make_entry(model_id, mid, "cloud", "openai"))
+                    models.append(_make_entry(model_id, mid, "cloud", "openai", litellm_caps))
                 models.sort(key=lambda x: x["id"])
                 return models
     except Exception as e:
@@ -121,7 +163,7 @@ async def _fetch_openai_models() -> list[dict]:
     return []
 
 
-async def _fetch_gemini_models() -> list[dict]:
+async def _fetch_gemini_models(litellm_caps: dict | None = None) -> list[dict]:
     """Google Gemini-Modelle via API abfragen (kostenloser Call)."""
     settings = get_settings()
     if not settings.gemini_api_key:
@@ -148,32 +190,43 @@ async def _fetch_gemini_models() -> list[dict]:
                     short = name.replace("models/", "")
                     model_id = f"gemini/{short}"
                     display = m.get("displayName", short)
-                    models.append(_make_entry(model_id, display, "cloud", "gemini"))
+                    models.append(_make_entry(model_id, display, "cloud", "gemini", litellm_caps))
                 return models
     except Exception as e:
         logger.warning("Gemini Models API nicht erreichbar: %s", e)
     return []
 
 
-def _get_anthropic_models() -> list[dict]:
+def _get_anthropic_models(litellm_caps: dict | None = None) -> list[dict]:
     """Bekannte Anthropic-Modelle (kein kostenloser List-Endpoint)."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         return []
     return [
-        _make_entry(f"anthropic/{mid}", name, "cloud", "anthropic")
+        _make_entry(f"anthropic/{mid}", name, "cloud", "anthropic", litellm_caps)
         for mid, name in KNOWN_ANTHROPIC_MODELS
     ]
 
 
-def _get_perplexity_models() -> list[dict]:
+def _get_perplexity_models(litellm_caps: dict | None = None) -> list[dict]:
     """Bekannte Perplexity-Modelle (kein kostenloser List-Endpoint)."""
     settings = get_settings()
     if not settings.perplexity_api_key:
         return []
     return [
-        _make_entry(f"perplexity/{mid}", name, "cloud", "perplexity")
+        _make_entry(f"perplexity/{mid}", name, "cloud", "perplexity", litellm_caps)
         for mid, name in KNOWN_PERPLEXITY_MODELS
+    ]
+
+
+def _get_gemini_research_models(litellm_caps: dict | None = None) -> list[dict]:
+    """Gemini Deep Research Modelle (Interactions API)."""
+    settings = get_settings()
+    if not settings.gemini_api_key:
+        return []
+    return [
+        _make_entry(f"gemini/{mid}", name, "cloud", "gemini", litellm_caps)
+        for mid, name in KNOWN_GEMINI_RESEARCH_MODELS
     ]
 
 
@@ -181,18 +234,21 @@ async def _fetch_all_models() -> dict:
     """Alle verfuegbaren Modelle von allen Providern sammeln."""
     import asyncio
 
-    ollama_task = asyncio.create_task(_fetch_ollama_models())
-    openai_task = asyncio.create_task(_fetch_openai_models())
-    gemini_task = asyncio.create_task(_fetch_gemini_models())
+    litellm_caps = await _fetch_litellm_capabilities()
+
+    ollama_task = asyncio.create_task(_fetch_ollama_models(litellm_caps))
+    openai_task = asyncio.create_task(_fetch_openai_models(litellm_caps))
+    gemini_task = asyncio.create_task(_fetch_gemini_models(litellm_caps))
 
     ollama_models = await ollama_task
     openai_models = await openai_task
     gemini_models = await gemini_task
-    anthropic_models = _get_anthropic_models()
-    perplexity_models = _get_perplexity_models()
+    anthropic_models = _get_anthropic_models(litellm_caps)
+    perplexity_models = _get_perplexity_models(litellm_caps)
+    gemini_research_models = _get_gemini_research_models(litellm_caps)
 
     local_models = ollama_models
-    cloud_models = openai_models + anthropic_models + gemini_models + perplexity_models
+    cloud_models = openai_models + anthropic_models + gemini_models + perplexity_models + gemini_research_models
 
     return {"local": local_models, "cloud": cloud_models}
 
@@ -226,12 +282,19 @@ async def list_models(user: User = Depends(get_current_user)) -> dict:
         return all_models
 
     enabled_model_ids = set()
-    for provider_config in llm_providers.values():
+    active_providers = set()
+    for provider_name, provider_config in llm_providers.items():
         if provider_config.get("enabled", False):
+            active_providers.add(provider_name)
             enabled_model_ids.update(provider_config.get("models", []))
 
     if not enabled_model_ids:
         return all_models
+
+    for m in all_models.get("local", []) + all_models.get("cloud", []):
+        if "deep_research" in m.get("capabilities", []):
+            if m["provider"] in active_providers:
+                enabled_model_ids.add(m["id"])
 
     return {
         "local": [m for m in all_models.get("local", []) if m["id"] in enabled_model_ids],

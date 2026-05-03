@@ -261,6 +261,7 @@ CREATE TABLE llm_messages (
     conversation_id UUID NOT NULL REFERENCES llm_conversations(id) ON DELETE CASCADE,
     role            TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
     content         TEXT NOT NULL,
+    model           TEXT,
     tokens          INT,
     cost_usd        NUMERIC(10,6),
     attachments     JSONB DEFAULT '[]'::jsonb,

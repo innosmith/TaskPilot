@@ -449,6 +449,7 @@ async def _populate_env_from_db() -> None:
         "bexio_api_token": "TP_BEXIO_API_TOKEN",
         "invoiceinsight_api_key": "TP_INVOICEINSIGHT_API_KEY",
         "invoiceinsight_url": "TP_INVOICEINSIGHT_URL",
+        "tavily_api_key": "TP_TAVILY_API_KEY",
     }
 
     cfg = get_settings()
