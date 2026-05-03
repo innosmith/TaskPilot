@@ -1389,7 +1389,7 @@ function LlmSettingsTab() {
     <section>
       <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">LLM-Modelle</h2>
       <p className="mb-6 text-sm text-gray-500 dark:text-gray-400">
-        Aktiviere die LLM-Provider und waehle die Modelle, die dir zur Verfuegung stehen sollen.
+        Aktiviere die LLM-Provider und wähle die Modelle, die dir zur Verfügung stehen sollen.
       </p>
 
       <div className="space-y-6">
@@ -1410,7 +1410,7 @@ function LlmSettingsTab() {
                     {providerLabels[provider] || provider}
                   </h3>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {providerModels.length} Modell{providerModels.length !== 1 ? 'e' : ''} verfuegbar
+                    {providerModels.length} Modell{providerModels.length !== 1 ? 'e' : ''} verfügbar
                   </p>
                 </div>
                 <button

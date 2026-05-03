@@ -102,7 +102,7 @@ export function AppLayout() {
         <div className="flex flex-1 flex-col overflow-hidden">
           <MobileHeader onMenuOpen={openSidebar} onSearchOpen={openSearch} />
 
-          <main ref={mainRef} className="flex-1 overflow-hidden transition-[padding] duration-300" style={isMobile ? { paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))', paddingBottom: tabBarHidden ? '0px' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' } : undefined}>
+          <main ref={mainRef} className="flex-1 overflow-hidden" style={isMobile ? { paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))', paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' } : undefined}>
             <Outlet context={{ refreshSidebar, refreshAppSettings }} />
           </main>
 

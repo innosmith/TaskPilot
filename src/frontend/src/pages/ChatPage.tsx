@@ -2,8 +2,15 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, getToken } from '../api/client';
 import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import 'highlight.js/styles/tokyo-night-dark.css';
+import mermaid from 'mermaid';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
+import { BackgroundPicker } from '../components/BackgroundPicker';
+
+mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
 
 interface LlmModel {
   id: string;
@@ -58,6 +65,80 @@ const MODES: { id: ChatMode; label: string; tooltip: string }[] = [
   { id: 'deep_research', label: 'Deep Research', tooltip: 'Mehrstufige Recherche mit vielen Quellen — dauert länger, geht tiefer' },
 ];
 
+function MermaidBlock({ code }: { code: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [svg, setSvg] = useState<string>('');
+  const [error, setError] = useState<string>('');
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const valid = await mermaid.parse(code, { suppressErrors: true });
+        if (!valid || cancelled) { if (!valid) setError('Ungültige Mermaid-Syntax'); return; }
+        const id = `mermaid-${Math.random().toString(36).slice(2, 9)}`;
+        const { svg: rendered } = await mermaid.render(id, code);
+        if (!cancelled) setSvg(rendered);
+      } catch (err) {
+        if (!cancelled) setError(String((err as Error)?.message || err));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [code]);
+  if (error) return (
+    <div className="my-3 rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40">
+      <div className="flex items-center gap-2 border-b border-amber-200 px-3 py-1.5 text-xs font-medium text-amber-700 dark:border-amber-800 dark:text-amber-400">
+        <span>Diagramm konnte nicht gerendert werden</span>
+      </div>
+      <pre className="overflow-x-auto p-3 text-xs text-gray-700 dark:text-gray-300"><code>{code}</code></pre>
+    </div>
+  );
+  return <div ref={containerRef} className="my-3 flex justify-center overflow-x-auto rounded-lg bg-gray-900/50 p-4" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+function CodeCopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="code-copy-btn"
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      title="Kopieren"
+    >
+      {copied ? (
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+      ) : (
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
+      )}
+    </button>
+  );
+}
+
+const chatMdComponents: Partial<Components> = {
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+  ),
+  table: ({ children }) => (
+    <div className="table-wrapper">
+      <table>{children}</table>
+    </div>
+  ),
+  pre: ({ children, ...props }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const codeEl = (children as any)?.props;
+    const className = codeEl?.className || '';
+    const langMatch = className.match(/language-(\S+)/);
+    const lang = langMatch ? langMatch[1] : '';
+    const text = typeof codeEl?.children === 'string' ? codeEl.children : '';
+    if (lang === 'mermaid' && text) return <MermaidBlock code={text.trim()} />;
+    return (
+      <div className="code-block-wrapper">
+        {lang && <span className="code-lang-label">{lang}</span>}
+        <pre {...props}>{children}</pre>
+        {text && <CodeCopyButton text={text} />}
+      </div>
+    );
+  },
+};
+
 const PROVIDER_ORDER = ['ollama', 'openai', 'anthropic', 'gemini', 'perplexity'];
 const PROVIDER_LABELS: Record<string, string> = {
   ollama: 'Ollama (Lokal)',
@@ -83,8 +164,11 @@ export function ChatPage() {
   const [modelOpen, setModelOpen] = useState(false);
   const [tempOpen, setTempOpen] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
-  const [collapsedThinking, setCollapsedThinking] = useState<Set<string>>(new Set());
+  const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [mcpServers, setMcpServers] = useState<{ key: string; label: string; description: string }[]>([]);
+  const [mcpOpen, setMcpOpen] = useState(false);
+  const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -115,9 +199,11 @@ export function ChatPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
+  const mcpPopoverRef = useRef<HTMLDivElement>(null);
   const skipNextFetchRef = useRef(false);
 
   const loadConversations = useCallback(async () => {
@@ -142,6 +228,9 @@ export function ChatPage() {
     api.get<{ servers: { key: string; label: string; description: string }[] }>('/api/chat/agent-tools')
       .then(d => setMcpServers(d.servers))
       .catch(() => {});
+    api.get<{ chat_background_url: string | null }>('/api/settings')
+      .then(s => setBgUrl(s.chat_background_url))
+      .catch(() => {});
   }, [loadConversations]);
 
   useEffect(() => {
@@ -163,13 +252,27 @@ export function ChatPage() {
       .catch(() => {});
   }, [activeId]);
 
+  const prevMsgCountRef = useRef(0);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = scrollContainerRef.current;
+    if (!container) {
+      bottomRef.current?.scrollIntoView({ behavior: 'instant' });
+      return;
+    }
+    const threshold = 150;
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    if (!isNearBottom) return;
+
+    const isNewMessage = messages.length !== prevMsgCountRef.current;
+    prevMsgCountRef.current = messages.length;
+
+    bottomRef.current?.scrollIntoView({ behavior: isNewMessage ? 'smooth' : 'instant' });
   }, [messages, streamingContent, thinkingContent]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) setModelOpen(false);
+      if (mcpPopoverRef.current && !mcpPopoverRef.current.contains(e.target as Node)) setMcpOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -611,7 +714,7 @@ export function ChatPage() {
   };
 
   const toggleThinking = (id: string) => {
-    setCollapsedThinking(prev => {
+    setExpandedThinking(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -635,6 +738,17 @@ export function ChatPage() {
 
   const selectedModelInfo = modelInfo(selectedModel);
 
+  const handleBgSelect = async (url: string | null) => {
+    await api.patch('/api/settings', { chat_background_url: url });
+    setBgUrl(url);
+  };
+
+  const bgStyle: React.CSSProperties = bgUrl
+    ? bgUrl.startsWith('gradient:')
+      ? { background: bgUrl.slice('gradient:'.length) }
+      : { backgroundImage: `url(${bgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+    : {};
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Sidebar */}
@@ -650,10 +764,10 @@ export function ChatPage() {
                 <button
                   type="button"
                   onClick={handleDeleteAllChats}
-                  className="shrink-0 rounded-lg border border-red-200 bg-white px-2.5 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-900/50 dark:bg-gray-800 dark:text-red-400 dark:hover:bg-red-950/40"
+                  className="shrink-0 rounded-lg p-2 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30 dark:hover:text-red-400"
                   title="Alle Konversationen löschen"
                 >
-                  Alle
+                  <TrashIcon className="h-4 w-4" />
                 </button>
               )}
             </div>
@@ -679,20 +793,22 @@ export function ChatPage() {
                                 ? 'Modus: Agent (InnoPilot)'
                                 : c.mode === 'web_search'
                                   ? 'Modus: Websuche'
-                                  : `Modus: ${c.mode ?? 'Chat'}`
+                                  : c.mode === 'deep_research'
+                                    ? 'Modus: Deep Research'
+                                    : 'Modus: Chat'
                         }
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                          agentStates[c.id]?.isStreaming
-                            ? 'bg-violet-500 animate-pulse'
-                            : agentStates[c.id]?.status === 'error'
-                              ? 'bg-red-500'
-                              : agentStates[c.id]?.status === 'done' && isAgentConversation(c)
-                                ? 'bg-green-500'
-                                : isAgentConversation(c)
-                                  ? 'bg-violet-500'
-                                  : c.model.startsWith('ollama/')
-                                    ? 'bg-emerald-500'
-                                    : 'bg-sky-500'
+                          agentStates[c.id]?.status === 'error'
+                            ? 'bg-red-500'
+                            : agentStates[c.id]?.isStreaming
+                              ? 'bg-violet-500 animate-pulse'
+                              : isAgentConversation(c)
+                                ? 'bg-violet-500'
+                                : c.mode === 'web_search'
+                                  ? 'bg-emerald-500'
+                                  : c.mode === 'deep_research'
+                                    ? 'bg-amber-500'
+                                    : 'bg-indigo-500'
                         }`}
                       />
                       <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-400">{modelLabel(c.model)}</span>
@@ -712,7 +828,7 @@ export function ChatPage() {
       </div>
 
       {/* Main */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col" style={bgStyle}>
         {/* Top bar — schlank, nur Sidebar-Toggle + Einstellungen */}
         <div className="flex items-center gap-2 border-b border-gray-200 bg-white/50 px-3 py-2 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/50">
           <button onClick={() => setShowSidebar(!showSidebar)} className="shrink-0 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800" title={showSidebar ? 'Verlauf ausblenden' : 'Verlauf einblenden'}>
@@ -722,13 +838,44 @@ export function ChatPage() {
           <div className="flex-1" />
 
           {mode === 'agent' && (
-            <span className="flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
-              InnoPilot · {mcpServers.length} Tools
-            </span>
+            <div className="relative" ref={mcpPopoverRef}>
+              <button
+                onClick={() => setMcpOpen(!mcpOpen)}
+                className="flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-300 dark:hover:bg-violet-900/50"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
+                InnoPilot · {mcpServers.length} Tools
+                <svg className={`h-3 w-3 transition-transform ${mcpOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+              </button>
+              {mcpOpen && (
+                <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-gray-200/80 bg-white p-4 shadow-2xl dark:border-gray-700/80 dark:bg-gray-800">
+                  <div className="mb-3 flex items-center gap-2">
+                    <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100 dark:bg-violet-900/40">
+                      <SparkleIcon className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+                    </div>
+                    <span className="text-xs font-semibold text-gray-800 dark:text-gray-100">Verfügbare MCP-Server</span>
+                  </div>
+                  <div className="max-h-[320px] space-y-2 overflow-y-auto">
+                    {mcpServers.map(s => (
+                      <div key={s.key} className="flex items-start gap-2.5 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
+                        <div className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-green-400" />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">{s.label}</div>
+                          {s.description && <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{s.description}</div>}
+                        </div>
+                      </div>
+                    ))}
+                    {mcpServers.length === 0 && <div className="py-2 text-center text-[11px] italic text-gray-400">Keine Server konfiguriert</div>}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
-          <button onClick={() => navigate('/einstellungen?tab=llm')} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="LLM-Einstellungen">
+          <button onClick={() => setBgPickerOpen(true)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="Hintergrund ändern">
+            <ImageIcon className="h-5 w-5" />
+          </button>
+          <button onClick={() => navigate('/settings?tab=llm')} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="LLM-Einstellungen">
             <SettingsIcon className="h-5 w-5" />
           </button>
         </div>
@@ -776,7 +923,7 @@ export function ChatPage() {
                   rows={4}
                   className="max-h-48 min-h-[96px] w-full resize-none border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
                 />
-                <div className="flex items-center gap-1.5 px-3 pb-2.5">
+                <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5">
                   <div className="flex shrink-0 rounded-lg bg-gray-100 p-0.5 dark:bg-gray-700">
                     {MODES.map(m => (
                       <button key={m.id} onClick={() => setMode(m.id)} title={m.tooltip} className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium whitespace-nowrap transition-all ${mode === m.id ? 'bg-white text-indigo-700 shadow-sm dark:bg-gray-600 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}>
@@ -785,7 +932,7 @@ export function ChatPage() {
                       </button>
                     ))}
                   </div>
-                  {showModelControls && <div className="h-4 w-px bg-gray-200 dark:bg-gray-600" />}
+                  {showModelControls && <div className="hidden h-4 w-px bg-gray-200 sm:block dark:bg-gray-600" />}
                   {showModelControls && (
                     <>
                       <div className="relative" ref={modelDropdownRef}>
@@ -830,31 +977,6 @@ export function ChatPage() {
                   )}
                   <div className="ml-auto flex shrink-0 items-center gap-2">
                     {mode === 'web_search' && <span className="whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500" title="Tavily durchsucht das Web nach aktuellen Ergebnissen">via Tavily</span>}
-                    {mode === 'agent' && (
-                      <span className="group/mcp relative cursor-help whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500">
-                        MCP ({mcpServers.length})
-                        <div className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-80 rounded-xl border border-gray-200/80 bg-white/95 p-4 text-left shadow-2xl backdrop-blur-sm group-hover/mcp:block dark:border-gray-700/80 dark:bg-gray-800/95">
-                          <div className="mb-3 flex items-center gap-2">
-                            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100 dark:bg-violet-900/40">
-                              <SparkleIcon className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
-                            </div>
-                            <span className="text-xs font-semibold text-gray-800 dark:text-gray-100">InnoPilot — Verfügbare Tools</span>
-                          </div>
-                          <div className="space-y-2">
-                            {mcpServers.map(s => (
-                              <div key={s.key} className="flex items-start gap-2.5 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-750 dark:bg-gray-900/40">
-                                <div className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-green-400" />
-                                <div className="min-w-0">
-                                  <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">{s.label}</div>
-                                  {s.description && <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{s.description}</div>}
-                                </div>
-                              </div>
-                            ))}
-                            {mcpServers.length === 0 && <div className="py-2 text-center text-[11px] italic text-gray-400">Keine Server konfiguriert</div>}
-                          </div>
-                        </div>
-                      </span>
-                    )}
                     <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
                     <button onClick={() => fileInputRef.current?.click()} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="Datei anhängen"><AttachIcon className="h-4 w-4" /></button>
                     <button onClick={handleSend} disabled={!input.trim() || isStreaming} className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"><SendIcon className="h-3.5 w-3.5" /></button>
@@ -864,21 +986,21 @@ export function ChatPage() {
             </div>
           </div>
         ) : (
-          <div className="flex-1 overflow-y-auto px-4 py-6">
+          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-4 sm:py-6">
             <div className="mx-auto max-w-4xl space-y-4">
               {messages.map(msg => (
                 <div key={msg.id} className={`group/msg flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`relative max-w-[85%] rounded-2xl px-4 py-3 ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100'}`}>
-                    {/* Thinking + Tool-Trace Block */}
+                  <div className={`relative ${msg.role === 'user' ? 'chat-bubble-user max-w-[80%] break-words rounded-2xl bg-indigo-600 px-4 py-3 text-white shadow-md' : 'chat-bubble-assistant max-w-[92%] rounded-xl px-5 py-4 text-gray-900 dark:text-gray-100'}`}>
+                    {/* Thinking + Tool-Trace Block (standardmässig eingeklappt) */}
                     {(msg.thinking || (msg.tool_trace && msg.tool_trace.length > 0)) && (
-                      <div className="mb-2">
-                        <button onClick={() => toggleThinking(msg.id)} className="flex items-center gap-1.5 text-[11px] font-medium text-violet-600 hover:text-violet-800 dark:text-violet-400 dark:hover:text-violet-300">
+                      <div className="mb-3">
+                        <button onClick={() => toggleThinking(msg.id)} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50 hover:text-violet-800 dark:text-violet-400 dark:hover:bg-violet-900/20 dark:hover:text-violet-300">
                           <BrainIcon className="h-3.5 w-3.5" />
                           <span>{msg.tool_trace ? 'Agent-Verlauf' : 'Überlegungen'}</span>
-                          {msg.elapsed_s && <span className="ml-1 text-[10px] font-normal opacity-60">({msg.elapsed_s}s)</span>}
-                          <svg className={`h-3 w-3 transition-transform ${!collapsedThinking.has(msg.id) ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                          {msg.elapsed_s && <span className="ml-1 text-[10px] font-normal opacity-60">({msg.elapsed_s.toFixed(1)}s)</span>}
+                          <svg className={`h-3 w-3 transition-transform ${expandedThinking.has(msg.id) ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
                         </button>
-                        {!collapsedThinking.has(msg.id) && (
+                        {expandedThinking.has(msg.id) && (
                           <div className="mt-1.5 space-y-1 rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs dark:border-violet-800 dark:bg-violet-900/20">
                             {msg.tool_trace?.map((te, i) => (
                               <div key={i} className={`flex items-start gap-2 ${te.type === 'tool_start' ? 'font-medium text-indigo-700 dark:text-indigo-400' : 'text-violet-700 dark:text-violet-400'}`}>
@@ -909,11 +1031,11 @@ export function ChatPage() {
                     )}
 
                     {msg.role === 'assistant' ? (
-                      <div className="prose prose-sm dark:prose-invert max-w-none [&_a]:text-indigo-600 [&_a]:underline dark:[&_a]:text-indigo-400">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                      <div className="chat-prose prose prose-sm dark:prose-invert max-w-none">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={chatMdComponents}>{msg.content}</ReactMarkdown>
                       </div>
                     ) : (
-                      <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
+                      <div className="whitespace-pre-wrap" style={{ fontSize: '0.9375rem', lineHeight: 1.7 }}>{msg.content}</div>
                     )}
 
                     {msg.attachments && msg.attachments.length > 0 && (
@@ -926,12 +1048,33 @@ export function ChatPage() {
                       </div>
                     )}
 
-                    {(msg.tokens || msg.cost_usd) && (
-                      <p className="mt-1 text-right text-[10px] opacity-50">
-                        {msg.tokens && <>{msg.tokens} Tokens</>}
-                        {msg.reasoning_tokens ? <> · {msg.reasoning_tokens} Reasoning</> : null}
-                        {msg.cost_usd ? <> · ${msg.cost_usd.toFixed(5)}</> : null}
-                      </p>
+                    {msg.role === 'assistant' && (msg.tokens || msg.cost_usd || msg.elapsed_s) && (
+                      <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-gray-200/60 pt-2 text-[10px] text-gray-400 dark:border-gray-700/40 dark:text-gray-500">
+                        {msg.elapsed_s && (
+                          <span className="flex items-center gap-1" title="Dauer">
+                            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+                            {msg.elapsed_s.toFixed(1)}s
+                          </span>
+                        )}
+                        {msg.tokens && (
+                          <span className="flex items-center gap-1" title="Tokens">
+                            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" /></svg>
+                            {msg.tokens.toLocaleString('de-CH')}
+                          </span>
+                        )}
+                        {msg.reasoning_tokens ? (
+                          <span className="flex items-center gap-1" title="Reasoning-Tokens">
+                            <BrainIcon className="h-3 w-3" />
+                            {msg.reasoning_tokens.toLocaleString('de-CH')}
+                          </span>
+                        ) : null}
+                        {msg.cost_usd ? (
+                          <span className="flex items-center gap-1" title="Kosten">
+                            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+                            ${msg.cost_usd.toFixed(4)}
+                          </span>
+                        ) : null}
+                      </div>
                     )}
 
                     {msg.role === 'assistant' ? (
@@ -963,7 +1106,7 @@ export function ChatPage() {
               {/* Streaming / Agent-Verarbeitung */}
               {isStreaming && (
                 <div className="flex justify-start">
-                  <div className="max-w-[85%] rounded-2xl bg-gray-100 px-4 py-3 dark:bg-gray-800">
+                  <div className="chat-bubble-assistant max-w-[92%] rounded-xl px-5 py-4 text-gray-900 dark:text-gray-100">
                     {/* Live Tool-Trace (zuklappbar, standardmässig offen) */}
                     {(toolTrace.length > 0 || thinkingContent) && (
                       <details open className="mb-2">
@@ -991,8 +1134,8 @@ export function ChatPage() {
                       </details>
                     )}
                     {streamingContent ? (
-                      <div className="prose prose-sm dark:prose-invert max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
+                      <div className="chat-prose streaming-cursor prose prose-sm dark:prose-invert max-w-none">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={chatMdComponents}>{streamingContent}</ReactMarkdown>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
@@ -1052,7 +1195,7 @@ export function ChatPage() {
               />
 
               {/* Untere Toolbar: Modi + Modell + Temperatur + Buttons */}
-              <div className="flex items-center gap-1.5 px-3 pb-2.5">
+              <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5">
                 {/* Segmented Mode Control */}
                 <div className="flex shrink-0 rounded-lg bg-gray-100 p-0.5 dark:bg-gray-700">
                   {MODES.map(m => (
@@ -1073,7 +1216,7 @@ export function ChatPage() {
                 </div>
 
                 {/* Trennlinie */}
-                {showModelControls && <div className="h-4 w-px bg-gray-200 dark:bg-gray-600" />}
+                {showModelControls && <div className="hidden h-4 w-px bg-gray-200 sm:block dark:bg-gray-600" />}
 
                 {/* Modell (nicht bei Websuche/Agent) */}
                 {showModelControls && (
@@ -1127,31 +1270,6 @@ export function ChatPage() {
                   {mode === 'web_search' && (
                     <span className="whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500" title="Tavily durchsucht das Web nach aktuellen Ergebnissen">via Tavily</span>
                   )}
-                  {mode === 'agent' && (
-                    <span className="group/mcp relative cursor-help whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500">
-                      MCP ({mcpServers.length})
-                      <div className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-80 rounded-xl border border-gray-200/80 bg-white/95 p-4 text-left shadow-2xl backdrop-blur-sm group-hover/mcp:block dark:border-gray-700/80 dark:bg-gray-800/95">
-                        <div className="mb-3 flex items-center gap-2">
-                          <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100 dark:bg-violet-900/40">
-                            <SparkleIcon className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
-                          </div>
-                          <span className="text-xs font-semibold text-gray-800 dark:text-gray-100">InnoPilot — Verfügbare Tools</span>
-                        </div>
-                        <div className="space-y-2">
-                          {mcpServers.map(s => (
-                            <div key={s.key} className="flex items-start gap-2.5 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
-                              <div className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-green-400" />
-                              <div className="min-w-0">
-                                <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">{s.label}</div>
-                                {s.description && <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{s.description}</div>}
-                              </div>
-                            </div>
-                          ))}
-                          {mcpServers.length === 0 && <div className="py-2 text-center text-[11px] italic text-gray-400">Keine Server konfiguriert</div>}
-                        </div>
-                      </div>
-                    </span>
-                  )}
                   {messages.length > 0 && (
                     <span className="text-[10px] text-gray-400 dark:text-gray-500">{messages.length} Nachrichten</span>
                   )}
@@ -1177,6 +1295,13 @@ export function ChatPage() {
           onUpdated={() => setSelectedTaskId(null)}
         />
       )}
+
+      <BackgroundPicker
+        isOpen={bgPickerOpen}
+        onClose={() => setBgPickerOpen(false)}
+        currentUrl={bgUrl}
+        onSelect={(url) => handleBgSelect(url)}
+      />
     </div>
   );
 }
@@ -1243,6 +1368,9 @@ function SearchIcon({ className }: { className?: string }) {
 }
 function ResearchIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 0 0 1.5-.189m-1.5.189a6.01 6.01 0 0 1-1.5-.189m3.75 7.478a12.06 12.06 0 0 1-4.5 0m3.75 2.383a14.406 14.406 0 0 1-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 1 0-7.517 0c.85.493 1.509 1.333 1.509 2.316V18" /></svg>;
+}
+function ImageIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Zm16.5-13.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z" /></svg>;
 }
 function SparkleIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" /></svg>;

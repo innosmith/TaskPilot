@@ -28,6 +28,7 @@ class UserSettings(BaseModel):
     finance_background_url: str | None = None
     debtors_background_url: str | None = None
     creditors_background_url: str | None = None
+    chat_background_url: str | None = None
     debtor_budgets: dict | None = None
 
 
@@ -38,7 +39,7 @@ SETTINGS_FIELDS = [
     "cockpit_calendar_exclude_categories", "cockpit_calendar_hide_private",
     "inbox_background_url", "agents_background_url", "signale_background_url",
     "finance_background_url", "debtors_background_url", "creditors_background_url",
-    "debtor_budgets",
+    "chat_background_url", "debtor_budgets",
 ]
 
 

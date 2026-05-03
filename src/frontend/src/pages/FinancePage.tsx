@@ -254,11 +254,11 @@ export function FinancePage() {
     : 'border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800/50';
   const sectionClass = `rounded-2xl p-4 sm:p-6 ${cardClass}`;
 
-  // Durchschnittswerte fuer Referenzlinien
+  // Durchschnittswerte für Referenzlinien
   const avgRevenue = cashflow?.forecast_revenue_monthly ?? 0;
   const avgExpenses = cashflow?.forecast_expenses_monthly ?? 0;
 
-  // VJ-Durchschnittsumsatz fuer Referenzlinie
+  // VJ-Durchschnittsumsatz für Referenzlinie
   const avgRevenuePrior = useMemo(() => {
     if (!yoy) return 0;
     const priorMonths = yoy.months.filter(m => m.revenue_prior > 0);
@@ -268,7 +268,7 @@ export function FinancePage() {
 
   // marginTrend kommt direkt vom Backend
 
-  // Stacked-Bar-Daten fuer Kostenstruktur
+  // Stacked-Bar-Daten für Kostenstruktur
   const costBarData = useMemo(() => {
     if (!expenseBreakdown) return { data: [], keys: [] as string[], labels: {} as Record<string, string> };
     const labels = expenseBreakdown.category_labels;

@@ -829,7 +829,7 @@ async def _run_agent_background(
 
     _apply_model_routing(bot, model)
 
-    mcp_count = len(getattr(bot, '_mcp_servers', None) or {})
+    mcp_count = len(getattr(bot._loop, '_mcp_servers', None) or {})
     active_model = getattr(bot._loop, 'model', '?')
     await _push_agent_event(job_id, {"event": "status", "data": json.dumps(
         {"content": f"InnoPilot bereit ({mcp_count} MCP-Server, Modell: {active_model}) — Aufgabe wird verarbeitet..."})})

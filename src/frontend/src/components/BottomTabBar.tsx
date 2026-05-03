@@ -10,7 +10,8 @@ export function BottomTabBar({ onMoreOpen, hidden = false }: BottomTabBarProps) 
   const { pathname } = useLocation();
   const { pendingDecisions, focusTaskCount, unreadMailCount } = useBadges();
 
-  const isMoreActive = ['/agenten', '/settings'].includes(pathname) || pathname.startsWith('/projects');
+  const isMoreActive = ['/inbox', '/settings'].includes(pathname) || pathname.startsWith('/projects') || pathname.startsWith('/finanzen') || pathname.startsWith('/debitoren') || pathname.startsWith('/kreditoren');
+  const isChatActive = pathname.startsWith('/agenten');
 
   return (
     <nav
@@ -21,11 +22,19 @@ export function BottomTabBar({ onMoreOpen, hidden = false }: BottomTabBarProps) 
         <TabLink to="/cockpit" label="Cockpit" badge={pendingDecisions}>
           <CockpitIcon />
         </TabLink>
+        <NavLink
+          to="/agenten/chat"
+          className={`relative flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
+            isChatActive
+              ? 'text-indigo-600 dark:text-indigo-400'
+              : 'text-gray-500 active:text-gray-700 dark:text-gray-400 dark:active:text-gray-200'
+          }`}
+        >
+          <ChatIcon />
+          <span>Chat</span>
+        </NavLink>
         <TabLink to="/pipeline" label="Agenda" badge={focusTaskCount}>
           <AgendaIcon />
-        </TabLink>
-        <TabLink to="/inbox" label="Posteingang" badge={unreadMailCount}>
-          <MailIcon />
         </TabLink>
         <TabLink to="/signale" label="Signale">
           <SignaleIcon />
@@ -109,6 +118,14 @@ function SignaleIcon() {
   return (
     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
     </svg>
   );
 }
