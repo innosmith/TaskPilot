@@ -55,6 +55,19 @@ model_list:
     litellm_params:
       model: gemini/gemini-2.5-flash
 
+  # ── Perplexity ──────────────────────────────────────────────
+  - model_name: perplexity/sonar-pro
+    litellm_params:
+      model: perplexity/sonar-pro
+
+  - model_name: perplexity/sonar
+    litellm_params:
+      model: perplexity/sonar
+
+  - model_name: perplexity/sonar-deep-research
+    litellm_params:
+      model: perplexity/sonar-deep-research
+
 litellm_settings:
   drop_params: true
   set_verbose: false

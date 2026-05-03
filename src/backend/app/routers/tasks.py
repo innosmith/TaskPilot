@@ -229,7 +229,7 @@ async def confirm_review_task(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> TaskOut:
-    """Task-Vorschlag bestaetigen (setzt needs_review=False, erlaubt Aenderungen)."""
+    """Task-Vorschlag bestätigen (setzt needs_review=False, erlaubt Änderungen)."""
     result = await db.execute(
         select(Task)
         .options(selectinload(Task.tags), selectinload(Task.checklist_items))
@@ -269,7 +269,7 @@ async def dismiss_review_task(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> None:
-    """Task-Vorschlag verwerfen (Task loeschen)."""
+    """Task-Vorschlag verwerfen (Task löschen)."""
     result = await db.execute(select(Task).where(Task.id == task_id))
     task = result.scalar_one_or_none()
     if task is None:
@@ -393,7 +393,7 @@ async def get_recurrence_info(
 
 
 def _cron_to_human(cron_expr: str) -> str:
-    """Konvertiert gaengige Cron-Ausdruecke in lesbaren deutschen Text."""
+    """Konvertiert gängige Cron-Ausdrücke in lesbaren deutschen Text."""
     presets = {
         "0 0 * * *": "Taeglich um Mitternacht",
         "0 7 * * *": "Taeglich um 07:00",

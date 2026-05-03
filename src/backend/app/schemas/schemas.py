@@ -318,3 +318,114 @@ class EmailTriageUpdate(BaseModel):
     triage_class: str | None = None
     status: str | None = None
     suggested_action: dict | None = None
+
+
+# --- LLM Chat ---
+
+class LlmConversationCreate(BaseModel):
+    title: str | None = None
+    task_id: uuid.UUID | None = None
+    model: str
+    mode: str = "chat"
+    temperature: float = 0.7
+
+
+class LlmConversationUpdate(BaseModel):
+    title: str | None = None
+    model: str | None = None
+    mode: str | None = None
+    temperature: float | None = None
+
+
+class LlmMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    conversation_id: uuid.UUID
+    role: str
+    content: str
+    tokens: int | None = None
+    cost_usd: float | None = None
+    attachments: list | None = None
+    citations: list | None = None
+    created_at: datetime
+
+
+class LlmConversationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    title: str | None = None
+    task_id: uuid.UUID | None = None
+    model: str
+    mode: str
+    temperature: float
+    total_tokens: int
+    total_cost_usd: float
+    created_at: datetime
+    updated_at: datetime
+
+
+class LlmConversationWithMessages(LlmConversationOut):
+    messages: list[LlmMessageOut] = []
+
+
+class LlmConversationListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    title: str | None = None
+    task_id: uuid.UUID | None = None
+    model: str
+    mode: str
+    total_tokens: int
+    total_cost_usd: float
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 0
+    last_message_preview: str | None = None
+
+
+class ChatMessageCreate(BaseModel):
+    content: str
+    attachments: list[dict] | None = None
+
+
+# --- Web Search ---
+
+class WebSearchRequest(BaseModel):
+    query: str
+    search_depth: str = "basic"
+    task_id: uuid.UUID | None = None
+    conversation_id: uuid.UUID | None = None
+
+
+class WebSearchResultItem(BaseModel):
+    title: str
+    url: str
+    content: str
+    score: float | None = None
+
+
+class WebSearchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    query: str
+    provider: str
+    results: list
+    result_count: int
+    triggered_by: str
+    task_id: uuid.UUID | None = None
+    conversation_id: uuid.UUID | None = None
+    credits_used: int
+    created_at: datetime
+
+
+# --- LLM Settings ---
+
+class LlmProviderConfig(BaseModel):
+    enabled: bool = False
+    models: list[str] = []
+
+
+class LlmSettings(BaseModel):
+    llm_providers: dict[str, LlmProviderConfig] | None = None
+    llm_default_model: str | None = None
+    llm_default_temperature: float | None = None

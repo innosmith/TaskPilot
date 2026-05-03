@@ -15,6 +15,7 @@ from app.routers import (
     auth,
     bexio,
     calendar,
+    chat,
     creditors,
     debtors,
     emails,
@@ -34,6 +35,7 @@ from app.routers import (
     triage,
     unsplash,
     uploads,
+    web_search,
 )
 from app.routers import settings as user_settings
 from app.routers.auth import ensure_owner_exists
@@ -123,6 +125,8 @@ app.include_router(debtors.router)
 app.include_router(creditors.router)
 app.include_router(intelligence.router)
 app.include_router(signa.router)
+app.include_router(chat.router)
+app.include_router(web_search.router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 

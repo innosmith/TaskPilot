@@ -239,3 +239,53 @@ class SenderProfile(Base):
     last_contact_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class LlmConversation(Base):
+    __tablename__ = "llm_conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    title: Mapped[str | None] = mapped_column(Text)
+    task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"))
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, server_default="chat")
+    temperature: Mapped[float] = mapped_column(Float, server_default="0.7")
+    total_tokens: Mapped[int] = mapped_column(Integer, server_default="0")
+    total_cost_usd: Mapped[float] = mapped_column(Numeric(10, 4), server_default="0")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    messages: Mapped[list["LlmMessage"]] = relationship(back_populates="conversation", cascade="all, delete-orphan", order_by="LlmMessage.created_at")
+    task: Mapped["Task | None"] = relationship()
+
+
+class LlmMessage(Base):
+    __tablename__ = "llm_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("llm_conversations.id", ondelete="CASCADE"), nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    tokens: Mapped[int | None] = mapped_column(Integer)
+    cost_usd: Mapped[float | None] = mapped_column(Numeric(10, 6))
+    attachments: Mapped[dict] = mapped_column(JSONB, server_default="[]")
+    citations: Mapped[dict] = mapped_column(JSONB, server_default="[]")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    conversation: Mapped["LlmConversation"] = relationship(back_populates="messages")
+
+
+class WebSearch(Base):
+    __tablename__ = "web_searches"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="tavily")
+    results: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="[]")
+    result_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    triggered_by: Mapped[str] = mapped_column(Text, nullable=False, server_default="user")
+    task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"))
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("llm_conversations.id", ondelete="SET NULL"))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    credits_used: Mapped[int] = mapped_column(Integer, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())

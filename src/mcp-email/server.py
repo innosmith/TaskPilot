@@ -188,7 +188,7 @@ TOOLS = [
     # ── Outlook-Kategorie & Ordner-Tools ─────────────────────
     Tool(
         name="get_thread",
-        description="Alle Nachrichten eines E-Mail-Threads (Konversation) chronologisch laden. Gibt den gesamten Verlauf zurueck.",
+        description="Alle Nachrichten eines E-Mail-Threads (Konversation) chronologisch laden. Gibt den gesamten Verlauf zurück.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -200,7 +200,7 @@ TOOLS = [
     ),
     Tool(
         name="search_sender_history",
-        description="Letzte E-Mails eines bestimmten Absenders abrufen (neueste zuerst). Nuetzlich fuer Kontext ueber die bisherige Kommunikation.",
+        description="Letzte E-Mails eines bestimmten Absenders abrufen (neueste zuerst). Nützlich für Kontext über die bisherige Kommunikation.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -212,7 +212,7 @@ TOOLS = [
     ),
     Tool(
         name="search_emails",
-        description="Volltextsuche ueber alle E-Mails. Findet relevante Nachrichten zu einem Thema.",
+        description="Volltextsuche über alle E-Mails. Findet relevante Nachrichten zu einem Thema.",
         inputSchema={
             "type": "object",
             "properties": {

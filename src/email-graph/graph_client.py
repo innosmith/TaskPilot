@@ -262,7 +262,7 @@ class GraphClient:
         )
 
     async def delete_message(self, message_id: str) -> None:
-        """E-Mail oder Entwurf loeschen."""
+        """E-Mail oder Entwurf löschen."""
         client = await self._ensure_client()
         headers = await self._headers()
         resp = await client.delete(
@@ -292,7 +292,7 @@ class GraphClient:
     async def get_or_create_folder(
         self, display_name: str, parent_folder: str = "inbox"
     ) -> dict:
-        """Mail-Subfolder suchen. Gibt {id, displayName} zurueck.
+        """Mail-Subfolder suchen. Gibt {id, displayName} zurück.
 
         Erstellt KEINE neuen Ordner. Wirft ValueError wenn nicht gefunden.
         """
@@ -389,7 +389,7 @@ class GraphClient:
         return msgs
 
     async def search_emails(self, query: str, top: int = 5) -> list[dict]:
-        """Volltextsuche ueber alle E-Mails (Graph $search)."""
+        """Volltextsuche über alle E-Mails (Graph $search)."""
         data = await self._get(
             f"{self._user_path}/messages",
             {

@@ -202,3 +202,77 @@ export interface SearchResults {
   projects: SearchProjectHit[];
   tags: SearchTagHit[];
 }
+
+// --- LLM Chat ---
+
+export interface LlmModel {
+  id: string;
+  name: string;
+  type: 'local' | 'cloud';
+  provider: string;
+  capabilities: string[];
+}
+
+export interface LlmConversation {
+  id: string;
+  title: string | null;
+  task_id: string | null;
+  model: string;
+  mode: string;
+  temperature: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+  last_message_preview?: string | null;
+}
+
+export interface LlmMessage {
+  id: string;
+  conversation_id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  tokens: number | null;
+  cost_usd: number | null;
+  attachments: unknown[];
+  citations: unknown[];
+  created_at: string;
+}
+
+export interface LlmConversationWithMessages extends LlmConversation {
+  messages: LlmMessage[];
+}
+
+// --- Web Search ---
+
+export interface WebSearchResult {
+  id: string;
+  query: string;
+  provider: string;
+  results: Array<{
+    title: string;
+    url: string;
+    content: string;
+    score: number | null;
+  }>;
+  result_count: number;
+  triggered_by: string;
+  task_id: string | null;
+  conversation_id: string | null;
+  credits_used: number;
+  created_at: string;
+}
+
+// --- LLM Settings ---
+
+export interface LlmProviderConfig {
+  enabled: boolean;
+  models: string[];
+}
+
+export interface LlmSettings {
+  llm_providers: Record<string, LlmProviderConfig> | null;
+  llm_default_model: string | null;
+  llm_default_temperature: number | null;
+}

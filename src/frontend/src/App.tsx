@@ -13,6 +13,7 @@ import { PipelinePage } from './pages/PipelinePage';
 import { ProjectBoardPage } from './pages/ProjectBoardPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { AgentQueuePage } from './pages/AgentQueuePage';
+import { ChatPage } from './pages/ChatPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { InboxPage } from './pages/InboxPage';
 
@@ -56,6 +57,8 @@ export default function App() {
           <Route path="/cockpit" element={<CockpitPage />} />
           <Route path="/pipeline" element={<PipelinePage />} />
           <Route path="/agenten" element={<AgentQueuePage />} />
+          <Route path="/agenten/chat" element={<ChatPage />} />
+          <Route path="/agenten/chat/:conversationId" element={<ChatPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectBoardPage />} />
           <Route path="/inbox" element={<InboxPage />} />

@@ -1,18 +1,18 @@
-"""Inbox-Triage-Service: Pollt automatisch neue E-Mails und erstellt AgentJobs fuer nanobot.
+"""Inbox-Triage-Service: Pollt automatisch neue E-Mails und erstellt AgentJobs für nanobot.
 
-Laeuft als Hintergrund-Task beim Backend-Start (alle 2 Min). Kein manuelles
-Anstoessen noetig. Jede neue E-Mail wird als AgentJob(job_type="email_triage")
-in die Queue geschrieben. Nanobot empfaengt den Job via Bridge (pg_notify →
-WebSocket) und fuehrt die komplette Verarbeitung durch:
+Läuft als Hintergrund-Task beim Backend-Start (alle 2 Min). Kein manuelles
+Anstossen nötig. Jede neue E-Mail wird als AgentJob(job_type="email_triage")
+in die Queue geschrieben. Nanobot empfängt den Job via Bridge (pg_notify →
+WebSocket) und führt die komplette Verarbeitung durch:
 
 1. E-Mail lesen (get_email + get_email_categories)
 2. LLM-Klassifikation (via LiteLLM → Ollama lokal)
 3. Outlook-Kategorie setzen (set_email_categories)
-4. Aktion ausfuehren (create_draft / create_task / move_email_to_folder)
+4. Aktion ausführen (create_draft / create_task / move_email_to_folder)
 5. AgentJob-Status aktualisieren
 
-Kein Fallback, keine regelbasierte Klassifikation. Wenn nanobot nicht laeuft,
-bleiben die Jobs in der Queue bis er wieder verfuegbar ist.
+Kein Fallback, keine regelbasierte Klassifikation. Wenn nanobot nicht läuft,
+bleiben die Jobs in der Queue bis er wieder verfügbar ist.
 """
 
 import asyncio
@@ -64,7 +64,7 @@ def _parse_received_at(raw: str | None) -> datetime | None:
 
 
 async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
-    """Erstellt einen EmailTriage-Record und einen AgentJob fuer eine neue E-Mail.
+    """Erstellt einen EmailTriage-Record und einen AgentJob für eine neue E-Mail.
 
     Keine Vorab-Klassifikation -- nanobot uebernimmt alles via LLM.
     """
@@ -110,7 +110,7 @@ async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
 
 
 async def _triage_cycle() -> int:
-    """Ein Triage-Zyklus: Neue E-Mails erkennen, AgentJobs fuer nanobot erstellen."""
+    """Ein Triage-Zyklus: Neue E-Mails erkennen, AgentJobs für nanobot erstellen."""
     client = _get_graph_client()
     if client is None:
         return 0
@@ -144,7 +144,7 @@ async def _triage_cycle() -> int:
 
 
 async def run_triage_now(top: int = 50) -> int:
-    """Manueller Triage-Trigger (fuer API-Endpoint, optional)."""
+    """Manueller Triage-Trigger (für API-Endpoint, optional)."""
     client = _get_graph_client()
     if client is None:
         return 0
@@ -187,7 +187,7 @@ async def triage_loop() -> None:
         try:
             count = await _triage_cycle()
             if count:
-                logger.info("Triage: %d neue E-Mail(s) → AgentJobs fuer nanobot erstellt", count)
+                logger.info("Triage: %d neue E-Mail(s) → AgentJobs für nanobot erstellt", count)
         except Exception:
             logger.exception("Triage-Service: unerwarteter Fehler")
         await asyncio.sleep(interval)

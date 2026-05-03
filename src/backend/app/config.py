@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     # Bexio Buchhaltung
     bexio_api_token: str = ""
 
+    # LLM Provider API Keys
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    gemini_api_key: str = ""
+    perplexity_api_key: str = ""
+
+    # Web Search
+    tavily_api_key: str = ""
+
     # SIGNA Strategic Intelligence (read-only DB)
     isi_host: str = ""
     isi_db: str = ""

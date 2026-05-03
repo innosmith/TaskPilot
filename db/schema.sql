@@ -241,3 +241,58 @@ CREATE TRIGGER tasks_updated_at BEFORE UPDATE ON tasks
 
 CREATE TRIGGER sender_profiles_updated_at BEFORE UPDATE ON sender_profiles
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- LLM-Konversationen
+CREATE TABLE llm_conversations (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title           TEXT,
+    task_id         UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    model           TEXT NOT NULL,
+    mode            TEXT DEFAULT 'chat' CHECK (mode IN ('chat', 'deep_research', 'web_search')),
+    temperature     REAL DEFAULT 0.7,
+    total_tokens    INT DEFAULT 0,
+    total_cost_usd  NUMERIC(10,4) DEFAULT 0,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE llm_messages (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES llm_conversations(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+    content         TEXT NOT NULL,
+    tokens          INT,
+    cost_usd        NUMERIC(10,6),
+    attachments     JSONB DEFAULT '[]'::jsonb,
+    citations       JSONB DEFAULT '[]'::jsonb,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- Web-Suchen (Tavily etc.)
+CREATE TABLE web_searches (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    query           TEXT NOT NULL,
+    provider        TEXT NOT NULL DEFAULT 'tavily',
+    results         JSONB NOT NULL DEFAULT '[]'::jsonb,
+    result_count    INT DEFAULT 0,
+    triggered_by    TEXT NOT NULL DEFAULT 'user' CHECK (triggered_by IN ('user', 'agent', 'system')),
+    task_id         UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    conversation_id UUID REFERENCES llm_conversations(id) ON DELETE SET NULL,
+    user_id         UUID REFERENCES users(id),
+    credits_used    INT DEFAULT 1,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- Indizes
+CREATE INDEX idx_llm_conversations_task ON llm_conversations(task_id);
+CREATE INDEX idx_llm_conversations_created ON llm_conversations(created_at DESC);
+CREATE INDEX idx_llm_messages_conversation ON llm_messages(conversation_id);
+CREATE INDEX idx_llm_messages_created ON llm_messages(created_at);
+CREATE INDEX idx_web_searches_task ON web_searches(task_id);
+CREATE INDEX idx_web_searches_query ON web_searches USING gin(to_tsvector('german', query));
+CREATE INDEX idx_web_searches_created ON web_searches(created_at DESC);
+CREATE INDEX idx_web_searches_user ON web_searches(user_id);
+
+-- Trigger
+CREATE TRIGGER llm_conversations_updated_at BEFORE UPDATE ON llm_conversations
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();

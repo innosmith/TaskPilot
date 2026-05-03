@@ -589,10 +589,7 @@ export function CockpitPage() {
             </section>
           </div>
 
-          {/* ── Zone 2b: Finanz-Übersicht (kompakt) ── */}
-          <FinanceCompactCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
-
-          {/* ── Zone 2c: Fällige Kreditoren-Zahlungen ── */}
+          {/* ── Zone 2b: Fällige Kreditoren-Zahlungen ── */}
           <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
 
           {/* ── Zone 3: Freigaben (kompakt, aufklappbar) ── */}
@@ -1310,93 +1307,6 @@ function ChevronUpIcon({ className }: { className?: string }) {
   );
 }
 
-// ── Finanz-Übersicht (kompakt, im Cockpit) ──────────
-
-interface FinanceCompactProps {
-  cardClass: string;
-  textSecondary: string;
-  textMuted: string;
-}
-
-interface MiniCashflow {
-  month: string;
-  delta: number;
-  cumulative: number;
-  is_forecast: boolean;
-}
-
-function FinanceCompactCard({ cardClass, textSecondary, textMuted }: FinanceCompactProps) {
-  const navigate = useNavigate();
-  const [data, setData] = useState<{ balance: number | null; months: MiniCashflow[] } | null>(null);
-
-  useEffect(() => {
-    api.get<{ months: MiniCashflow[]; start_balance: number }>('/api/finance/cashflow?months_back=6&months_forward=3')
-      .then(cf => {
-        setData({ balance: cf.start_balance, months: cf.months });
-      })
-      .catch(() => {});
-  }, []);
-
-  if (!data) return null;
-
-  const trend = data.months.length >= 2
-    ? data.months[data.months.length - 1].cumulative - data.months[0].cumulative
-    : 0;
-
-  const maxAbs = Math.max(...data.months.map(m => Math.abs(m.delta)), 1);
-
-  const formatK = (v: number) => {
-    if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(0)}k`;
-    return v.toFixed(0);
-  };
-
-  return (
-    <section className={`rounded-xl border p-4 ${cardClass}`}>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-          Finanz-Übersicht
-        </h2>
-        <button
-          onClick={() => navigate('/finanzen')}
-          className={`text-xs font-medium ${textMuted} transition-colors hover:text-indigo-500`}
-        >
-          Details →
-        </button>
-      </div>
-      <div className="flex items-center gap-4">
-        <div className="flex-1">
-          <p className={`text-xs ${textMuted}`}>Saldo</p>
-          <p className="text-xl font-bold text-gray-900 dark:text-white">
-            {data.balance != null ? `CHF ${formatK(data.balance)}` : '–'}
-          </p>
-          <p className={`mt-0.5 text-xs ${trend >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-            {trend >= 0 ? '↑' : '↓'} CHF {formatK(Math.abs(trend))} Trend
-          </p>
-        </div>
-        {/* Mini-Sparkline */}
-        <div className="flex h-12 items-end gap-0.5">
-          {data.months.map((m, i) => {
-            const h = Math.max(4, (Math.abs(m.delta) / maxAbs) * 48);
-            return (
-              <div
-                key={i}
-                className={`w-2 rounded-t ${
-                  m.delta >= 0
-                    ? m.is_forecast ? 'bg-green-200 dark:bg-green-900' : 'bg-green-500'
-                    : m.is_forecast ? 'bg-red-200 dark:bg-red-900' : 'bg-red-500'
-                }`}
-                style={{ height: `${h}px` }}
-                title={`${m.month}: CHF ${m.delta.toFixed(0)}`}
-              />
-            );
-          })}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-
 // ── Fällige Kreditoren-Zahlungen (kompakt, im Cockpit) ──
 
 interface UpcomingPayment {
@@ -1406,6 +1316,16 @@ interface UpcomingPayment {
   days_until?: number;
   amount_chf?: number;
   cycle?: string;
+  invoice_id?: number;
+}
+
+function formatDateCH(iso: string | undefined): string {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}.${mm}.${d.getFullYear()}`;
 }
 
 function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted }: {
@@ -1413,9 +1333,10 @@ function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted }: {
 }) {
   const navigate = useNavigate();
   const [payments, setPayments] = useState<UpcomingPayment[]>([]);
+  const [pdfModalUrl, setPdfModalUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<unknown>('/api/creditors/upcoming?n=5')
+    api.get<unknown>('/api/creditors/upcoming?n=20')
       .then(data => {
         const raw = Array.isArray(data) ? data : (data as Record<string, unknown>)?.payments as Record<string, unknown>[] || [];
         setPayments(raw.map((p: Record<string, unknown>) => ({
@@ -1425,6 +1346,7 @@ function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted }: {
           days_until: (p.days_until ?? p.Tage_bis_Renewal) as number | undefined,
           amount_chf: (p.amount_chf ?? p.Betrag_CHF) as number | undefined,
           cycle: (p.cycle ?? p.Abrechnungszyklus) as string | undefined,
+          invoice_id: (p.invoice_id ?? p.index) as number | undefined,
         })));
       })
       .catch(() => {});
@@ -1434,46 +1356,111 @@ function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted }: {
 
   const urgentCount = payments.filter(p => (p.days_until ?? 999) < 7).length;
 
+  const handleRowClick = (p: UpcomingPayment) => {
+    if (p.invoice_id != null) {
+      setPdfModalUrl(`/api/creditors/invoice/${p.invoice_id}/pdf/view`);
+    } else {
+      navigate('/kreditoren');
+    }
+  };
+
   return (
-    <section className={`rounded-xl border p-4 ${cardClass}`}>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-          Fällige Zahlungen
-          {urgentCount > 0 && (
-            <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700 dark:bg-red-900/40 dark:text-red-400">
-              {urgentCount}
-            </span>
-          )}
-        </h2>
-        <button
-          onClick={() => navigate('/kreditoren')}
-          className={`text-xs font-medium ${textMuted} transition-colors hover:text-indigo-500`}
-        >
-          Alle →
-        </button>
-      </div>
-      <div className="space-y-2">
-        {payments.slice(0, 5).map((p, i) => (
-          <div key={i} className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2">
-              {(p.days_until ?? 999) < 7 && <span className="h-2 w-2 rounded-full bg-red-500" />}
-              {(p.days_until ?? 999) >= 7 && (p.days_until ?? 999) < 30 && <span className="h-2 w-2 rounded-full bg-amber-500" />}
-              {(p.days_until ?? 999) >= 30 && <span className="h-2 w-2 rounded-full bg-green-500" />}
-              <span className="text-gray-900 dark:text-white">{p.vendor}{p.product ? ` – ${p.product}` : ''}</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className={`text-xs tabular-nums ${textMuted}`}>
-                {p.days_until != null ? `${p.days_until}d` : p.next_date || '–'}
+    <>
+      <section className={`rounded-xl border p-4 ${cardClass}`}>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+            Fällige Zahlungen
+            {urgentCount > 0 && (
+              <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700 dark:bg-red-900/40 dark:text-red-400">
+                {urgentCount}
               </span>
-              {p.amount_chf != null && (
-                <span className="font-medium tabular-nums text-gray-900 dark:text-white">
-                  {new Intl.NumberFormat('de-CH', { style: 'currency', currency: 'CHF' }).format(p.amount_chf)}
+            )}
+          </h2>
+          <button
+            onClick={() => navigate('/kreditoren')}
+            className={`text-xs font-medium ${textMuted} transition-colors hover:text-indigo-500`}
+          >
+            Alle →
+          </button>
+        </div>
+        <div className="max-h-56 space-y-2 overflow-y-auto">
+          {payments.map((p, i) => (
+            <div
+              key={i}
+              className="flex cursor-pointer items-center justify-between rounded-lg p-1.5 text-sm transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/40"
+              onClick={() => handleRowClick(p)}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                {(p.days_until ?? 999) < 7 && <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />}
+                {(p.days_until ?? 999) >= 7 && (p.days_until ?? 999) < 30 && <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500" />}
+                {(p.days_until ?? 999) >= 30 && <span className="h-2 w-2 shrink-0 rounded-full bg-green-500" />}
+                <span className="truncate text-gray-900 dark:text-white">{p.vendor}{p.product ? ` – ${p.product}` : ''}</span>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <span className={`w-[78px] text-right text-xs tabular-nums ${textMuted}`}>
+                  {formatDateCH(p.next_date)}
                 </span>
-              )}
+                <span className="w-[100px] text-right font-medium tabular-nums text-gray-900 dark:text-white">
+                  {p.amount_chf != null
+                    ? new Intl.NumberFormat('de-CH', { style: 'currency', currency: 'CHF' }).format(p.amount_chf)
+                    : ''}
+                </span>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
+      </section>
+      {pdfModalUrl && (
+        <PdfModal url={pdfModalUrl} onClose={() => setPdfModalUrl(null)} />
+      )}
+    </>
+  );
+}
+
+function PdfModal({ url, onClose }: { url: string; onClose: () => void }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let revoke = '';
+    const token = localStorage.getItem('taskpilot_token');
+    fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      })
+      .then(blob => {
+        const u = URL.createObjectURL(blob);
+        revoke = u;
+        setBlobUrl(u);
+      })
+      .catch(e => setError(e.message));
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [url]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="relative mx-4 h-[85vh] w-full max-w-6xl rounded-2xl bg-white shadow-2xl dark:bg-gray-900" onClick={e => e.stopPropagation()}>
+        <button
+          onClick={onClose}
+          className="absolute -right-3 -top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-gray-800 text-white shadow-lg hover:bg-gray-700"
+        >
+          ✕
+        </button>
+        {error ? (
+          <div className="flex h-full items-center justify-center text-red-500">{error}</div>
+        ) : blobUrl ? (
+          <iframe src={blobUrl} className="h-full w-full rounded-2xl" title="PDF-Vorschau" />
+        ) : (
+          <div className="flex h-full items-center justify-center text-gray-400">Laden…</div>
+        )}
       </div>
-    </section>
+    </div>
   );
 }

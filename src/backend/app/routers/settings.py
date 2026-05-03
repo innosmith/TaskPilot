@@ -173,3 +173,76 @@ async def update_integration_settings(
         toggl_workspace_id=current.get("toggl_workspace_id"),
         bexio_api_token=_mask_token(current.get("bexio_api_token") or ""),
     )
+
+
+# --- LLM-Einstellungen ---
+
+class LlmProviderConfig(BaseModel):
+    enabled: bool = False
+    models: list[str] = []
+
+
+class LlmSettingsPayload(BaseModel):
+    llm_providers: dict[str, LlmProviderConfig] | None = None
+    llm_default_model: str | None = None
+    llm_default_temperature: float | None = None
+
+
+LLM_FIELDS = ["llm_providers", "llm_default_model", "llm_default_temperature"]
+
+
+@router.get("/llm", response_model=LlmSettingsPayload)
+async def get_llm_settings(
+    user: User = Depends(get_current_user),
+) -> LlmSettingsPayload:
+    s = user.settings or {}
+    raw_providers = s.get("llm_providers")
+    providers = None
+    if raw_providers and isinstance(raw_providers, dict):
+        providers = {
+            k: LlmProviderConfig(**v) if isinstance(v, dict) else v
+            for k, v in raw_providers.items()
+        }
+    return LlmSettingsPayload(
+        llm_providers=providers,
+        llm_default_model=s.get("llm_default_model"),
+        llm_default_temperature=s.get("llm_default_temperature"),
+    )
+
+
+@router.put("/llm", response_model=LlmSettingsPayload)
+async def update_llm_settings(
+    body: LlmSettingsPayload,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> LlmSettingsPayload:
+    current = dict(user.settings or {})
+    for field, value in body.model_dump(exclude_unset=True).items():
+        if value is None:
+            current.pop(field, None)
+        elif field == "llm_providers" and isinstance(value, dict):
+            serialized = {}
+            for k, v in value.items():
+                if isinstance(v, dict):
+                    serialized[k] = v
+                else:
+                    serialized[k] = v.model_dump() if hasattr(v, "model_dump") else v
+            current[field] = serialized
+        else:
+            current[field] = value
+    user.settings = current
+    flag_modified(user, "settings")
+    await db.flush()
+
+    raw_providers = current.get("llm_providers")
+    providers = None
+    if raw_providers and isinstance(raw_providers, dict):
+        providers = {
+            k: LlmProviderConfig(**v) if isinstance(v, dict) else v
+            for k, v in raw_providers.items()
+        }
+    return LlmSettingsPayload(
+        llm_providers=providers,
+        llm_default_model=current.get("llm_default_model"),
+        llm_default_temperature=current.get("llm_default_temperature"),
+    )

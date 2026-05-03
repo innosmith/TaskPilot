@@ -663,65 +663,110 @@ export function FinancePage() {
             </div>
           )}
 
-          {/* Kostenstruktur: Stacked Bar (Monatsvergleich) */}
-          {costBarData.data.length > 0 && expenseBreakdown && (
-            <div className={sectionClass}>
-              <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">
-                Kostenstruktur {expenseBreakdown.current_year} vs. {expenseBreakdown.prior_year}
-              </h2>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart
-                  data={costBarData.data.filter(d => (d._total_cur as number) > 0 || (d._total_prior as number) > 0)}
-                  barCategoryGap="15%"
-                  barGap={2}
-                >
-                  <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
-                  <XAxis dataKey="_label_cur" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => formatK(v)} />
-                  <Tooltip
-                    cursor={CURSOR_STYLE}
-                    content={({ active, payload, label }) => {
-                      if (!active || !payload?.length) return null;
-                      const d = payload[0]?.payload;
-                      if (!d) return null;
-                      return (
-                        <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-xs text-gray-100 shadow-lg">
-                          <p className="mb-2 font-semibold text-white">{label}</p>
-                          <div className="space-y-0.5">
-                            {costBarData.keys.filter(k => (d[`cur_${k}`] || 0) > 0).map((k) => (
-                              <div key={k} className="flex justify-between gap-4">
-                                <span className="text-gray-400">{costBarData.labels[k] || k}</span>
-                                <span className="font-medium">{formatCHF(d[`cur_${k}`])}</span>
+          {/* Kostenstruktur: Stacked Bar mit VJ-Referenzlinie */}
+          {costBarData.data.length > 0 && expenseBreakdown && (() => {
+            const filteredData = costBarData.data.filter(d => (d._total_cur as number) > 0);
+            const priorMonthsWithData = costBarData.data.filter(d => (d._total_prior as number) > 0);
+            const avgPrior = priorMonthsWithData.length > 0
+              ? priorMonthsWithData.reduce((s, d) => s + (d._total_prior as number), 0) / priorMonthsWithData.length
+              : 0;
+            return (
+              <div className={sectionClass}>
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    Kostenstruktur {expenseBreakdown.current_year}
+                  </h2>
+                  {avgPrior > 0 && (
+                    <span className="text-xs text-gray-400 dark:text-gray-500">
+                      Ø {expenseBreakdown.prior_year}: {formatCHF(avgPrior)}/Mt.
+                    </span>
+                  )}
+                </div>
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart
+                    data={filteredData}
+                    barCategoryGap="15%"
+                    barGap={2}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                    <XAxis dataKey="_label_cur" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => formatK(v)} />
+                    <Tooltip
+                      cursor={CURSOR_STYLE}
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        const d = payload[0]?.payload;
+                        if (!d) return null;
+                        const totalCur = (d._total_cur as number) || 0;
+                        const totalPrior = (d._total_prior as number) || 0;
+                        const deltaPct = totalPrior > 0 ? ((totalCur - totalPrior) / totalPrior * 100) : null;
+                        return (
+                          <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-xs text-gray-100 shadow-lg">
+                            <p className="mb-2 font-semibold text-white">{label}</p>
+                            <div className="space-y-0.5">
+                              {costBarData.keys.filter(k => (d[`cur_${k}`] || 0) > 0).map((k) => (
+                                <div key={k} className="flex justify-between gap-4">
+                                  <span className="text-gray-400">{costBarData.labels[k] || k}</span>
+                                  <span className="font-medium">{formatCHF(d[`cur_${k}`])}</span>
+                                </div>
+                              ))}
+                              <hr className="my-1 border-gray-600" />
+                              <div className="flex justify-between gap-4 font-semibold">
+                                <span>Total {expenseBreakdown.current_year}</span>
+                                <span>{formatCHF(totalCur)}</span>
                               </div>
-                            ))}
-                            <hr className="my-1 border-gray-600" />
-                            <div className="flex justify-between gap-4 font-semibold">
-                              <span>Total</span>
-                              <span>{formatCHF(d._total_cur)}</span>
+                              {totalPrior > 0 && (
+                                <>
+                                  <div className="flex justify-between gap-4 text-gray-400">
+                                    <span>{d._label_prior || `${expenseBreakdown.prior_year}`}</span>
+                                    <span>{formatCHF(totalPrior)}</span>
+                                  </div>
+                                  {deltaPct != null && (
+                                    <div className={`flex justify-between gap-4 font-medium ${deltaPct <= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                      <span>Delta</span>
+                                      <span>{deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(0)}%</span>
+                                    </div>
+                                  )}
+                                </>
+                              )}
                             </div>
                           </div>
-                        </div>
-                      );
-                    }}
-                  />
-                  {costBarData.keys.slice(0, 8).map((k, i) => (
-                    <Bar key={`cur_${k}`} dataKey={`cur_${k}`} stackId="cur" name={costBarData.labels[k] || k}
-                      fill={CATEGORY_COLORS[i % CATEGORY_COLORS.length]}
-                      radius={i === 0 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+                        );
+                      }}
                     />
+                    {avgPrior > 0 && (
+                      <ReferenceLine
+                        y={avgPrior}
+                        stroke="#94a3b8"
+                        strokeDasharray="6 4"
+                        label={{ value: `Ø ${expenseBreakdown.prior_year}`, position: 'insideTopRight', fontSize: 10, fill: '#94a3b8' }}
+                      />
+                    )}
+                    {costBarData.keys.slice(0, 8).map((k, i) => (
+                      <Bar key={`cur_${k}`} dataKey={`cur_${k}`} stackId="cur" name={costBarData.labels[k] || k}
+                        fill={CATEGORY_COLORS[i % CATEGORY_COLORS.length]}
+                        radius={i === 0 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+                      />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-gray-500 dark:text-gray-400">
+                  {costBarData.keys.slice(0, 8).map((k, i) => (
+                    <span key={k} className="flex items-center gap-1">
+                      <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }} />
+                      {costBarData.labels[k] || k}
+                    </span>
                   ))}
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-gray-500 dark:text-gray-400">
-                {costBarData.keys.slice(0, 8).map((k, i) => (
-                  <span key={k} className="flex items-center gap-1">
-                    <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }} />
-                    {costBarData.labels[k] || k}
-                  </span>
-                ))}
+                  {avgPrior > 0 && (
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block h-0 w-4 border-t-2 border-dashed border-gray-400" />
+                      Ø {expenseBreakdown.prior_year}
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
 
         {/* 2-Spalten: P&L Wasserfall + Gewinnmarge-Trend */}
@@ -1179,59 +1224,133 @@ function ExternalLinkIcon({ className }: { className?: string }) {
   );
 }
 
+interface UpcomingPaymentRow {
+  vendor: string;
+  next_date?: string;
+  amount_chf?: number;
+  invoice_id?: number;
+  days_until?: number;
+}
+
+function formatDateCH(iso: string | undefined): string {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}.${mm}.${d.getFullYear()}`;
+}
+
 function InvoiceInsightPreview() {
-  const [kpis, setKpis] = useState<Record<string, unknown> | null>(null);
-  const [upcoming, setUpcoming] = useState<Record<string, unknown>[]>([]);
+  const [upcoming, setUpcoming] = useState<UpcomingPaymentRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [pdfModalUrl, setPdfModalUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<{ kpis: Record<string, unknown> }>('/api/creditors/dashboard')
-      .then(d => setKpis(d.kpis))
-      .catch(() => {});
-    api.get<unknown>('/api/creditors/upcoming?n=3')
+    api.get<unknown>('/api/creditors/upcoming?n=20')
       .then(data => {
         const raw = Array.isArray(data) ? data : (data as Record<string, unknown>)?.payments as Record<string, unknown>[] || [];
         setUpcoming(raw.map((p: Record<string, unknown>) => ({
           vendor: (p.vendor ?? p.Kreditor ?? '–') as string,
+          next_date: (p.next_date ?? p.Renewal_Date_Parsed ?? p.Renewal_Date) as string | undefined,
           amount_chf: (p.amount_chf ?? p.Betrag_CHF) as number | undefined,
+          invoice_id: (p.invoice_id ?? p.index) as number | undefined,
+          days_until: (p.days_until ?? p.Tage_bis_Renewal) as number | undefined,
         })));
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
-  const totalVol = (kpis?.total_spend_chf ?? kpis?.total_volume_chf ?? kpis?.total_volume ?? 0) as number;
-  const invoiceN = (kpis?.invoice_count ?? kpis?.total_invoices ?? 0) as number;
+  const handleRowClick = (p: UpcomingPaymentRow) => {
+    if (p.invoice_id != null) {
+      setPdfModalUrl(`/api/creditors/invoice/${p.invoice_id}/pdf/view`);
+    }
+  };
 
   return (
-    <SourceCard title="InvoiceInsight" subtitle="Kreditorenrechnungen" color="rose" linkUrl="/kreditoren" linkLabel="Kreditoren öffnen">
-      {kpis ? (
-        <div className="space-y-3">
-          <div className="flex justify-between text-sm">
-            <span className="text-gray-500 dark:text-gray-400">Gesamtausgaben</span>
-            <span className="font-medium text-gray-900 dark:text-white">{formatCHF(totalVol)}</span>
-          </div>
-          <div className="flex justify-between text-sm">
-            <span className="text-gray-500 dark:text-gray-400">Rechnungen</span>
-            <span className="font-medium text-gray-900 dark:text-white">{invoiceN}</span>
-          </div>
-          {upcoming.length > 0 && (
-            <>
-              <div className="border-t border-gray-200 pt-2 dark:border-gray-700">
-                <p className="mb-1 text-xs font-medium text-gray-400">Nächste Zahlungen:</p>
-                {upcoming.map((p, i) => (
-                  <div key={i} className="flex justify-between text-xs">
-                    <span className="text-gray-600 dark:text-gray-300">{(p.vendor as string) || '–'}</span>
-                    <span className="font-medium text-gray-900 dark:text-white">
-                      {p.amount_chf != null ? formatCHF(p.amount_chf as number) : '–'}
-                    </span>
-                  </div>
-                ))}
+    <>
+      <SourceCard title="InvoiceInsight" subtitle="Nächste Zahlungen (30 Tage)" color="rose" linkUrl="/kreditoren" linkLabel="Kreditoren öffnen">
+        {loading ? (
+          <p className="py-2 text-center text-sm text-gray-400">Laden...</p>
+        ) : upcoming.length === 0 ? (
+          <p className="py-2 text-center text-sm text-gray-400">Keine anstehenden Zahlungen</p>
+        ) : (
+          <div className="max-h-[200px] space-y-1 overflow-y-auto">
+            {upcoming.map((p, i) => (
+              <div
+                key={i}
+                className={`flex items-center justify-between rounded-md px-1 py-1 text-xs transition-colors ${p.invoice_id != null ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/40' : ''}`}
+                onClick={() => handleRowClick(p)}
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {(p.days_until ?? 999) < 7 && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />}
+                  {(p.days_until ?? 999) >= 7 && (p.days_until ?? 999) < 30 && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+                  {(p.days_until ?? 999) >= 30 && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />}
+                  <span className="truncate text-gray-600 dark:text-gray-300">{p.vendor}</span>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="w-[78px] text-right tabular-nums text-gray-400">{formatDateCH(p.next_date)}</span>
+                  <span className="w-[90px] text-right font-medium tabular-nums text-gray-900 dark:text-white">
+                    {p.amount_chf != null ? formatCHF(p.amount_chf) : ''}
+                  </span>
+                </div>
               </div>
-            </>
-          )}
-        </div>
-      ) : (
-        <p className="py-2 text-center text-sm text-gray-400">Laden...</p>
+            ))}
+          </div>
+        )}
+      </SourceCard>
+      {pdfModalUrl && (
+        <InvoicePdfModal url={pdfModalUrl} onClose={() => setPdfModalUrl(null)} />
       )}
-    </SourceCard>
+    </>
+  );
+}
+
+function InvoicePdfModal({ url, onClose }: { url: string; onClose: () => void }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let revoke = '';
+    const token = localStorage.getItem('taskpilot_token');
+    fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      })
+      .then(blob => {
+        const u = URL.createObjectURL(blob);
+        revoke = u;
+        setBlobUrl(u);
+      })
+      .catch(e => setError(e.message));
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [url]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="relative mx-4 h-[85vh] w-full max-w-6xl rounded-2xl bg-white shadow-2xl dark:bg-gray-900" onClick={e => e.stopPropagation()}>
+        <button
+          onClick={onClose}
+          className="absolute -right-3 -top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-gray-800 text-white shadow-lg hover:bg-gray-700"
+        >
+          ✕
+        </button>
+        {error ? (
+          <div className="flex h-full items-center justify-center text-red-500">{error}</div>
+        ) : blobUrl ? (
+          <iframe src={blobUrl} className="h-full w-full rounded-2xl" title="PDF-Vorschau" />
+        ) : (
+          <div className="flex h-full items-center justify-center text-gray-400">Laden…</div>
+        )}
+      </div>
+    </div>
   );
 }

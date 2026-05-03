@@ -351,7 +351,7 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className={`text-lg font-semibold ${textPrimary}`}>Monats-Cockpit</h2>
-          <p className={`text-xs ${textMuted}`}>{new Date().toLocaleDateString('de-CH', { month: 'long', year: 'numeric' })} &middot; {monthProgress}% des Monats</p>
+          <p className={`text-xs ${textMuted}`}>{new Date().toLocaleDateString('de-CH', { month: 'long', year: 'numeric' })} &middot; {monthProgress}% der Arbeitstage</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-green-500" /><span className={`text-xs ${textSecondary}`}>Billable</span></div>
@@ -373,9 +373,9 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
         <SummaryCell label="Non-billable" value={formatHours(toggl.non_billable_hours)} textPrimary={textSecondary} textMuted={textMuted} />
         <SummaryCell label="Betrag" value={formatCHF(toggl.total_amount)} textPrimary={textPrimary} textMuted={textMuted} />
       </div>
-      {/* Desktop: kompakte Tabelle mit max-width */}
-      <div className="hidden sm:block">
-        <div className="max-w-3xl">
+      {/* Desktop: Tabelle links + Doughnut rechts */}
+      <div className="hidden sm:flex sm:gap-6">
+        <div className="min-w-0 flex-1">
           <table className="w-full">
             <thead>
               <tr className={`border-b text-left text-[11px] font-medium uppercase tracking-wider ${hasBg ? 'border-white/10 text-white/40' : 'border-gray-100 text-gray-400 dark:border-gray-700 dark:text-gray-500'}`}>
@@ -422,9 +422,41 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
             </tbody>
           </table>
         </div>
+        {toggl.projects.length > 1 && (
+          <div className="flex w-[220px] shrink-0 flex-col items-center justify-center">
+            <p className={`mb-2 text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Stundenverteilung</p>
+            <div className="relative">
+              <ResponsiveContainer width={180} height={180}>
+                <PieChart>
+                  <Pie
+                    data={toggl.projects.map((p, i) => ({ name: p.project_name, value: p.hours, fill: PROJECT_COLORS[i % PROJECT_COLORS.length] }))}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={80}
+                    dataKey="value"
+                    strokeWidth={0}
+                  >
+                    {toggl.projects.map((_, i) => (
+                      <Cell key={i} fill={PROJECT_COLORS[i % PROJECT_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }}
+                    formatter={(v: number, name: string) => [`${v.toFixed(1)}h`, name]}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className={`text-lg font-bold ${textPrimary}`}>{formatHours(toggl.total_hours)}</span>
+                <span className={`text-[10px] ${textMuted}`}>Total</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Mobile: kompakte Tabelle ohne Scrollen */}
+      {/* Mobile: kompakte Tabelle + Doughnut darunter */}
       <div className="sm:hidden">
         <table className="w-full">
           <thead>
@@ -460,6 +492,34 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
             ))}
           </tbody>
         </table>
+        {toggl.projects.length > 1 && (
+          <div className="mt-4 flex flex-col items-center">
+            <p className={`mb-2 text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Stundenverteilung</p>
+            <div className="relative">
+              <ResponsiveContainer width={160} height={160}>
+                <PieChart>
+                  <Pie
+                    data={toggl.projects.map((p, i) => ({ name: p.project_name, value: p.hours, fill: PROJECT_COLORS[i % PROJECT_COLORS.length] }))}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={40}
+                    outerRadius={70}
+                    dataKey="value"
+                    strokeWidth={0}
+                  >
+                    {toggl.projects.map((_, i) => (
+                      <Cell key={i} fill={PROJECT_COLORS[i % PROJECT_COLORS.length]} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className={`text-base font-bold ${textPrimary}`}>{formatHours(toggl.total_hours)}</span>
+                <span className={`text-[10px] ${textMuted}`}>Total</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

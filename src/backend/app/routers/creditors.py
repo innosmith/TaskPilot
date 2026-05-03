@@ -5,9 +5,11 @@ und die Daten fuer das Frontend-Dashboard aufbereiten.
 """
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from app.auth.deps import get_current_user
 from app.config import get_settings
@@ -381,6 +383,34 @@ async def get_invoice_pdf(
         if not pdf_path:
             raise HTTPException(status_code=404, detail="Kein PDF verfuegbar")
         return {"pdf_path": pdf_path, "note": "PDF-Dateipfad vom MCP-Server"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/invoice/{invoice_id}/pdf/view")
+async def view_invoice_pdf(
+    invoice_id: int,
+    user: User = Depends(get_current_user),
+):
+    """Liefert das PDF einer Kreditoren-Rechnung als Binary-Response."""
+    client = _get_client(user)
+    try:
+        detail = await client.call_tool("get_invoice_details", {"invoice_id": invoice_id})
+        pdf_path_str = None
+        if isinstance(detail, dict):
+            pdf_path_str = detail.get("pdf_path") or detail.get("Dateipfad")
+        if not pdf_path_str:
+            raise HTTPException(status_code=404, detail="Kein PDF verfuegbar")
+        pdf_path = Path(pdf_path_str).resolve()
+        if not pdf_path.is_file():
+            raise HTTPException(status_code=404, detail="PDF-Datei nicht gefunden")
+        return FileResponse(
+            str(pdf_path),
+            media_type="application/pdf",
+            filename=pdf_path.name,
+        )
     except HTTPException:
         raise
     except Exception as e:

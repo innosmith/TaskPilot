@@ -85,7 +85,7 @@ interface AgentSkillData {
   content: string;
 }
 
-type SettingsTab = 'profile' | 'display' | 'cockpit' | 'integrations' | 'triage' | 'team' | 'intelligence';
+type SettingsTab = 'profile' | 'display' | 'cockpit' | 'llm' | 'integrations' | 'triage' | 'team' | 'intelligence';
 
 export function SettingsPage() {
   const [searchParams] = useSearchParams();
@@ -403,6 +403,7 @@ export function SettingsPage() {
     { id: 'profile', label: 'Profil' },
     { id: 'display', label: 'Erscheinungsbild' },
     { id: 'cockpit', label: 'Cockpit' },
+    { id: 'llm', label: 'LLM-Modelle' },
     ...(isOwner ? [{ id: 'integrations' as const, label: 'Integrationen' }] : []),
     ...(isOwner ? [{ id: 'triage' as const, label: 'E-Mail-Triage' }] : []),
     ...(isOwner ? [{ id: 'team' as const, label: 'Team' }] : []),
@@ -1137,6 +1138,10 @@ export function SettingsPage() {
             </section>
           )}
 
+          {tab === 'llm' && (
+            <LlmSettingsTab />
+          )}
+
           {/* ── Intelligenz ── */}
           {tab === 'intelligence' && (
             <section>
@@ -1295,6 +1300,220 @@ export function SettingsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function LlmSettingsTab() {
+  const [models, setModels] = useState<{ id: string; name: string; provider: string }[]>([]);
+  const [llmSettings, setLlmSettings] = useState<{
+    llm_providers: Record<string, { enabled: boolean; models: string[] }> | null;
+    llm_default_model: string | null;
+    llm_default_temperature: number | null;
+  }>({ llm_providers: null, llm_default_model: null, llm_default_temperature: null });
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  useEffect(() => {
+    Promise.all([
+      api.get<{ local: any[]; cloud: any[] }>('/api/models/available'),
+      api.get<typeof llmSettings>('/api/settings/llm'),
+    ]).then(([modelData, settings]) => {
+      setModels([...modelData.local, ...modelData.cloud]);
+      setLlmSettings(settings);
+    }).catch(() => {});
+  }, []);
+
+  const providers = ['ollama', 'openai', 'anthropic', 'gemini', 'perplexity'];
+  const providerLabels: Record<string, string> = {
+    ollama: 'Ollama (Lokal)',
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    gemini: 'Google Gemini',
+    perplexity: 'Perplexity',
+  };
+
+  const getProviderModels = (provider: string) =>
+    models.filter((m) => m.provider === provider);
+
+  const isProviderEnabled = (provider: string) =>
+    llmSettings.llm_providers?.[provider]?.enabled ?? false;
+
+  const getEnabledModels = (provider: string) =>
+    llmSettings.llm_providers?.[provider]?.models ?? [];
+
+  const toggleProvider = (provider: string) => {
+    const current = llmSettings.llm_providers || {};
+    const providerConfig = current[provider] || { enabled: false, models: [] };
+    const newProviders = {
+      ...current,
+      [provider]: {
+        ...providerConfig,
+        enabled: !providerConfig.enabled,
+        models: !providerConfig.enabled
+          ? getProviderModels(provider).map((m) => m.id)
+          : providerConfig.models,
+      },
+    };
+    setLlmSettings({ ...llmSettings, llm_providers: newProviders });
+  };
+
+  const toggleModel = (provider: string, modelId: string) => {
+    const current = llmSettings.llm_providers || {};
+    const providerConfig = current[provider] || { enabled: true, models: [] };
+    const models = providerConfig.models.includes(modelId)
+      ? providerConfig.models.filter((m) => m !== modelId)
+      : [...providerConfig.models, modelId];
+    setLlmSettings({
+      ...llmSettings,
+      llm_providers: {
+        ...current,
+        [provider]: { ...providerConfig, models },
+      },
+    });
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      await api.put('/api/settings/llm', llmSettings);
+      setMsg({ type: 'ok', text: 'LLM-Einstellungen gespeichert' });
+    } catch {
+      setMsg({ type: 'err', text: 'Fehler beim Speichern' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section>
+      <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">LLM-Modelle</h2>
+      <p className="mb-6 text-sm text-gray-500 dark:text-gray-400">
+        Aktiviere die LLM-Provider und waehle die Modelle, die dir zur Verfuegung stehen sollen.
+      </p>
+
+      <div className="space-y-6">
+        {providers.map((provider) => {
+          const providerModels = getProviderModels(provider);
+          if (providerModels.length === 0) return null;
+          const enabled = isProviderEnabled(provider);
+          const enabledModels = getEnabledModels(provider);
+
+          return (
+            <div
+              key={provider}
+              className="rounded-xl border border-gray-200 p-4 dark:border-gray-700"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-medium text-gray-900 dark:text-white">
+                    {providerLabels[provider] || provider}
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {providerModels.length} Modell{providerModels.length !== 1 ? 'e' : ''} verfuegbar
+                  </p>
+                </div>
+                <button
+                  onClick={() => toggleProvider(provider)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    enabled ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-700'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition-transform ${
+                      enabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {enabled && (
+                <div className="mt-3 space-y-2">
+                  {providerModels.map((model) => (
+                    <label
+                      key={model.id}
+                      className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={enabledModels.includes(model.id)}
+                        onChange={() => toggleModel(provider, model.id)}
+                        className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span className="text-gray-700 dark:text-gray-300">{model.name}</span>
+                      <span className="ml-auto text-xs text-gray-400">{model.id}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-6 space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Standard-Modell
+          </label>
+          <select
+            value={llmSettings.llm_default_model || ''}
+            onChange={(e) =>
+              setLlmSettings({ ...llmSettings, llm_default_model: e.target.value || null })
+            }
+            className="mt-1 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+          >
+            <option value="">Kein Standard</option>
+            {models
+              .filter((m) => {
+                const p = m.provider;
+                return llmSettings.llm_providers?.[p]?.enabled && llmSettings.llm_providers[p].models.includes(m.id);
+              })
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Standard-Temperatur: {llmSettings.llm_default_temperature ?? 0.7}
+          </label>
+          <input
+            type="range"
+            min="0"
+            max="1.5"
+            step="0.1"
+            value={llmSettings.llm_default_temperature ?? 0.7}
+            onChange={(e) =>
+              setLlmSettings({ ...llmSettings, llm_default_temperature: parseFloat(e.target.value) })
+            }
+            className="mt-1 w-full"
+          />
+          <div className="flex justify-between text-xs text-gray-400">
+            <span>Praezise (0)</span>
+            <span>Kreativ (1.5)</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 flex items-center gap-3">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+        >
+          {saving ? 'Speichern...' : 'Speichern'}
+        </button>
+        {msg && (
+          <span className={`text-sm ${msg.type === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
+            {msg.text}
+          </span>
+        )}
+      </div>
+    </section>
   );
 }
 

@@ -1,4 +1,4 @@
-"""MCP-Server fuer Pipedrive CRM-Zugriff.
+"""MCP-Server für Pipedrive CRM-Zugriff.
 
 Nanobot kann diesen Server als Tool nutzen, um Deals, Leads, Kontakte,
 Aktivitaeten und Notizen in Pipedrive zu lesen und zu schreiben.
@@ -250,7 +250,7 @@ TOOLS = [
     ),
     Tool(
         name="search_crm",
-        description="Volltextsuche ueber Deals, Personen und Organisationen in Pipedrive.",
+        description="Volltextsuche über Deals, Personen und Organisationen in Pipedrive.",
         inputSchema={
             "type": "object",
             "properties": {

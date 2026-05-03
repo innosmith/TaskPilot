@@ -87,7 +87,7 @@ export function MemoryPage() {
               )}
             </div>
             <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-              Nanobot-Zustand — Heartbeat, Skills und Memory-Dateien
+              InnoPilot-Zustand — Heartbeat, Skills und Memory-Dateien
             </p>
           </div>
           <div className="flex items-center gap-3">

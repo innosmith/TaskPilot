@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone
 
 import asyncpg
+import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -128,7 +129,7 @@ TOOLS = [
     ),
     Tool(
         name="get_sender_profile",
-        description="Absender-Profil laden. Gibt gespeicherte Beziehungsinformationen zurueck (Ton, Sprache, Beziehungstyp, Organisation). Falls kein Profil existiert, wird ein leeres Profil mit Defaults zurueckgegeben.",
+        description="Absender-Profil laden. Gibt gespeicherte Beziehungsinformationen zurück (Ton, Sprache, Beziehungstyp, Organisation). Falls kein Profil existiert, wird ein leeres Profil mit Defaults zurückgegeben.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -152,6 +153,20 @@ TOOLS = [
                 "notes": {"type": "string", "description": "Freitext-Notizen zum Absender"},
             },
             "required": ["email"],
+        },
+    ),
+    Tool(
+        name="web_search",
+        description="Websuche via Tavily API ausführen. Gibt relevante Suchergebnisse mit Titel, URL und Inhalt zurück. Nützlich für aktuelle Informationen, Faktencheck und Research.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Suchbegriff"},
+                "search_depth": {"type": "string", "enum": ["basic", "advanced"], "default": "basic", "description": "basic = 1 Credit, advanced = 2 Credits (gruendlicher)"},
+                "max_results": {"type": "integer", "default": 5, "description": "Maximale Anzahl Ergebnisse (1-10)"},
+                "task_id": {"type": "string", "description": "Optional: UUID des zugehörigen Tasks"},
+            },
+            "required": ["query"],
         },
     ),
 ]
@@ -407,6 +422,58 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = _row_to_dict(updated)
             result["action"] = "updated"
             return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+    elif name == "web_search":
+        query = arguments.get("query", "").strip()
+        if not query:
+            return [TextContent(type="text", text="Suchbegriff fehlt")]
+
+        tavily_key = _env("TP_TAVILY_API_KEY")
+        if not tavily_key:
+            return [TextContent(type="text", text="Tavily API-Key nicht konfiguriert (TP_TAVILY_API_KEY)")]
+
+        search_depth = arguments.get("search_depth", "basic")
+        max_results = min(arguments.get("max_results", 5), 10)
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": tavily_key,
+                    "query": query,
+                    "search_depth": search_depth,
+                    "include_answer": True,
+                    "include_raw_content": False,
+                    "max_results": max_results,
+                },
+            )
+            if resp.status_code != 200:
+                return [TextContent(type="text", text=f"Tavily-Fehler: {resp.status_code} {resp.text}")]
+            data = resp.json()
+
+        results = data.get("results", [])
+        answer = data.get("answer")
+
+        formatted = []
+        for r in results:
+            formatted.append({
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "content": r.get("content", ""),
+                "score": r.get("score"),
+            })
+
+        credits = 2 if search_depth == "advanced" else 1
+        task_id = arguments.get("task_id")
+
+        await p.execute(
+            "INSERT INTO web_searches (query, provider, results, result_count, triggered_by, task_id, credits_used) "
+            "VALUES ($1, 'tavily', $2::jsonb, $3, 'agent', $4::uuid, $5)",
+            query, json.dumps(formatted), len(formatted), task_id, credits,
+        )
+
+        output = {"query": query, "answer": answer, "results": formatted, "credits_used": credits}
+        return [TextContent(type="text", text=json.dumps(output, indent=2, ensure_ascii=False))]
 
     return [TextContent(type="text", text=f"Unbekanntes Tool: {name}")]
 

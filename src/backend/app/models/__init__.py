@@ -7,6 +7,8 @@ from app.models.models import (
     BoardMember,
     ChecklistItem,
     EmailTriage,
+    LlmConversation,
+    LlmMessage,
     PipelineColumn,
     Project,
     SenderProfile,
@@ -14,6 +16,7 @@ from app.models.models import (
     Task,
     TaskTag,
     User,
+    WebSearch,
 )
 
 __all__ = [
@@ -32,4 +35,7 @@ __all__ = [
     "BoardMember",
     "EmailTriage",
     "SenderProfile",
+    "LlmConversation",
+    "LlmMessage",
+    "WebSearch",
 ]
