@@ -510,26 +510,76 @@ MCP_SERVER_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "graph": {
         "label": "Microsoft 365",
         "description": "E-Mail, Kalender, Teams-Nachrichten, OneDrive, Dateisuche, Planner",
+        "tools": (
+            "search_drive(query) — Dateien auf OneDrive suchen; "
+            "download_file(item_id) — Datei herunterladen und Text extrahieren (PDF); "
+            "list_drive_items(path) — Ordnerinhalt auflisten; "
+            "get_email(message_id) — E-Mail lesen; "
+            "search_emails(query) — E-Mails durchsuchen; "
+            "list_events(start, end) — Kalendereinträge; "
+            "list_chats() — Teams-Chats; "
+            "list_planner_tasks() — Planner-Aufgaben"
+        ),
     },
     "taskpilot": {
         "label": "Aufgaben",
         "description": "Tasks erstellen, aktualisieren, zuweisen, Projekte verwalten",
+        "tools": (
+            "list_tasks(project_id, status) — Aufgaben auflisten; "
+            "create_task(title, project_id) — Aufgabe erstellen; "
+            "update_task(task_id, status) — Aufgabe ändern"
+        ),
     },
     "pipedrive": {
         "label": "CRM (Pipedrive)",
         "description": "Deals, Kontakte, Aktivitäten, Notizen",
+        "tools": (
+            "list_deals() — Deals auflisten; "
+            "get_deal(id) — Deal-Details; "
+            "list_persons() — Kontakte; "
+            "list_activities() — Aktivitäten"
+        ),
     },
     "toggl": {
         "label": "Zeiterfassung (Toggl)",
         "description": "Zeiteinträge verwalten",
+        "tools": (
+            "list_time_entries(start, end) — Zeiteinträge auflisten; "
+            "list_projects() — Projekte; "
+            "get_project_summary(project_id) — Zusammenfassung"
+        ),
     },
     "bexio": {
-        "label": "Buchhaltung (bexio)",
-        "description": "Rechnungen, Kontakte, Finanzdaten",
+        "label": "Buchhaltung (Bexio)",
+        "description": "Rechnungen, Journal, Kontenplan, Bankkonten, Geschäftsjahre",
+        "tools": (
+            "list_invoices(status, year) — Rechnungen auflisten; "
+            "get_invoice(id) — Rechnungsdetails; "
+            "search_invoices(query) — Rechnungen suchen; "
+            "get_journal(year, from_date, to_date) — Buchungsjournal; "
+            "list_accounts() — Kontenplan; "
+            "list_bank_accounts() — Bankkonten; "
+            "get_business_years() — Geschäftsjahre"
+        ),
+    },
+    "invoiceinsight": {
+        "label": "Kreditoren-Analyse",
+        "description": "KPIs, Zahlungen, Anomalien, Cashflow-Prognose",
+        "tools": (
+            "get_kpis() — Kennzahlen; "
+            "get_upcoming_payments() — Anstehende Zahlungen; "
+            "get_cost_distribution() — Kostenverteilung; "
+            "get_cashflow_forecast() — Cashflow-Prognose; "
+            "get_invoice_details(id) — Rechnungsdetails mit PDF-Pfad"
+        ),
     },
     "signa": {
         "label": "Recherche (SIGNA)",
         "description": "ISI-Datenbank, wissenschaftliche Quellen",
+        "tools": (
+            "search_signals(query) — Signale durchsuchen; "
+            "get_briefing(id) — Briefing lesen"
+        ),
     },
 }
 
@@ -546,11 +596,8 @@ def _get_configured_mcp_servers() -> dict:
 
 
 def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
-    """Baut einen vollständigen Prompt mit System-Kontext, Skills und Chat-Verlauf."""
+    """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Nanobot SDK via MCP."""
     skills_text = _load_agent_skills()
-
-    mcp_servers = _get_configured_mcp_servers()
-    tools_block = "\n".join(f"- **{name}**" for name in mcp_servers) if mcp_servers else "- (keine MCP-Server konfiguriert)"
 
     history_lines = []
     for msg in conversation_messages[-10:]:
@@ -558,38 +605,29 @@ def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
         history_lines.append(f"**{role_label}:** {msg.content[:500]}")
     history_block = "\n\n".join(history_lines) if history_lines else "(Erste Nachricht)"
 
-    return f"""## SYSTEM-KONTEXT
+    return f"""Du bist InnoPilot, der KI-Agent von Anthony Smith (InnoSmith GmbH, Schweiz).
+Du hast direkten Zugriff auf Firmendaten über deine MCP-Tools (siehst du in deiner Tool-Liste).
+Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
 
-Du bist der TaskPilot-Agent von Anthony Smith (InnoSmith GmbH, Schweiz).
-Du hast Zugriff auf MCP-Tools für E-Mail, Kalender, CRM, Aufgaben und mehr.
-NUTZE DEINE TOOLS AKTIV! Behaupte NIEMALS, du hättest keinen Zugriff.
+Regeln:
+- Bei Fragen zu Firmendaten: Sofort passende Tools aufrufen
+- Dateien: search_files → download_file
+- Buchhaltung: list_accounts, get_journal, list_invoices, search_invoices
+- Mehrstufige Aufgaben: Schritt für Schritt, Tool-Ergebnisse auswerten
+- Sprache: Deutsch (Schweizer Hochdeutsch, ss statt ß, korrekte Umlaute ä/ö/ü)
+- Zeitzone: Europe/Zurich
 
-### Verfügbare MCP-Server:
-{tools_block}
-
-### Zeitzone: Europe/Zurich
-
----
-
-## SKILLS
+## Skills
 
 {skills_text}
 
----
-
-## BISHERIGER CHAT-VERLAUF
+## Chat-Verlauf
 
 {history_block}
 
----
+## Anfrage
 
-## AKTUELLE ANFRAGE
-
-{user_content}
-
----
-
-Führe die Anfrage jetzt aus. Nutze die passenden MCP-Tools. Antworte auf Deutsch (Schweizer Hochdeutsch, kein ß)."""
+{user_content}"""
 
 
 @router.get("/agent-tools")
@@ -684,6 +722,27 @@ async def send_agent_message(
     }
 
 
+OLLAMA_API_BASE = "http://localhost:11434/v1"
+LITELLM_API_BASE = "http://localhost:4000/v1"
+
+
+def _apply_model_routing(bot, selected_model: str) -> None:
+    """Setzt Modell und Provider-Endpoint basierend auf User-Wahl.
+
+    Modell-ID-Format aus Frontend: 'ollama/qwen3.5:35b', 'anthropic/claude-sonnet-4-6', etc.
+    Für lokale Modelle → direkt Ollama. Für Cloud → LiteLLM-Proxy.
+    """
+    if not selected_model or selected_model == "nanobot":
+        return
+
+    if selected_model.startswith("ollama/"):
+        bot._loop.model = selected_model.removeprefix("ollama/")
+        bot._loop.provider.api_base = OLLAMA_API_BASE
+    else:
+        bot._loop.model = selected_model
+        bot._loop.provider.api_base = LITELLM_API_BASE
+
+
 async def _run_agent_background(
     job_id: str, conv_id: str, prompt: str, model: str
 ):
@@ -768,10 +827,14 @@ async def _run_agent_background(
     session_key = f"chat:{conv_id}"
     hook = BufferedHook()
 
+    _apply_model_routing(bot, model)
+
     mcp_count = len(getattr(bot, '_mcp_servers', None) or {})
+    active_model = getattr(bot._loop, 'model', '?')
     await _push_agent_event(job_id, {"event": "status", "data": json.dumps(
-        {"content": f"InnoPilot bereit ({mcp_count} MCP-Server) — Aufgabe wird verarbeitet..."})})
-    logger.info("[agent-bg] Run gestartet, session=%s, prompt_len=%d, mcp_servers=%d", session_key, len(prompt), mcp_count)
+        {"content": f"InnoPilot bereit ({mcp_count} MCP-Server, Modell: {active_model}) — Aufgabe wird verarbeitet..."})})
+    logger.info("[agent-bg] Run gestartet, session=%s, model=%s, prompt_len=%d, mcp_servers=%d",
+                session_key, active_model, len(prompt), mcp_count)
 
     bot_task = asyncio.create_task(
         bot.run(prompt, session_key=session_key, hooks=[hook])

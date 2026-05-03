@@ -20,11 +20,8 @@ CACHE_TTL_SECONDS = 300
 OLLAMA_BASE = "http://localhost:11434"
 
 KNOWN_ANTHROPIC_MODELS = [
-    ("claude-opus-4-7", "Claude Opus 4.7"),
-    ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
-    ("claude-haiku-4-5", "Claude Haiku 4.5"),
-    ("claude-opus-4-6", "Claude Opus 4.6"),
-    ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+    ("claude-sonnet-4-20250514", "Claude Sonnet 4"),
+    ("claude-3-5-haiku-20241022", "Claude 3.5 Haiku"),
 ]
 
 KNOWN_PERPLEXITY_MODELS = [

@@ -52,10 +52,10 @@ interface ChatMessage {
 type ChatMode = 'chat' | 'web_search' | 'deep_research' | 'agent';
 
 const MODES: { id: ChatMode; label: string; tooltip: string }[] = [
+  { id: 'agent', label: 'Agent', tooltip: 'InnoPilot führt Aktionen aus: Kalender, E-Mail, CRM, Aufgaben' },
   { id: 'chat', label: 'Chat', tooltip: 'Direkte Fragen an das LLM — antwortet aus Trainingswissen' },
   { id: 'web_search', label: 'Websuche', tooltip: 'Durchsucht das Web in Echtzeit via Tavily nach aktuellen Fakten' },
   { id: 'deep_research', label: 'Deep Research', tooltip: 'Mehrstufige Recherche mit vielen Quellen — dauert länger, geht tiefer' },
-  { id: 'agent', label: 'Agent', tooltip: 'InnoPilot führt Aktionen aus: Kalender, E-Mail, CRM, Aufgaben' },
 ];
 
 const PROVIDER_ORDER = ['ollama', 'openai', 'anthropic', 'gemini', 'perplexity'];
@@ -76,7 +76,7 @@ export function ChatPage() {
   const [models, setModels] = useState<LlmModel[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [temperature, setTemperature] = useState(0.7);
-  const [mode, setMode] = useState<ChatMode>('chat');
+  const [mode, setMode] = useState<ChatMode>('agent');
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [showSidebar, setShowSidebar] = useState(true);
@@ -722,8 +722,9 @@ export function ChatPage() {
           <div className="flex-1" />
 
           {mode === 'agent' && (
-            <span className="rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-300">
-              InnoPilot · MCP-Tools
+            <span className="flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
+              InnoPilot · {mcpServers.length} Tools
             </span>
           )}
 
@@ -832,16 +833,26 @@ export function ChatPage() {
                     {mode === 'agent' && (
                       <span className="group/mcp relative cursor-help whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500">
                         MCP ({mcpServers.length})
-                        <span className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-64 rounded-lg border border-gray-200 bg-white p-3 text-left text-[11px] leading-relaxed text-gray-600 shadow-xl group-hover/mcp:block dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                          <span className="mb-1.5 block font-semibold text-gray-800 dark:text-gray-100">Verfügbare Tools:</span>
-                          {mcpServers.map(s => (
-                            <span key={s.key} className="block">
-                              <span className="font-medium text-gray-800 dark:text-gray-200">{s.label}</span>
-                              {s.description && <span className="text-gray-500 dark:text-gray-400"> — {s.description}</span>}
-                            </span>
-                          ))}
-                          {mcpServers.length === 0 && <span className="block italic opacity-60">Keine Server konfiguriert</span>}
-                        </span>
+                        <div className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-80 rounded-xl border border-gray-200/80 bg-white/95 p-4 text-left shadow-2xl backdrop-blur-sm group-hover/mcp:block dark:border-gray-700/80 dark:bg-gray-800/95">
+                          <div className="mb-3 flex items-center gap-2">
+                            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100 dark:bg-violet-900/40">
+                              <SparkleIcon className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+                            </div>
+                            <span className="text-xs font-semibold text-gray-800 dark:text-gray-100">InnoPilot — Verfügbare Tools</span>
+                          </div>
+                          <div className="space-y-2">
+                            {mcpServers.map(s => (
+                              <div key={s.key} className="flex items-start gap-2.5 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-750 dark:bg-gray-900/40">
+                                <div className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-green-400" />
+                                <div className="min-w-0">
+                                  <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">{s.label}</div>
+                                  {s.description && <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{s.description}</div>}
+                                </div>
+                              </div>
+                            ))}
+                            {mcpServers.length === 0 && <div className="py-2 text-center text-[11px] italic text-gray-400">Keine Server konfiguriert</div>}
+                          </div>
+                        </div>
                       </span>
                     )}
                     <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
@@ -877,7 +888,13 @@ export function ChatPage() {
                                 {te.type === 'status' && <span className="italic">{te.content}</span>}
                               </div>
                             ))}
-                            {msg.thinking && <div className="mt-2 whitespace-pre-wrap text-violet-800 dark:text-violet-300">{msg.thinking}</div>}
+                            {msg.thinking && (
+                              <div className="mt-2 max-h-[400px] overflow-y-auto text-violet-800 dark:text-violet-300">
+                                <div className="prose prose-xs prose-violet dark:prose-invert max-w-none [&_p]:my-1 [&_li]:my-0.5 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_code]:text-[10px]">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.thinking}</ReactMarkdown>
+                                </div>
+                              </div>
+                            )}
                             {msg.tools_used && msg.tools_used.length > 0 && (
                               <div className="mt-2 flex flex-wrap gap-1 border-t border-violet-200 pt-2 dark:border-violet-700">
                                 <span className="text-[10px] text-violet-600 dark:text-violet-400">Verwendete Tools:</span>
@@ -964,7 +981,11 @@ export function ChatPage() {
                             </div>
                           ))}
                           {thinkingContent && !toolTrace.some(t => t.content === thinkingContent) && (
-                            <div className="italic text-violet-700 dark:text-violet-400">{thinkingContent}</div>
+                            <div className="max-h-[300px] overflow-y-auto text-violet-700 dark:text-violet-400">
+                              <div className="prose prose-xs prose-violet dark:prose-invert max-w-none [&_p]:my-1 [&_li]:my-0.5 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_code]:text-[10px]">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{thinkingContent}</ReactMarkdown>
+                              </div>
+                            </div>
                           )}
                         </div>
                       </details>
@@ -1109,16 +1130,26 @@ export function ChatPage() {
                   {mode === 'agent' && (
                     <span className="group/mcp relative cursor-help whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500">
                       MCP ({mcpServers.length})
-                      <span className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-64 rounded-lg border border-gray-200 bg-white p-3 text-left text-[11px] leading-relaxed text-gray-600 shadow-xl group-hover/mcp:block dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                        <span className="mb-1.5 block font-semibold text-gray-800 dark:text-gray-100">Verfügbare Tools:</span>
-                        {mcpServers.map(s => (
-                          <span key={s.key} className="block">
-                            <span className="font-medium text-gray-800 dark:text-gray-200">{s.label}</span>
-                            {s.description && <span className="text-gray-500 dark:text-gray-400"> — {s.description}</span>}
-                          </span>
-                        ))}
-                        {mcpServers.length === 0 && <span className="block italic opacity-60">Keine Server konfiguriert</span>}
-                      </span>
+                      <div className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-80 rounded-xl border border-gray-200/80 bg-white/95 p-4 text-left shadow-2xl backdrop-blur-sm group-hover/mcp:block dark:border-gray-700/80 dark:bg-gray-800/95">
+                        <div className="mb-3 flex items-center gap-2">
+                          <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100 dark:bg-violet-900/40">
+                            <SparkleIcon className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+                          </div>
+                          <span className="text-xs font-semibold text-gray-800 dark:text-gray-100">InnoPilot — Verfügbare Tools</span>
+                        </div>
+                        <div className="space-y-2">
+                          {mcpServers.map(s => (
+                            <div key={s.key} className="flex items-start gap-2.5 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
+                              <div className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-green-400" />
+                              <div className="min-w-0">
+                                <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">{s.label}</div>
+                                {s.description && <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{s.description}</div>}
+                              </div>
+                            </div>
+                          ))}
+                          {mcpServers.length === 0 && <div className="py-2 text-center text-[11px] italic text-gray-400">Keine Server konfiguriert</div>}
+                        </div>
+                      </div>
                     </span>
                   )}
                   {messages.length > 0 && (
