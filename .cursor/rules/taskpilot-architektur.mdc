@@ -14,7 +14,7 @@ Das verbindliche Pflichtenheft liegt in [docs/pflichtenheft-taskpilot.md](docs/p
 - **Datenbank:** PostgreSQL mit pgvector, Port 5435
 - **Agent-Runtime:** nanobot (HKUDS), Config: `~/.nanobot/config.json`
 - **LLM-Gateway:** LiteLLM-Proxy, Default-Modell: Qwen 3.5 35B (Ollama lokal)
-- **MCP-Server:** `src/mcp-taskpilot/` (DB-Zugriff), `src/mcp-email/` (Graph API), `src/mcp-pipedrive/` (Pipedrive CRM)
+- **MCP-Server:** `src/mcp-taskpilot/` (DB), `src/mcp-graph/` (Microsoft Graph), `src/mcp-pipedrive/` (Pipedrive CRM), `src/mcp-bexio/` (Buchhaltung), `src/mcp-toggl/` (Zeiterfassung), `src/mcp-signa/` (Strategic Intelligence), `src/mcp-invoiceinsight/` (Kreditoren-Analyse)
 - **Graph API:** `src/email-graph/graph_client.py` (Shared Library)
 - **Pipedrive API:** `src/pipedrive/pipedrive_client.py` (Shared Library)
 - **Skills:** `~/.nanobot/workspace/skills/*.md`
@@ -26,9 +26,15 @@ src/
   backend/tests/     → pytest-Tests (Graph-Client, MCP-Handler, Triage-Prompt, Pipedrive)
   frontend/src/      → React Frontend (Vite)
   mcp-taskpilot/     → MCP-Server für DB
-  mcp-email/         → MCP-Server für E-Mail + Kalender
+  mcp-graph/         → MCP-Server für Microsoft Graph (E-Mail, Kalender, Chat, Files, Planner)
   mcp-pipedrive/     → MCP-Server für Pipedrive CRM
+  mcp-bexio/         → MCP-Server für Bexio Buchhaltung
+  mcp-toggl/         → MCP-Server für Toggl Zeiterfassung
+  mcp-signa/         → MCP-Server für SIGNA Strategic Intelligence
+  mcp-invoiceinsight/→ MCP-Server für InvoiceInsight Kreditoren-Analyse
   email-graph/       → Shared Graph API Client
+  bexio/             → Shared Bexio API Client
+  toggl/             → Shared Toggl API Client
   pipedrive/         → Shared Pipedrive API Client
 db/schema.sql        → PostgreSQL DDL
 docs/                → Pflichtenheft, Research-Dokumente

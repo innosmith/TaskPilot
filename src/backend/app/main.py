@@ -25,12 +25,14 @@ from app.routers import (
     models,
     pipedrive,
     pipeline,
+    planner,
     projects,
     search,
     signa,
     sse,
     tags,
     tasks,
+    teams,
     toggl,
     triage,
     unsplash,
@@ -126,6 +128,8 @@ app.include_router(creditors.router)
 app.include_router(intelligence.router)
 app.include_router(signa.router)
 app.include_router(chat.router)
+app.include_router(teams.router)
+app.include_router(planner.router)
 app.include_router(web_search.router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, getToken } from '../api/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -17,14 +17,20 @@ interface Conversation {
   id: string;
   title: string | null;
   model: string;
-  mode: string;
-  temperature: number;
+  mode?: string;
+  temperature?: number;
   total_tokens: number;
   total_cost_usd: number;
   created_at: string;
   updated_at: string;
   message_count?: number;
   last_message_preview?: string | null;
+}
+
+interface ToolTraceEntry {
+  type: 'tool_start' | 'tool_event' | 'status';
+  content: string;
+  ts: number;
 }
 
 interface ChatMessage {
@@ -35,6 +41,9 @@ interface ChatMessage {
   cost_usd: number | null;
   reasoning_tokens?: number | null;
   thinking?: string | null;
+  tool_trace?: ToolTraceEntry[] | null;
+  tools_used?: string[] | null;
+  elapsed_s?: number | null;
   citations: unknown[] | null;
   attachments?: { name: string; type: string }[];
   created_at: string;
@@ -42,11 +51,11 @@ interface ChatMessage {
 
 type ChatMode = 'chat' | 'web_search' | 'deep_research' | 'agent';
 
-const MODES: { id: ChatMode; label: string }[] = [
-  { id: 'chat', label: 'Chat' },
-  { id: 'web_search', label: 'Websuche' },
-  { id: 'deep_research', label: 'Deep Research' },
-  { id: 'agent', label: 'Agent' },
+const MODES: { id: ChatMode; label: string; tooltip: string }[] = [
+  { id: 'chat', label: 'Chat', tooltip: 'Direkte Fragen an das LLM — antwortet aus Trainingswissen' },
+  { id: 'web_search', label: 'Websuche', tooltip: 'Durchsucht das Web in Echtzeit via Tavily nach aktuellen Fakten' },
+  { id: 'deep_research', label: 'Deep Research', tooltip: 'Mehrstufige Recherche mit vielen Quellen — dauert länger, geht tiefer' },
+  { id: 'agent', label: 'Agent', tooltip: 'InnoPilot führt Aktionen aus: Kalender, E-Mail, CRM, Aufgaben' },
 ];
 
 const PROVIDER_ORDER = ['ollama', 'openai', 'anthropic', 'gemini', 'perplexity'];
@@ -60,6 +69,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 export function ChatPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -68,16 +78,39 @@ export function ChatPage() {
   const [temperature, setTemperature] = useState(0.7);
   const [mode, setMode] = useState<ChatMode>('chat');
   const [input, setInput] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingContent, setStreamingContent] = useState('');
-  const [thinkingContent, setThinkingContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [showSidebar, setShowSidebar] = useState(true);
   const [modelOpen, setModelOpen] = useState(false);
   const [tempOpen, setTempOpen] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
-  const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
+  const [collapsedThinking, setCollapsedThinking] = useState<Set<string>>(new Set());
+  const [mcpServers, setMcpServers] = useState<{ key: string; label: string; description: string }[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Per-Konversation Agent-Stream-State
+  interface AgentStreamState {
+    isStreaming: boolean;
+    streamingContent: string;
+    thinkingContent: string;
+    toolTrace: ToolTraceEntry[];
+    jobId: string | null;
+    status: 'idle' | 'running' | 'done' | 'error';
+  }
+  const [agentStates, setAgentStates] = useState<Record<string, AgentStreamState>>({});
+
+  const updateAgentState = useCallback((convId: string, patch: Partial<AgentStreamState>) => {
+    setAgentStates(prev => ({
+      ...prev,
+      [convId]: { ...(prev[convId] || { isStreaming: false, streamingContent: '', thinkingContent: '', toolTrace: [], jobId: null, status: 'idle' }), ...patch },
+    }));
+  }, []);
+
+  const activeAgent = activeId ? agentStates[activeId] : undefined;
+  const isStreaming = activeAgent?.isStreaming ?? false;
+  const streamingContent = activeAgent?.streamingContent ?? '';
+  const thinkingContent = activeAgent?.thinkingContent ?? '';
+  const toolTrace = activeAgent?.toolTrace ?? [];
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
@@ -85,6 +118,7 @@ export function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
+  const skipNextFetchRef = useRef(false);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -105,10 +139,22 @@ export function ChatPage() {
         if (s.llm_default_temperature !== null) setTemperature(s.llm_default_temperature);
       })
       .catch(() => {});
+    api.get<{ servers: { key: string; label: string; description: string }[] }>('/api/chat/agent-tools')
+      .then(d => setMcpServers(d.servers))
+      .catch(() => {});
   }, [loadConversations]);
 
   useEffect(() => {
+    const convParam = searchParams.get('conv');
+    if (convParam && !activeId) {
+      setActiveId(convParam);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, activeId, setSearchParams]);
+
+  useEffect(() => {
     if (!activeId) { setMessages([]); return; }
+    if (skipNextFetchRef.current) { skipNextFetchRef.current = false; return; }
     api.get<{ messages: ChatMessage[]; mode?: string }>(`/api/chat/conversations/${activeId}`)
       .then(d => {
         setMessages(d.messages || []);
@@ -130,9 +176,12 @@ export function ChatPage() {
   }, []);
 
   const modelLabel = (id: string) => {
+    if (id === 'nanobot') return 'InnoPilot';
     const m = models.find(x => x.id === id);
     return m?.name || id.split('/').pop() || id;
   };
+
+  const isAgentConversation = (c: Conversation) => c.mode === 'agent' || c.model === 'nanobot';
 
   const modelInfo = (id: string) => models.find(x => x.id === id);
 
@@ -156,7 +205,8 @@ export function ChatPage() {
   const showModelControls = mode !== 'web_search';
 
   const handleWebSearch = async (query: string) => {
-    setIsStreaming(true);
+    const cid = activeId || '_search';
+    updateAgentState(cid, { isStreaming: true, status: 'running' });
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(), role: 'user', content: query,
       tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
@@ -192,14 +242,18 @@ export function ChatPage() {
         tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
       }]);
     } finally {
-      setIsStreaming(false);
+      updateAgentState(cid, { isStreaming: false, status: 'done' });
     }
   };
 
-  const processSSE = async (resp: Response) => {
+  // Legacy refs removed — agent state is now per-conversation in agentStates
+
+  const processSSE = async (resp: Response, targetConvId?: string) => {
+    const cid = targetConvId || activeId || '_sse';
     const reader = resp.body!.getReader();
     const decoder = new TextDecoder();
     let buf = '', acc = '', thinkAcc = '', evt = '';
+    const traceAcc: ToolTraceEntry[] = [];
 
     while (true) {
       const { done, value } = await reader.read();
@@ -214,35 +268,155 @@ export function ChatPage() {
           const data = JSON.parse(line.slice(6));
           if (evt === 'thinking') {
             thinkAcc += data.content || '';
-            setThinkingContent(thinkAcc);
+            updateAgentState(cid, { thinkingContent: thinkAcc });
+          } else if (evt === 'status') {
+            traceAcc.push({ type: 'status', content: data.content || '', ts: Date.now() });
+            updateAgentState(cid, { thinkingContent: data.content || '', toolTrace: [...traceAcc] });
+          } else if (evt === 'tool_start') {
+            traceAcc.push({ type: 'tool_start', content: data.tools || '', ts: Date.now() });
+            updateAgentState(cid, { thinkingContent: `Tool: ${data.tools}`, toolTrace: [...traceAcc] });
+          } else if (evt === 'tool_event') {
+            traceAcc.push({ type: 'tool_event', content: typeof data === 'string' ? data : JSON.stringify(data), ts: Date.now() });
+            updateAgentState(cid, { toolTrace: [...traceAcc] });
           } else if (evt === 'chunk') {
             acc += data.content || '';
-            setStreamingContent(acc);
+            updateAgentState(cid, { streamingContent: acc });
           } else if (evt === 'done') {
             setMessages(prev => [...prev, {
               id: data.message_id || crypto.randomUUID(), role: 'assistant',
               content: data.content || acc, tokens: data.tokens, cost_usd: data.cost_usd || null,
               reasoning_tokens: data.reasoning_tokens || null,
               thinking: data.thinking || thinkAcc || null,
+              tool_trace: traceAcc.length > 0 ? traceAcc : null,
+              tools_used: data.tools_used || null,
+              elapsed_s: data.elapsed_s || null,
               citations: data.citations || null, created_at: new Date().toISOString(),
             }]);
-            setStreamingContent('');
-            setThinkingContent('');
+            updateAgentState(cid, { streamingContent: '', thinkingContent: '', toolTrace: [] });
           } else if (evt === 'error') {
             setMessages(prev => [...prev, {
               id: crypto.randomUUID(), role: 'assistant',
               content: `Fehler: ${data.error}`, tokens: null, cost_usd: null,
+              tool_trace: traceAcc.length > 0 ? traceAcc : null,
               citations: null, created_at: new Date().toISOString(),
             }]);
-            setStreamingContent('');
-            setThinkingContent('');
+            updateAgentState(cid, { streamingContent: '', thinkingContent: '', toolTrace: [] });
           } else if (evt === 'ping') {
-            // Keepalive — ignorieren
+            // Keepalive
           }
         } catch { /* */ }
       }
     }
   };
+
+  const agentAbortControllers = useRef<Record<string, AbortController>>({});
+  const agentOffsets = useRef<Record<string, number>>({});
+  const agentAccumulators = useRef<Record<string, { stream: string; think: string; trace: ToolTraceEntry[] }>>({});
+
+  const connectAgentStream = useCallback(async (convId: string, jobId: string, offset: number) => {
+    const token = getToken();
+    const url = `/api/chat/conversations/${convId}/agent-stream?job_id=${encodeURIComponent(jobId)}&offset=${offset}`;
+
+    agentAbortControllers.current[convId]?.abort();
+    const controller = new AbortController();
+    agentAbortControllers.current[convId] = controller;
+
+    if (!agentAccumulators.current[convId]) {
+      agentAccumulators.current[convId] = { stream: '', think: '', trace: [] };
+    }
+    const acc = agentAccumulators.current[convId];
+
+    try {
+      const resp = await fetch(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: controller.signal,
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+      const reader = resp.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = '', evt = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) { evt = line.slice(7).trim(); continue; }
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            const idx = data._idx;
+            if (typeof idx === 'number') agentOffsets.current[convId] = idx + 1;
+
+            if (evt === 'status') {
+              acc.trace.push({ type: 'status', content: data.content || '', ts: Date.now() });
+              updateAgentState(convId, { thinkingContent: data.content || '', toolTrace: [...acc.trace] });
+            } else if (evt === 'tool_start') {
+              acc.trace.push({ type: 'tool_start', content: data.tools || '', ts: Date.now() });
+              updateAgentState(convId, { thinkingContent: `Tool: ${data.tools}`, toolTrace: [...acc.trace] });
+            } else if (evt === 'tool_event') {
+              acc.trace.push({ type: 'tool_event', content: typeof data === 'string' ? data : JSON.stringify(data), ts: Date.now() });
+              updateAgentState(convId, { toolTrace: [...acc.trace] });
+            } else if (evt === 'chunk') {
+              acc.stream += data.content || '';
+              updateAgentState(convId, { streamingContent: acc.stream });
+            } else if (evt === 'thinking') {
+              acc.think += data.content || '';
+              updateAgentState(convId, { thinkingContent: acc.think });
+            } else if (evt === 'done') {
+              setMessages(prev => [...prev, {
+                id: data.message_id || crypto.randomUUID(), role: 'assistant',
+                content: data.content || acc.stream, tokens: data.tokens, cost_usd: data.cost_usd || null,
+                tool_trace: acc.trace.length > 0 ? [...acc.trace] : null,
+                tools_used: data.tools_used || null,
+                elapsed_s: data.elapsed_s || null,
+                citations: null, created_at: new Date().toISOString(),
+                reasoning_tokens: null, thinking: acc.think || null,
+              }]);
+              updateAgentState(convId, { isStreaming: false, streamingContent: '', thinkingContent: '', toolTrace: [], jobId: null, status: 'done' });
+              delete agentAccumulators.current[convId];
+              delete agentAbortControllers.current[convId];
+              loadConversations();
+              return;
+            } else if (evt === 'error') {
+              setMessages(prev => [...prev, {
+                id: crypto.randomUUID(), role: 'assistant',
+                content: `Fehler: ${data.error}`, tokens: null, cost_usd: null,
+                tool_trace: acc.trace.length > 0 ? [...acc.trace] : null,
+                citations: null, created_at: new Date().toISOString(),
+              }]);
+              updateAgentState(convId, { isStreaming: false, streamingContent: '', thinkingContent: '', toolTrace: [], jobId: null, status: 'error' });
+              delete agentAccumulators.current[convId];
+              delete agentAbortControllers.current[convId];
+              loadConversations();
+              return;
+            }
+          } catch { /* */ }
+        }
+      }
+
+      const state = agentStates[convId];
+      if (state?.jobId) {
+        setTimeout(() => {
+          const s = agentStates[convId];
+          if (s?.jobId) connectAgentStream(convId, jobId, agentOffsets.current[convId] || 0);
+        }, 2000);
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      const state = agentStates[convId];
+      if (state?.jobId) {
+        setTimeout(() => {
+          const s = agentStates[convId];
+          if (s?.jobId) connectAgentStream(convId, jobId, agentOffsets.current[convId] || 0);
+        }, 3000);
+      }
+    }
+  }, [loadConversations, agentStates, updateAgentState]);
 
   const handleSend = async () => {
     let content = input.trim();
@@ -271,6 +445,7 @@ export function ChatPage() {
         });
         setConversations(prev => [conv, ...prev]);
         convId = conv.id;
+        skipNextFetchRef.current = true;
         setActiveId(conv.id);
       } catch (err) {
         setMessages(prev => [...prev, {
@@ -291,40 +466,92 @@ export function ChatPage() {
       created_at: new Date().toISOString(),
     };
     setMessages(prev => [...prev, userMsg]);
-    setIsStreaming(true);
-    setStreamingContent('');
-    setThinkingContent(mode === 'agent' ? 'InnoPilot verarbeitet mit MCP-Tools...' : '');
+    updateAgentState(convId, {
+      isStreaming: true, streamingContent: '', toolTrace: [], jobId: null, status: 'running',
+      thinkingContent: mode === 'agent' ? 'InnoPilot wird gestartet...' : '',
+    });
     setAttachments([]);
 
     const token = getToken();
-    const endpoint = mode === 'agent'
-      ? `/api/chat/conversations/${convId}/agent`
-      : `/api/chat/conversations/${convId}/messages`;
 
-    try {
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ content, model: selectedModel, temperature }),
-      });
-      if (!resp.ok) {
-        const errorText = await resp.text().catch(() => `HTTP ${resp.status}`);
-        throw new Error(errorText);
-      }
-      await processSSE(resp);
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
+    if (mode === 'agent') {
+      try {
+        const resp = await fetch(`/api/chat/conversations/${convId}/agent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ content, model: selectedModel, temperature }),
+        });
+        if (!resp.ok) {
+          const errorText = await resp.text().catch(() => `HTTP ${resp.status}`);
+          throw new Error(errorText);
+        }
+        const { job_id } = await resp.json();
+        updateAgentState(convId, { jobId: job_id });
+        agentOffsets.current[convId] = 0;
+        agentAccumulators.current[convId] = { stream: '', think: '', trace: [] };
+
+        connectAgentStream(convId, job_id, 0);
+      } catch (err) {
+        updateAgentState(convId, { isStreaming: false, streamingContent: '', thinkingContent: '', status: 'error' });
         setMessages(prev => [...prev, {
           id: crypto.randomUUID(), role: 'assistant',
           content: `Fehler: ${(err as Error).message}`,
           tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
         }]);
+        loadConversations();
       }
-    } finally {
-      setIsStreaming(false);
-      setStreamingContent('');
-      setThinkingContent('');
-      loadConversations();
+    } else {
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      try {
+        const resp = await fetch(`/api/chat/conversations/${convId}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ content, model: selectedModel, temperature }),
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          const errorText = await resp.text().catch(() => `HTTP ${resp.status}`);
+          throw new Error(errorText);
+        }
+        await processSSE(resp, convId);
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          setMessages(prev => [...prev, {
+            id: crypto.randomUUID(), role: 'assistant',
+            content: `Fehler: ${(err as Error).message}`,
+            tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+          }]);
+        }
+      } finally {
+        updateAgentState(convId, { isStreaming: false, streamingContent: '', thinkingContent: '', status: 'done' });
+        loadConversations();
+      }
+    }
+  };
+
+  const handleStop = () => {
+    const cid = activeId;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    if (cid) {
+      agentAbortControllers.current[cid]?.abort();
+      const currentContent = agentStates[cid]?.streamingContent || '';
+      const currentTrace = agentStates[cid]?.toolTrace || [];
+      if (currentContent) {
+        setMessages(prev => [...prev, {
+          id: crypto.randomUUID(), role: 'assistant',
+          content: currentContent + '\n\n*(Abgebrochen)*',
+          tokens: null, cost_usd: null,
+          tool_trace: currentTrace.length > 0 ? currentTrace : null,
+          citations: null, created_at: new Date().toISOString(),
+        }]);
+      }
+      updateAgentState(cid, { isStreaming: false, streamingContent: '', thinkingContent: '', toolTrace: [], jobId: null, status: 'idle' });
+      delete agentAccumulators.current[cid];
+      delete agentAbortControllers.current[cid];
     }
   };
 
@@ -369,8 +596,22 @@ export function ChatPage() {
     if (activeId === id) { setActiveId(null); setMessages([]); }
   };
 
+  const handleDeleteAllChats = async () => {
+    if (conversations.length === 0) return;
+    if (!window.confirm('Alle Chat-Konversationen unwiderruflich löschen? Nachrichten und Verlauf gehen verloren.')) return;
+    try {
+      await api.delete<{ ok: boolean; deleted: number }>('/api/chat/conversations');
+      setConversations([]);
+      setActiveId(null);
+      setMessages([]);
+      await loadConversations();
+    } catch (err) {
+      console.error('Alle Chats löschen fehlgeschlagen:', err);
+    }
+  };
+
   const toggleThinking = (id: string) => {
-    setExpandedThinking(prev => {
+    setCollapsedThinking(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -400,10 +641,22 @@ export function ChatPage() {
       <div className={`${showSidebar ? 'w-72' : 'w-0'} shrink-0 overflow-hidden border-r border-gray-200 bg-white/60 backdrop-blur-sm transition-all dark:border-gray-800 dark:bg-gray-900/60`}>
         <div className="flex h-full w-72 flex-col">
           <div className="border-b border-gray-200 p-3 dark:border-gray-800">
-            <button onClick={() => { setActiveId(null); setMessages([]); }} className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">
-              <PlusIcon className="h-4 w-4" />
-              Neuer Chat
-            </button>
+            <div className="flex gap-2">
+              <button onClick={() => { setActiveId(null); setMessages([]); }} className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">
+                <PlusIcon className="h-4 w-4 shrink-0" />
+                Neuer Chat
+              </button>
+              {conversations.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleDeleteAllChats}
+                  className="shrink-0 rounded-lg border border-red-200 bg-white px-2.5 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-900/50 dark:bg-gray-800 dark:text-red-400 dark:hover:bg-red-950/40"
+                  title="Alle Konversationen löschen"
+                >
+                  Alle
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto">
             {loading ? (
@@ -413,15 +666,41 @@ export function ChatPage() {
             ) : (
               <ul className="space-y-0.5 p-2">
                 {conversations.map(c => (
-                  <li key={c.id} onClick={() => setActiveId(c.id)} className={`group relative cursor-pointer rounded-lg px-3 py-2 text-sm transition-colors ${activeId === c.id ? 'bg-indigo-50 dark:bg-indigo-900/30' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
+                  <li key={c.id} onClick={() => setActiveId(c.id)} className={`group relative cursor-pointer rounded-lg px-3 py-2 pr-9 text-sm transition-colors ${activeId === c.id ? 'bg-indigo-50 dark:bg-indigo-900/30' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
                     <p className="truncate font-medium text-gray-900 dark:text-gray-100">{c.title || c.last_message_preview || 'Neuer Chat'}</p>
                     <div className="mt-0.5 flex items-center gap-1.5">
+                      <span
+                        title={
+                          agentStates[c.id]?.isStreaming
+                            ? 'Agent läuft...'
+                            : agentStates[c.id]?.status === 'error'
+                              ? 'Agent-Fehler'
+                              : isAgentConversation(c)
+                                ? 'Modus: Agent (InnoPilot)'
+                                : c.mode === 'web_search'
+                                  ? 'Modus: Websuche'
+                                  : `Modus: ${c.mode ?? 'Chat'}`
+                        }
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                          agentStates[c.id]?.isStreaming
+                            ? 'bg-violet-500 animate-pulse'
+                            : agentStates[c.id]?.status === 'error'
+                              ? 'bg-red-500'
+                              : agentStates[c.id]?.status === 'done' && isAgentConversation(c)
+                                ? 'bg-green-500'
+                                : isAgentConversation(c)
+                                  ? 'bg-violet-500'
+                                  : c.model.startsWith('ollama/')
+                                    ? 'bg-emerald-500'
+                                    : 'bg-sky-500'
+                        }`}
+                      />
                       <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-400">{modelLabel(c.model)}</span>
                       {c.total_cost_usd > 0 && (
                         <span className="text-[10px] text-gray-400">${c.total_cost_usd.toFixed(4)}</span>
                       )}
                     </div>
-                    <button onClick={(e) => handleDelete(c.id, e)} className="absolute right-2 top-2 rounded p-1 text-gray-400 opacity-0 hover:bg-red-100 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-900/30" title="Löschen">
+                    <button onClick={(e) => handleDelete(c.id, e)} className="absolute right-2 top-2 rounded p-1 text-gray-500 opacity-50 transition-colors hover:bg-red-100 hover:text-red-600 hover:!opacity-100 group-hover:opacity-80 dark:text-gray-400 dark:hover:bg-red-900/40 dark:hover:text-red-400" title="Konversation löschen">
                       <TrashIcon className="h-3.5 w-3.5" />
                     </button>
                   </li>
@@ -457,25 +736,19 @@ export function ChatPage() {
         {!activeId && messages.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center px-4">
             <div className="mb-8 text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-50 dark:bg-indigo-900/30">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-50 dark:bg-indigo-900/30">
                 {modeIcon(mode)}
               </div>
-              <p className="text-lg font-medium text-gray-700 dark:text-gray-300">
-                {mode === 'chat' && 'Neuen Chat starten'}
-                {mode === 'web_search' && 'Websuche starten'}
-                {mode === 'deep_research' && 'Deep Research starten'}
-                {mode === 'agent' && 'Agent-Konversation starten'}
-              </p>
-              <p className="mt-1 max-w-md text-sm text-gray-400 dark:text-gray-500">
-                {mode === 'chat' && 'Wähle ein Modell und schreibe eine Nachricht. Ideal für direkte Fragen, Texte erstellen, Ideen brainstormen.'}
-                {mode === 'web_search' && 'Gib einen Suchbegriff oder eine Frage ein — Tavily liefert aktuelle Ergebnisse aus dem Web. Beispiel: «Neueste Trends KI Schweiz 2026» oder «Wechselkurs CHF EUR heute»'}
-                {mode === 'deep_research' && 'Stelle eine komplexe Frage — das LLM recherchiert umfassend mit mehreren Quellen. Ideal für Marktanalysen, Technologievergleiche, Zusammenfassungen.'}
-                {mode === 'agent' && 'Gib InnoPilot eine Aufgabe — er hat Zugriff auf Kalender, E-Mail, CRM, Aufgaben und mehr. Beispiel: «Zeige meine Termine nächste Woche» oder «Erstelle einen Zeitblocker für Freitag 08:00–09:00»'}
+              <p className="text-lg font-medium text-gray-600 dark:text-gray-300">
+                {mode === 'chat' && 'Was möchtest du wissen?'}
+                {mode === 'web_search' && 'Was soll gesucht werden?'}
+                {mode === 'deep_research' && 'Welches Thema vertiefen?'}
+                {mode === 'agent' && 'Was soll InnoPilot tun?'}
               </p>
             </div>
 
             {/* Prominente Eingabekarte im Leerzustand */}
-            <div className="w-full max-w-2xl">
+            <div className="w-full max-w-4xl px-4">
               {attachments.length > 0 && (
                 <div className="mb-2 flex flex-wrap gap-2">
                   {attachments.map((f, i) => (
@@ -499,13 +772,13 @@ export function ChatPage() {
                         : mode === 'agent' ? 'Aufgabe für InnoPilot eingeben...'
                           : 'Nachricht eingeben... (/suche für Websuche)'
                   }
-                  rows={3}
-                  className="max-h-48 min-h-[80px] w-full resize-none border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
+                  rows={4}
+                  className="max-h-48 min-h-[96px] w-full resize-none border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
                 />
-                <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5">
-                  <div className="flex rounded-lg bg-gray-100 p-0.5 dark:bg-gray-700">
+                <div className="flex items-center gap-1.5 px-3 pb-2.5">
+                  <div className="flex shrink-0 rounded-lg bg-gray-100 p-0.5 dark:bg-gray-700">
                     {MODES.map(m => (
-                      <button key={m.id} onClick={() => setMode(m.id)} className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-all ${mode === m.id ? 'bg-white text-indigo-700 shadow-sm dark:bg-gray-600 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}>
+                      <button key={m.id} onClick={() => setMode(m.id)} title={m.tooltip} className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium whitespace-nowrap transition-all ${mode === m.id ? 'bg-white text-indigo-700 shadow-sm dark:bg-gray-600 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}>
                         {modeIcon(m.id)}
                         <span className="hidden sm:inline">{m.label}</span>
                       </button>
@@ -517,7 +790,7 @@ export function ChatPage() {
                       <div className="relative" ref={modelDropdownRef}>
                         <button onClick={() => setModelOpen(!modelOpen)} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
                           {selectedModelInfo?.type === 'local' ? <LockIcon className="h-3 w-3 text-green-500" /> : <CloudIcon className="h-3 w-3 text-blue-400" />}
-                          <span className="max-w-[120px] truncate">{modelLabel(selectedModel)}</span>
+                          <span className="max-w-[180px] truncate">{modelLabel(selectedModel)}</span>
                           {selectedModelInfo?.capabilities.includes('thinking') && <span className="rounded bg-violet-100 px-1 py-px text-[9px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">T</span>}
                           <ChevronIcon className="h-3 w-3" />
                         </button>
@@ -554,9 +827,23 @@ export function ChatPage() {
                       </div>
                     </>
                   )}
-                  <div className="ml-auto flex items-center gap-2">
-                    {mode === 'web_search' && <span className="text-[10px] text-gray-400 dark:text-gray-500">via Tavily</span>}
-                    {mode === 'agent' && <span className="text-[10px] text-gray-400 dark:text-gray-500">MCP-Tools aktiv</span>}
+                  <div className="ml-auto flex shrink-0 items-center gap-2">
+                    {mode === 'web_search' && <span className="whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500" title="Tavily durchsucht das Web nach aktuellen Ergebnissen">via Tavily</span>}
+                    {mode === 'agent' && (
+                      <span className="group/mcp relative cursor-help whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500">
+                        MCP ({mcpServers.length})
+                        <span className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-64 rounded-lg border border-gray-200 bg-white p-3 text-left text-[11px] leading-relaxed text-gray-600 shadow-xl group-hover/mcp:block dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                          <span className="mb-1.5 block font-semibold text-gray-800 dark:text-gray-100">Verfügbare Tools:</span>
+                          {mcpServers.map(s => (
+                            <span key={s.key} className="block">
+                              <span className="font-medium text-gray-800 dark:text-gray-200">{s.label}</span>
+                              {s.description && <span className="text-gray-500 dark:text-gray-400"> — {s.description}</span>}
+                            </span>
+                          ))}
+                          {mcpServers.length === 0 && <span className="block italic opacity-60">Keine Server konfiguriert</span>}
+                        </span>
+                      </span>
+                    )}
                     <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
                     <button onClick={() => fileInputRef.current?.click()} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="Datei anhängen"><AttachIcon className="h-4 w-4" /></button>
                     <button onClick={handleSend} disabled={!input.trim() || isStreaming} className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"><SendIcon className="h-3.5 w-3.5" /></button>
@@ -567,21 +854,38 @@ export function ChatPage() {
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto px-4 py-6">
-            <div className="mx-auto max-w-3xl space-y-4">
+            <div className="mx-auto max-w-4xl space-y-4">
               {messages.map(msg => (
                 <div key={msg.id} className={`group/msg flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`relative max-w-[85%] rounded-2xl px-4 py-3 ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100'}`}>
-                    {/* Thinking-Block */}
-                    {msg.thinking && (
+                    {/* Thinking + Tool-Trace Block */}
+                    {(msg.thinking || (msg.tool_trace && msg.tool_trace.length > 0)) && (
                       <div className="mb-2">
                         <button onClick={() => toggleThinking(msg.id)} className="flex items-center gap-1.5 text-[11px] font-medium text-violet-600 hover:text-violet-800 dark:text-violet-400 dark:hover:text-violet-300">
                           <BrainIcon className="h-3.5 w-3.5" />
-                          <span>Überlegungen</span>
-                          <svg className={`h-3 w-3 transition-transform ${expandedThinking.has(msg.id) ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                          <span>{msg.tool_trace ? 'Agent-Verlauf' : 'Überlegungen'}</span>
+                          {msg.elapsed_s && <span className="ml-1 text-[10px] font-normal opacity-60">({msg.elapsed_s}s)</span>}
+                          <svg className={`h-3 w-3 transition-transform ${!collapsedThinking.has(msg.id) ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
                         </button>
-                        {expandedThinking.has(msg.id) && (
-                          <div className="mt-1.5 rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs text-violet-800 dark:border-violet-800 dark:bg-violet-900/20 dark:text-violet-300">
-                            <div className="whitespace-pre-wrap">{msg.thinking}</div>
+                        {!collapsedThinking.has(msg.id) && (
+                          <div className="mt-1.5 space-y-1 rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs dark:border-violet-800 dark:bg-violet-900/20">
+                            {msg.tool_trace?.map((te, i) => (
+                              <div key={i} className={`flex items-start gap-2 ${te.type === 'tool_start' ? 'font-medium text-indigo-700 dark:text-indigo-400' : 'text-violet-700 dark:text-violet-400'}`}>
+                                <span className="mt-0.5 flex-shrink-0 text-[10px] opacity-50">{new Date(te.ts).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                                {te.type === 'tool_start' && <span>🔧 {te.content}</span>}
+                                {te.type === 'tool_event' && <span className="whitespace-pre-wrap break-all">{te.content}</span>}
+                                {te.type === 'status' && <span className="italic">{te.content}</span>}
+                              </div>
+                            ))}
+                            {msg.thinking && <div className="mt-2 whitespace-pre-wrap text-violet-800 dark:text-violet-300">{msg.thinking}</div>}
+                            {msg.tools_used && msg.tools_used.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1 border-t border-violet-200 pt-2 dark:border-violet-700">
+                                <span className="text-[10px] text-violet-600 dark:text-violet-400">Verwendete Tools:</span>
+                                {msg.tools_used.map((t, i) => (
+                                  <span key={i} className="rounded bg-violet-200 px-1.5 py-0.5 text-[10px] font-medium text-violet-800 dark:bg-violet-800 dark:text-violet-300">{t}</span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -613,7 +917,7 @@ export function ChatPage() {
                       </p>
                     )}
 
-                    {msg.role === 'assistant' && (
+                    {msg.role === 'assistant' ? (
                       <div className="absolute -bottom-3 right-2 flex items-center gap-0.5 rounded-lg border border-gray-200 bg-white px-1 py-0.5 opacity-0 shadow-sm transition-opacity group-hover/msg:opacity-100 dark:border-gray-700 dark:bg-gray-800">
                         <button onClick={() => copyMsg(msg.id, msg.content)} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Kopieren">
                           {copiedId === msg.id ? <CheckIcon className="h-3.5 w-3.5 text-green-500" /> : <CopyIcon className="h-3.5 w-3.5" />}
@@ -625,6 +929,15 @@ export function ChatPage() {
                           <TaskIcon className="h-3.5 w-3.5" />
                         </button>
                       </div>
+                    ) : (
+                      <div className="absolute -bottom-3 left-2 flex items-center gap-0.5 rounded-lg border border-indigo-400/30 bg-indigo-700 px-1 py-0.5 opacity-0 shadow-sm transition-opacity group-hover/msg:opacity-100">
+                        <button onClick={() => copyMsg(msg.id, msg.content)} className="rounded p-1 text-indigo-200 hover:text-white" title="Prompt kopieren">
+                          {copiedId === msg.id ? <CheckIcon className="h-3.5 w-3.5 text-green-300" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                        </button>
+                        <button onClick={() => { setInput(msg.content); textareaRef.current?.focus(); }} className="rounded p-1 text-indigo-200 hover:text-white" title="Prompt erneut verwenden">
+                          <RefreshIcon className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -634,29 +947,45 @@ export function ChatPage() {
               {isStreaming && (
                 <div className="flex justify-start">
                   <div className="max-w-[85%] rounded-2xl bg-gray-100 px-4 py-3 dark:bg-gray-800">
-                    {thinkingContent && (
-                      <div className="mb-2 rounded-lg border border-violet-200 bg-violet-50 p-3 dark:border-violet-800 dark:bg-violet-900/20">
-                        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-violet-600 dark:text-violet-400">
+                    {/* Live Tool-Trace (zuklappbar, standardmässig offen) */}
+                    {(toolTrace.length > 0 || thinkingContent) && (
+                      <details open className="mb-2">
+                        <summary className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium text-violet-600 dark:text-violet-400">
                           <BrainIcon className="h-3.5 w-3.5 animate-pulse" />
                           <span>{mode === 'agent' ? 'InnoPilot arbeitet...' : 'Modell überlegt...'}</span>
+                        </summary>
+                        <div className="mt-1.5 space-y-1 rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs dark:border-violet-800 dark:bg-violet-900/20">
+                          {toolTrace.map((te, i) => (
+                            <div key={i} className={`flex items-start gap-2 ${te.type === 'tool_start' ? 'font-medium text-indigo-700 dark:text-indigo-400' : 'text-violet-700 dark:text-violet-400'}`}>
+                              <span className="mt-0.5 flex-shrink-0 text-[10px] opacity-50">{new Date(te.ts).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                              {te.type === 'tool_start' && <span>🔧 {te.content}</span>}
+                              {te.type === 'tool_event' && <span className="whitespace-pre-wrap break-all">{te.content}</span>}
+                              {te.type === 'status' && <span className="italic">{te.content}</span>}
+                            </div>
+                          ))}
+                          {thinkingContent && !toolTrace.some(t => t.content === thinkingContent) && (
+                            <div className="italic text-violet-700 dark:text-violet-400">{thinkingContent}</div>
+                          )}
                         </div>
-                        <div className="whitespace-pre-wrap text-xs text-violet-800 dark:text-violet-300">{thinkingContent}</div>
-                      </div>
+                      </details>
                     )}
                     {streamingContent ? (
                       <div className="prose prose-sm dark:prose-invert max-w-none">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
                       </div>
-                    ) : !thinkingContent ? (
+                    ) : (
                       <div className="flex items-center gap-2">
                         <div className="flex gap-1">
                           <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400" />
                           <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400 [animation-delay:200ms]" />
                           <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400 [animation-delay:400ms]" />
                         </div>
-                        {mode === 'agent' && <span className="text-xs text-gray-400">InnoPilot wird gestartet...</span>}
                       </div>
-                    ) : null}
+                    )}
+                    <button onClick={handleStop} className="mt-2 flex items-center gap-1.5 rounded-md bg-red-50 px-2.5 py-1 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30" title="Verarbeitung abbrechen">
+                      <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" rx="2" /></svg>
+                      Stopp
+                    </button>
                   </div>
                 </div>
               )}
@@ -668,7 +997,7 @@ export function ChatPage() {
         {/* Anhänge + Eingabe nur wenn Chat aktiv (Leerzustand hat eigene Eingabe) */}
         {(activeId || messages.length > 0) && attachments.length > 0 && (
           <div className="border-t border-gray-200 bg-gray-50 px-4 py-2 dark:border-gray-800 dark:bg-gray-900/50">
-            <div className="mx-auto flex max-w-3xl flex-wrap gap-2">
+            <div className="mx-auto flex max-w-4xl flex-wrap gap-2">
               {attachments.map((f, i) => (
                 <div key={i} className="flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-xs text-gray-700 shadow-sm dark:bg-gray-800 dark:text-gray-300">
                   <FileIcon className="h-3.5 w-3.5 text-gray-400" />
@@ -684,7 +1013,7 @@ export function ChatPage() {
 
         {/* Eingabebereich am unteren Rand — nur bei aktiver Konversation */}
         {(activeId || messages.length > 0) && <div className="border-t border-gray-200 bg-white/80 px-4 py-3 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/80">
-          <div className="mx-auto max-w-3xl">
+          <div className="mx-auto max-w-4xl">
             <div className="rounded-2xl border border-gray-300 bg-white shadow-sm transition-colors focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 dark:border-gray-600 dark:bg-gray-800">
               <textarea
                 ref={textareaRef}
@@ -702,14 +1031,15 @@ export function ChatPage() {
               />
 
               {/* Untere Toolbar: Modi + Modell + Temperatur + Buttons */}
-              <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5">
+              <div className="flex items-center gap-1.5 px-3 pb-2.5">
                 {/* Segmented Mode Control */}
-                <div className="flex rounded-lg bg-gray-100 p-0.5 dark:bg-gray-700">
+                <div className="flex shrink-0 rounded-lg bg-gray-100 p-0.5 dark:bg-gray-700">
                   {MODES.map(m => (
                     <button
                       key={m.id}
                       onClick={() => setMode(m.id)}
-                      className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-all ${
+                      title={m.tooltip}
+                      className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium whitespace-nowrap transition-all ${
                         mode === m.id
                           ? 'bg-white text-indigo-700 shadow-sm dark:bg-gray-600 dark:text-indigo-300'
                           : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
@@ -730,7 +1060,7 @@ export function ChatPage() {
                     <div className="relative" ref={modelDropdownRef}>
                       <button onClick={() => setModelOpen(!modelOpen)} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
                         {selectedModelInfo?.type === 'local' ? <LockIcon className="h-3 w-3 text-green-500" /> : <CloudIcon className="h-3 w-3 text-blue-400" />}
-                        <span className="max-w-[120px] truncate">{modelLabel(selectedModel)}</span>
+                        <span className="max-w-[180px] truncate">{modelLabel(selectedModel)}</span>
                         {selectedModelInfo?.capabilities.includes('thinking') && <span className="rounded bg-violet-100 px-1 py-px text-[9px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">T</span>}
                         <ChevronIcon className="h-3 w-3" />
                       </button>
@@ -772,12 +1102,24 @@ export function ChatPage() {
                 )}
 
                 {/* Modus-Hinweis + Nachrichtenanzahl */}
-                <div className="ml-auto flex items-center gap-2">
+                <div className="ml-auto flex shrink-0 items-center gap-2">
                   {mode === 'web_search' && (
-                    <span className="text-[10px] text-gray-400 dark:text-gray-500" title="Tavily durchsucht das Web nach aktuellen Ergebnissen">via Tavily</span>
+                    <span className="whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500" title="Tavily durchsucht das Web nach aktuellen Ergebnissen">via Tavily</span>
                   )}
                   {mode === 'agent' && (
-                    <span className="text-[10px] text-gray-400 dark:text-gray-500" title="InnoPilot hat Zugriff auf Kalender, E-Mail, CRM, Aufgaben">MCP-Tools aktiv</span>
+                    <span className="group/mcp relative cursor-help whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500">
+                      MCP ({mcpServers.length})
+                      <span className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-64 rounded-lg border border-gray-200 bg-white p-3 text-left text-[11px] leading-relaxed text-gray-600 shadow-xl group-hover/mcp:block dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                        <span className="mb-1.5 block font-semibold text-gray-800 dark:text-gray-100">Verfügbare Tools:</span>
+                        {mcpServers.map(s => (
+                          <span key={s.key} className="block">
+                            <span className="font-medium text-gray-800 dark:text-gray-200">{s.label}</span>
+                            {s.description && <span className="text-gray-500 dark:text-gray-400"> — {s.description}</span>}
+                          </span>
+                        ))}
+                        {mcpServers.length === 0 && <span className="block italic opacity-60">Keine Server konfiguriert</span>}
+                      </span>
+                    </span>
                   )}
                   {messages.length > 0 && (
                     <span className="text-[10px] text-gray-400 dark:text-gray-500">{messages.length} Nachrichten</span>
@@ -858,6 +1200,9 @@ function BrainIcon({ className }: { className?: string }) {
 }
 function TaskIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>;
+}
+function RefreshIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" /></svg>;
 }
 function ChatBubbleIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" /></svg>;

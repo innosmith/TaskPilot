@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
 from app.database import get_db
-from app.models import AgentJob, EmailTriage, Task, User
+from app.models import AgentJob, ChatTriage, EmailTriage, Task, User
 from app.schemas import AgentJobCreate, AgentJobOut, AgentJobUpdate, AgentJobWithTask
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
@@ -286,12 +286,14 @@ class BulkDeleteResult(BaseModel):
 async def bulk_delete_agent_jobs(
     status: str = Query(..., description="Status der zu löschenden Jobs"),
     older_than_days: int | None = Query(None, ge=0, description="Nur Jobs älter als X Tage löschen"),
+    job_type: str | None = Query(None, description="Nur Jobs dieses Typs (z.B. email_triage, chat_triage, chat_agent)"),
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> BulkDeleteResult:
     """Bulk-Löschung von abgeschlossenen/fehlgeschlagenen Jobs.
     
     status=stale setzt running-Jobs > 30 Min auf failed und gibt die Anzahl zurück.
+    Optional: job_type schränkt auf einen bestimmten Typ ein.
     """
     if status == "stale":
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
@@ -321,6 +323,8 @@ async def bulk_delete_agent_jobs(
         raise HTTPException(status_code=400, detail="status muss 'completed', 'failed', 'both' oder 'stale' sein")
 
     conditions = [status_filter]
+    if job_type:
+        conditions.append(AgentJob.job_type == job_type)
     if older_than_days is not None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
         conditions.append(AgentJob.created_at < cutoff)
@@ -339,6 +343,11 @@ async def bulk_delete_agent_jobs(
             await db.execute(
                 update(EmailTriage)
                 .where(EmailTriage.agent_job_id.in_(job_ids))
+                .values(agent_job_id=None)
+            )
+            await db.execute(
+                update(ChatTriage)
+                .where(ChatTriage.agent_job_id.in_(job_ids))
                 .values(agent_job_id=None)
             )
         await db.execute(delete(AgentJob).where(and_(*conditions)))
@@ -361,6 +370,11 @@ async def delete_agent_job(
         await db.execute(
             update(EmailTriage)
             .where(EmailTriage.agent_job_id == job_id)
+            .values(agent_job_id=None)
+        )
+        await db.execute(
+            update(ChatTriage)
+            .where(ChatTriage.agent_job_id == job_id)
             .values(agent_job_id=None)
         )
         await db.delete(job)

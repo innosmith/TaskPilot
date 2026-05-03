@@ -12,10 +12,12 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
+from app.config import get_settings as _get_settings
 from app.database import get_db
 from app.models import Project, Tag, Task, User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "pipedrive"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "email-graph"))
 
 from app.routers.pipedrive import _extract_pic_url
 
@@ -72,6 +74,14 @@ class BexioHit(BaseModel):
     email: str | None = None
 
 
+class FileHit(BaseModel):
+    id: str
+    name: str
+    web_url: str | None = None
+    size: int | None = None
+    last_modified: str | None = None
+
+
 class SearchResults(BaseModel):
     tasks: list[SearchTaskHit]
     projects: list[SearchProjectHit]
@@ -80,6 +90,7 @@ class SearchResults(BaseModel):
     toggl: list[TogglHit]
     bexio: list[BexioHit]
     signa: list["SignaHit"]
+    files: list[FileHit]
 
 
 class SignaHit(BaseModel):
@@ -88,6 +99,16 @@ class SignaHit(BaseModel):
     type: str  # "rss" | "youtube" | "web"
     score: float | None = None
     source: str | None = None
+
+
+class FileHit(BaseModel):
+    id: str
+    name: str
+    size: int | None = None
+    last_modified: str | None = None
+    web_url: str | None = None
+    is_folder: bool = False
+    path: str | None = None
 
 
 async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
@@ -276,6 +297,43 @@ async def _search_signa(term: str) -> list[SignaHit]:
         return []
 
 
+async def _search_onedrive(term: str) -> list[FileHit]:
+    """OneDrive-Dateien nach Name durchsuchen."""
+    try:
+        from graph_client import GraphClient, GraphConfig  # noqa: E402
+        s = _get_settings()
+        if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):
+            return []
+        client = GraphClient(GraphConfig(
+            tenant_id=s.graph_tenant_id,
+            client_id=s.graph_client_id,
+            client_secret=s.graph_client_secret,
+            user_email=s.graph_user_email,
+        ))
+        try:
+            items = await asyncio.wait_for(
+                client.search_drive(term, top=8),
+                timeout=8.0,
+            )
+            return [
+                FileHit(
+                    id=item.get("id", ""),
+                    name=item.get("name", ""),
+                    size=item.get("size"),
+                    last_modified=item.get("lastModifiedDateTime"),
+                    web_url=item.get("webUrl"),
+                    is_folder=bool(item.get("folder")),
+                    path=(item.get("parentReference") or {}).get("path", ""),
+                )
+                for item in items
+            ]
+        finally:
+            await client.close()
+    except Exception as exc:
+        logger.debug("OneDrive-Suche fehlgeschlagen (wird ignoriert): %s", exc)
+        return []
+
+
 @router.get("", response_model=SearchResults)
 async def search(
     q: str = Query(..., min_length=1),
@@ -301,9 +359,10 @@ async def search(
     toggl_task = _search_toggl(user, q)
     bexio_task = _search_bexio(user, q)
     signa_task = _search_signa(q)
+    files_task = _search_onedrive(q)
 
-    task_result, project_result, tag_result, crm_results, toggl_results, bexio_results, signa_results = await asyncio.gather(
-        db_task, db_project, db_tag, crm_task, toggl_task, bexio_task, signa_task,
+    task_result, project_result, tag_result, crm_results, toggl_results, bexio_results, signa_results, file_results = await asyncio.gather(
+        db_task, db_project, db_tag, crm_task, toggl_task, bexio_task, signa_task, files_task,
     )
 
     tasks = [
@@ -325,4 +384,4 @@ async def search(
         for t in tag_result.scalars().all()
     ]
 
-    return SearchResults(tasks=tasks, projects=projects, tags=tags, crm=crm_results, toggl=toggl_results, bexio=bexio_results, signa=signa_results)
+    return SearchResults(tasks=tasks, projects=projects, tags=tags, crm=crm_results, toggl=toggl_results, bexio=bexio_results, signa=signa_results, files=file_results)

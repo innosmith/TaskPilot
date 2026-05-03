@@ -24,6 +24,9 @@ websockets>=14.0
 croniter>=5.0
 cachetools>=7.0
 
+# PDF-Extraktion (MCP download_file)
+pymupdf>=1.27
+
 # Testing
 pytest>=8.0
 pytest-asyncio>=0.24

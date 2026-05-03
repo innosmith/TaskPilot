@@ -188,7 +188,7 @@ export function InboxPage() {
   const [showCompose, setShowCompose] = useState(false);
   const [composeReplyTo, setComposeReplyTo] = useState<string | undefined>();
   const [unreadOnly, setUnreadOnly] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inbox' | 'approvals'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'email' | 'teams'>('email');
 
   const [triageMap, setTriageMap] = useState<Record<string, TriageItem>>({});
   const [triageStats, setTriageStats] = useState<TriageStats | null>(null);
@@ -391,11 +391,34 @@ export function InboxPage() {
       {/* Header */}
       <div className={`border-b px-4 py-4 sm:px-6 backdrop-blur-xl ${hasBg ? 'border-white/10 bg-black/35' : 'border-gray-200/60 bg-white/80 dark:border-gray-800/60 dark:bg-gray-900/80'}`}>
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className={`text-xl font-bold ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>Posteingang</h1>
-            <p className={`mt-0.5 text-sm ${hasBg ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
-              E-Mails verwalten und beantworten
-            </p>
+          <div className="flex items-center gap-6">
+            <div>
+              <h1 className={`text-xl font-bold ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>Posteingang</h1>
+              <p className={`mt-0.5 text-sm ${hasBg ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
+                Nachrichten verwalten und beantworten
+              </p>
+            </div>
+            <div className="flex rounded-lg border border-gray-200/60 bg-white/50 dark:border-gray-700/60 dark:bg-gray-800/50">
+              {[
+                { id: 'email' as const, label: 'E-Mail', icon: 'M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75' },
+                { id: 'teams' as const, label: 'Teams', icon: 'M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155' },
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => { setActiveTab(tab.id); setSelectedEmail(null); }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                    activeTab === tab.id
+                      ? 'bg-indigo-600 text-white'
+                      : hasBg ? 'text-white/70 hover:bg-white/10' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800'
+                  }`}
+                >
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
+                  </svg>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -432,6 +455,9 @@ export function InboxPage() {
         </div>
       </div>
 
+      {activeTab === 'teams' && <TeamsChatPanel hasBg={hasBg} />}
+
+      {activeTab === 'email' && <>
       {/* Mobile folder tabs */}
       <div className={`scrollbar-hide flex items-stretch gap-1 overflow-x-auto border-b px-3 md:hidden ${hasBg ? 'border-white/10 bg-black/30 backdrop-blur-sm' : 'border-gray-200/60 bg-white/60 backdrop-blur-sm dark:border-gray-800/60 dark:bg-gray-900/60'}`}>
         {[
@@ -457,8 +483,6 @@ export function InboxPage() {
         ))}
       </div>
 
-      {/* E-Mail-Inhalt */}
-      <>
       {/* Triage-Statistik-Leiste */}
       {triageStats && triageStats.total_pending > 0 && (
         <div className={`flex items-center gap-4 border-b px-4 py-2.5 text-xs sm:px-6 backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-gray-200/60 bg-white/60 dark:border-gray-800/60 dark:bg-gray-900/60'}`}>
@@ -775,7 +799,7 @@ export function InboxPage() {
 
       {/* CreateTaskFromEmail dialog */}
       <CreateTaskFromEmailListener onTaskCreated={fetchTriage} />
-      </>
+      </>}
       </div>
 
       <BackgroundPicker
@@ -1463,6 +1487,210 @@ function TaskSuggestionsSection({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Teams Chat Panel ---------- */
+
+interface TeamsChatSummary {
+  id: string;
+  topic: string | null;
+  chatType: string | null;
+  createdDateTime: string | null;
+  lastMessage: {
+    body: string;
+    from: string | null;
+    createdDateTime: string | null;
+  } | null;
+}
+
+interface TeamsChatMessage {
+  id: string;
+  from: string | null;
+  fromId: string | null;
+  body: string;
+  bodyContentType: string | null;
+  createdDateTime: string | null;
+  messageType: string | null;
+}
+
+function TeamsChatPanel({ hasBg }: { hasBg: boolean }) {
+  const [chats, setChats] = useState<TeamsChatSummary[]>([]);
+  const [messages, setMessages] = useState<TeamsChatMessage[]>([]);
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [msgLoading, setMsgLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get<TeamsChatSummary[]>('/api/teams/chats?top=30')
+      .then(setChats)
+      .catch(e => setError(e instanceof Error ? e.message : 'Fehler beim Laden'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const openChat = async (chatId: string) => {
+    setSelectedChatId(chatId);
+    setMsgLoading(true);
+    try {
+      const msgs = await api.get<TeamsChatMessage[]>(`/api/teams/chats/${chatId}/messages?top=30`);
+      setMessages(msgs);
+    } catch {
+      setMessages([]);
+    } finally {
+      setMsgLoading(false);
+    }
+  };
+
+  const fmtDate = (dateStr: string | null) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+  };
+
+  const selectedChat = chats.find(c => c.id === selectedChatId);
+
+  return (
+    <div className="flex flex-1 overflow-hidden">
+      {/* Chat-Liste */}
+      <div className={`${selectedChatId ? 'hidden md:block md:w-[380px]' : 'w-full'} shrink-0 overflow-y-auto border-r ${hasBg ? 'border-white/10' : 'border-gray-200/60 dark:border-gray-800/60'}`}>
+        {loading ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+          </div>
+        ) : error ? (
+          <div className="mx-4 mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
+            {error}
+          </div>
+        ) : chats.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400 dark:text-gray-600">
+            <svg className="h-12 w-12" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155" />
+            </svg>
+            <span className="text-sm">Keine Teams-Chats</span>
+          </div>
+        ) : (
+          <div className="space-y-2 p-3">
+            {chats.map(chat => {
+              const isSelected = chat.id === selectedChatId;
+              const chatLabel = chat.topic || chat.lastMessage?.from || chat.chatType || 'Chat';
+              const avatarColors = ['bg-violet-500', 'bg-blue-500', 'bg-teal-500', 'bg-rose-500', 'bg-amber-500'];
+              const colorIdx = (chat.id || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0) % avatarColors.length;
+              const initials = chatLabel.split(/[\s.]+/).filter(Boolean).slice(0, 2).map(p => p[0]?.toUpperCase() || '').join('');
+
+              return (
+                <button
+                  key={chat.id}
+                  onClick={() => openChat(chat.id)}
+                  className={`group flex w-full items-start gap-3 rounded-xl px-4 py-3 text-left transition-all ${
+                    hasBg
+                      ? isSelected
+                        ? 'bg-black/40 shadow-lg backdrop-blur-xl ring-1 ring-white/20'
+                        : 'bg-black/30 shadow-sm backdrop-blur-lg hover:bg-black/40'
+                      : isSelected
+                        ? 'bg-indigo-50/80 shadow-md ring-1 ring-indigo-200/50 dark:bg-indigo-950/40 dark:ring-indigo-800/50'
+                        : 'bg-white/80 shadow-sm hover:bg-white hover:shadow-md dark:bg-gray-900/60 dark:hover:bg-gray-900/80'
+                  }`}
+                >
+                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${avatarColors[colorIdx]}`}>
+                    {initials}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`text-[13px] truncate ${hasBg ? 'font-semibold text-white drop-shadow' : 'font-semibold text-gray-900 dark:text-white'}`}>
+                        {chatLabel}
+                      </span>
+                      <span className={`shrink-0 text-[10px] ${hasBg ? 'text-white/70' : 'text-gray-400 dark:text-gray-500'}`}>
+                        {fmtDate(chat.lastMessage?.createdDateTime || chat.createdDateTime)}
+                      </span>
+                    </div>
+                    {chat.chatType && (
+                      <span className={`inline-block mt-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                        chat.chatType === 'group' ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300'
+                      }`}>
+                        {chat.chatType === 'group' ? 'Gruppe' : chat.chatType === 'oneOnOne' ? '1:1' : chat.chatType}
+                      </span>
+                    )}
+                    {chat.lastMessage?.body && (
+                      <p className={`mt-0.5 truncate text-xs ${hasBg ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'}`}>
+                        {chat.lastMessage.from && <span className="font-medium">{chat.lastMessage.from}: </span>}
+                        {chat.lastMessage.body.replace(/<[^>]+>/g, '').substring(0, 100)}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Chat-Detail / Nachrichten */}
+      <div className={`${selectedChatId ? 'flex-1' : 'hidden md:flex md:flex-1'} flex flex-col overflow-hidden ${hasBg ? 'bg-black/20 backdrop-blur-sm' : 'bg-white/40 dark:bg-gray-900/20'}`}>
+        {msgLoading ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+          </div>
+        ) : selectedChatId && messages.length > 0 ? (
+          <>
+            <div className="flex items-center gap-3 border-b border-gray-200/60 px-4 py-3 dark:border-gray-800/60">
+              <button
+                onClick={() => setSelectedChatId(null)}
+                className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 md:hidden"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
+                </svg>
+              </button>
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                {selectedChat?.topic || selectedChat?.lastMessage?.from || 'Chat'}
+              </h3>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {[...messages].reverse().map(msg => {
+                if (msg.messageType === 'systemEventMessage') return null;
+                return (
+                  <div key={msg.id} className="flex gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-[10px] font-bold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                      {(msg.from || '?').split(/[\s.]+/).slice(0, 2).map(p => p[0]?.toUpperCase() || '').join('')}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-gray-900 dark:text-white">{msg.from || 'Unbekannt'}</span>
+                        <span className="text-[10px] text-gray-400 dark:text-gray-500">{fmtDate(msg.createdDateTime)}</span>
+                      </div>
+                      {msg.bodyContentType === 'html' ? (
+                        <div
+                          className="mt-0.5 prose prose-sm max-w-none text-sm text-gray-700 dark:prose-invert dark:text-gray-300"
+                          dangerouslySetInnerHTML={{ __html: msg.body }}
+                        />
+                      ) : (
+                        <p className="mt-0.5 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{msg.body}</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : selectedChatId && messages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400 dark:text-gray-600">
+            <span className="text-sm">Keine Nachrichten in diesem Chat</span>
+          </div>
+        ) : (
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+            <svg className="h-16 w-16 text-gray-200 dark:text-gray-700" fill="none" viewBox="0 0 24 24" strokeWidth={0.8} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155" />
+            </svg>
+            <p className="text-sm font-medium text-gray-400 dark:text-gray-500">Teams-Chat auswählen</p>
+            <p className="text-xs text-gray-300 dark:text-gray-600">Klicke auf einen Chat, um Nachrichten anzuzeigen</p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -34,15 +34,19 @@ Beispiel: `email_triage:550e8400-e29b-41d4-a716-446655440000:1714300000`
 
 ## MCP-Server
 
-Zwei MCP-Server sind in `config.json → tools.mcpServers` registriert:
+Sieben MCP-Server sind in `config.json → tools.mcpServers` registriert:
 
-| Name | Quellcode | Zweck | Env-Vars |
-|------|-----------|-------|----------|
-| `taskpilot` | `src/mcp-taskpilot/server.py` | DB-Zugriff (Tasks, Projekte, Boards) | `TP_DB_*` |
-| `email` | `src/mcp-email/server.py` | Graph API (E-Mails, Kalender, Drafts) | `GRAPH_*` |
-| `pipedrive` | `src/mcp-pipedrive/server.py` | Pipedrive CRM (Kontakte, Deals, Leads) | `PIPEDRIVE_API_TOKEN` |
+| Name | Quellcode | Zweck | Env-Vars | Tool-Prefix |
+|------|-----------|-------|----------|-------------|
+| `taskpilot` | `src/mcp-taskpilot/server.py` | DB-Zugriff (Tasks, Projekte, Boards) | `TP_DB_*` | `mcp_taskpilot_*` |
+| `graph` | `src/mcp-graph/server.py` | Microsoft Graph (E-Mails, Kalender, Chat, Files, Planner) | `GRAPH_*` | `mcp_graph_*` |
+| `pipedrive` | `src/mcp-pipedrive/server.py` | Pipedrive CRM (Kontakte, Deals, Leads, Aktivitäten) | `TP_PIPEDRIVE_*` | `mcp_pipedrive_*` |
+| `bexio` | `src/mcp-bexio/server.py` | Buchhaltung (Kontakte, Rechnungen, Journal, Kontenplan, Bankkonten) | `TP_BEXIO_API_TOKEN` | `mcp_bexio_*` |
+| `toggl` | `src/mcp-toggl/server.py` | Zeiterfassung (Projekte, Kunden, Zeiteinträge) | `TP_TOGGL_*` | `mcp_toggl_*` |
+| `signa` | `src/mcp-signa/server.py` | SIGNA Strategic Intelligence (Signale, Briefings, Deep-Dives) | `TP_ISI_*` | `mcp_signa_*` |
+| `invoiceinsight` | `src/mcp-invoiceinsight/server.py` | Kreditoren-Analyse (KPIs, Zahlungen, Anomalien, Cashflow) | `TP_INVOICEINSIGHT_*` | `mcp_invoiceinsight_*` |
 
-Beide Server werden als Subprocess vom Nanobot gestartet (stdio-Transport).
+Alle Server werden als Subprocess vom Nanobot gestartet (stdio-Transport). Tokens werden aus der DB (User-Settings) oder `.env.dev` propagiert via `_populate_env_from_db()` im Worker.
 
 ## Metadata-Keys für AgentJobs (KRITISCH)
 
@@ -66,9 +70,9 @@ Bei der Erstellung von `AgentJob`-Records müssen folgende Keys in `metadata_jso
 1. Polling alle 10s nach `status='queued'` Jobs
 2. `_build_triage_prompt(job)` baut den Prompt aus Metadata
 3. Prompt enthält **PFLICHT-Aufrufe** (Tool-Calls, die der Agent ausführen muss):
-   - `mcp_email_get_email(email_id)` — voller E-Mail-Body
-   - `mcp_email_get_thread(conversation_id)` — Thread-Kontext
-   - `mcp_email_search_sender_history(from_address, top=5)` — bisherige Kommunikation
+   - `mcp_graph_get_email(email_id)` — voller E-Mail-Body
+   - `mcp_graph_get_thread(conversation_id)` — Thread-Kontext
+   - `mcp_graph_search_sender_history(from_address, top=5)` — bisherige Kommunikation
 4. `bot.run(prompt, session_key=...)` startet den Nanobot
 5. Post-Processing: Triage-Klasse extrahieren, ggf. Draft erstellen, Task anlegen
 
@@ -93,6 +97,6 @@ Nanobot konsolidiert periodisch Session-Daten zu langfristigem Wissen:
 1. **`maxToolIterations: 200`** — Bei langen Newsletter-Mails kann der Agent alle Iterationen aufbrauchen. In Logs auf `max iterations reached` achten.
 2. **Graph API `$filter` + `$orderby`** — Kombination wird von Microsoft nicht unterstützt. `search_sender_emails()` sortiert deshalb Python-seitig.
 3. **Graph API `$search`-Fallback** — Bei HTTP 400 auf `$filter` wird automatisch auf `$search` umgestellt.
-4. **HTML-Body** — E-Mails kommen als HTML. `_html_to_text()` in `mcp-email/server.py` konvertiert zu Plain-Text (Style/Script-Tags entfernt, `<br>` → Newline).
+4. **HTML-Body** — E-Mails kommen als HTML. `_html_to_text()` in `mcp-graph/server.py` konvertiert zu Plain-Text (Style/Script-Tags entfernt, `<br>` → Newline).
 5. **Thread-Limits** — `max_per_msg=3000`, `max_total=15000` Zeichen pro Thread-Kontext um Token-Overflow zu vermeiden.
 6. **Schweizer Deutsch im Prompt** — Alle generierten Texte müssen "ss" statt "ß", korrekte Umlaute (ä, ö, ü) verwenden. Im Prompt explizit instruiert.

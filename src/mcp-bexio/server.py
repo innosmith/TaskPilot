@@ -111,6 +111,77 @@ TOOLS = [
             "required": ["project_id"],
         },
     ),
+    Tool(
+        name="list_invoices",
+        description="Rechnungen (kb_invoice) in Bexio auflisten. Optional nach Kontakt filtern.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "contact_id": {"type": "integer", "description": "Kontakt-ID zum Filtern"},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    ),
+    Tool(
+        name="get_invoice",
+        description="Details einer einzelnen Bexio-Rechnung laden (Positionen, Betrag, Status).",
+        inputSchema={
+            "type": "object",
+            "properties": {"invoice_id": {"type": "integer"}},
+            "required": ["invoice_id"],
+        },
+    ),
+    Tool(
+        name="search_invoices",
+        description=(
+            "Rechnungen filtern nach Status und/oder Zeitraum. "
+            "Status: draft, pending, partial, paid, overdue, cancelled."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Rechnungsstatus (z.B. pending, paid, overdue)"},
+                "from_date": {"type": "string", "description": "Ab-Datum (YYYY-MM-DD)"},
+                "to_date": {"type": "string", "description": "Bis-Datum (YYYY-MM-DD)"},
+            },
+        },
+    ),
+    Tool(
+        name="get_journal",
+        description=(
+            "Buchhaltungsjournal laden (alle Buchungen im Zeitraum). "
+            "Liefert debit/credit Konto, Betrag, Datum, Beschreibung."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "from_date": {"type": "string", "description": "Start-Datum (YYYY-MM-DD)"},
+                "to_date": {"type": "string", "description": "End-Datum (YYYY-MM-DD)"},
+            },
+            "required": ["from_date", "to_date"],
+        },
+    ),
+    Tool(
+        name="list_accounts",
+        description="Kontenplan (Chart of Accounts) aus Bexio laden.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 500},
+            },
+        },
+    ),
+    Tool(
+        name="list_bank_accounts",
+        description="Alle Bankkonten mit aktuellem Saldo aus Bexio laden.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="get_business_years",
+        description="Geschäftsjahre aus Bexio laden (Start, Ende, Status).",
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 server = Server("taskpilot-bexio")
@@ -202,6 +273,66 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "get_project":
         result = await c.get_project(arguments["project_id"])
+        return _json_response(result)
+
+    if name == "list_invoices":
+        result = await c.list_invoices(
+            contact_id=arguments.get("contact_id"),
+            limit=arguments.get("limit", 50),
+            offset=arguments.get("offset", 0),
+        )
+        compact = [
+            {"id": inv.get("id"), "document_nr": inv.get("document_nr"),
+             "title": inv.get("title"), "contact_id": inv.get("contact_id"),
+             "total": inv.get("total"), "total_net": inv.get("total_net"),
+             "is_valid_from": inv.get("is_valid_from"),
+             "is_valid_to": inv.get("is_valid_to"),
+             "status": inv.get("kb_item_status_id")}
+            for inv in result
+        ]
+        return _json_response(compact)
+
+    if name == "get_invoice":
+        result = await c.get_invoice(arguments["invoice_id"])
+        return _json_response(result)
+
+    if name == "search_invoices":
+        result = await c.search_invoices(
+            status=arguments.get("status"),
+            from_date=arguments.get("from_date"),
+            to_date=arguments.get("to_date"),
+        )
+        compact = [
+            {"id": inv.get("id"), "document_nr": inv.get("document_nr"),
+             "title": inv.get("title"), "contact_id": inv.get("contact_id"),
+             "total": inv.get("total"), "is_valid_from": inv.get("is_valid_from"),
+             "status": inv.get("kb_item_status_id")}
+            for inv in result
+        ]
+        return _json_response(compact)
+
+    if name == "get_journal":
+        result = await c.get_journal(
+            from_date=arguments["from_date"],
+            to_date=arguments["to_date"],
+        )
+        return _json_response(result)
+
+    if name == "list_accounts":
+        result = await c.list_accounts(limit=arguments.get("limit", 500))
+        compact = [
+            {"id": a.get("id"), "account_no": a.get("account_no"),
+             "name": a.get("name"), "account_type": a.get("account_type")}
+            for a in result
+        ]
+        return _json_response(compact)
+
+    if name == "list_bank_accounts":
+        result = await c.list_bank_accounts()
+        return _json_response(result)
+
+    if name == "get_business_years":
+        result = await c.get_business_years()
         return _json_response(result)
 
     return _json_response({"error": f"Unbekanntes Tool: {name}"})

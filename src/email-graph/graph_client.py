@@ -1,6 +1,13 @@
-"""Microsoft Graph API Client für E-Mail- und Kalender-Zugriff (OAuth2 Client Credentials Flow).
+"""Microsoft Graph API Client (OAuth2 Client Credentials Flow).
 
-Scopes: Mail.Read, Mail.ReadWrite, Mail.Send, Calendars.Read, Calendars.ReadWrite (Application-Level).
+Scopes (Application-Level):
+  Mail.Read, Mail.ReadWrite, Mail.Send,
+  Calendars.Read, Calendars.ReadWrite,
+  Chat.Read.All, ChannelMessage.Read.All,
+  Files.ReadWrite.All, Sites.Read.All,
+  Tasks.ReadWrite.All,
+  OnlineMeetingTranscript.Read.All (optional, für Meeting-Transkripte).
+
 Konfig via Umgebungsvariablen: GRAPH_TENANT_ID, GRAPH_CLIENT_ID,
 GRAPH_CLIENT_SECRET, GRAPH_USER_EMAIL.
 """
@@ -141,6 +148,31 @@ class GraphClient:
         if resp.status_code == 403:
             raise PermissionError("Graph API 403 Forbidden -- fehlende Permissions.")
         resp.raise_for_status()
+
+    async def _get_text(self, path: str, params: dict | None = None) -> str:
+        """GET-Request der Text statt JSON zurückgibt (z.B. VTT-Transkripte)."""
+        client = await self._ensure_client()
+        headers = await self._headers()
+        resp = await client.get(f"{GRAPH_BASE}{path}", headers=headers, params=params)
+        resp.raise_for_status()
+        return resp.text
+
+    async def _get_bytes(self, path: str) -> bytes:
+        """GET-Request der Binärdaten zurückgibt (z.B. Datei-Downloads).
+
+        Graph API antwortet auf /content-Endpunkte mit 302 Redirect zur
+        Pre-Auth-Download-URL. Deshalb follow_redirects=True.
+        """
+        client = await self._ensure_client()
+        headers = await self._headers()
+        resp = await client.get(
+            f"{GRAPH_BASE}{path}",
+            headers=headers,
+            follow_redirects=True,
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        return resp.content
 
     @property
     def _user_path(self) -> str:
@@ -470,6 +502,7 @@ class GraphClient:
         is_all_day: bool = False,
         location: str | None = None,
         show_as: str = "busy",
+        categories: list[str] | None = None,
     ) -> dict:
         """Neuen Termin / Zeitblocker erstellen."""
         tz = "Europe/Zurich"
@@ -484,6 +517,8 @@ class GraphClient:
             event["body"] = {"contentType": "HTML", "content": body}
         if location:
             event["location"] = {"displayName": location}
+        if categories:
+            event["categories"] = categories
         return await self._post(f"{self._user_path}/events", event)
 
     async def update_event(self, event_id: str, **fields) -> dict:
@@ -547,6 +582,185 @@ class GraphClient:
                 "duration_minutes": int((range_end - cursor).total_seconds() / 60),
             })
         return free
+
+    # ── Teams Chat ────────────────────────────────────────────────
+
+    async def list_chats(self, top: int = 20) -> list[dict]:
+        """Alle 1:1- und Gruppen-Chats des Users (neueste zuerst)."""
+        data = await self._get(
+            f"{self._user_path}/chats",
+            {
+                "$top": str(top),
+                "$orderby": "lastMessagePreview/createdDateTime desc",
+                "$expand": "lastMessagePreview",
+                "$select": "id,topic,chatType,lastMessagePreview,createdDateTime",
+            },
+        )
+        return data.get("value", [])
+
+    async def list_chat_messages(self, chat_id: str, top: int = 20) -> list[dict]:
+        """Letzte Nachrichten eines Chats (neueste zuerst)."""
+        data = await self._get(
+            f"/chats/{chat_id}/messages",
+            {"$top": str(top)},
+        )
+        return data.get("value", [])
+
+    async def get_chat_message(self, chat_id: str, message_id: str) -> dict:
+        """Einzelne Chat-Nachricht laden."""
+        return await self._get(f"/chats/{chat_id}/messages/{message_id}")
+
+    async def list_chat_members(self, chat_id: str) -> list[dict]:
+        """Teilnehmer eines Chats."""
+        data = await self._get(f"/chats/{chat_id}/members")
+        return data.get("value", [])
+
+    # ── Online Meetings / Transkripte ────────────────────────────
+
+    async def list_recent_meetings(self, since: str, top: int = 10) -> list[dict]:
+        """Kürzliche Online-Meetings seit einem ISO-8601-Zeitpunkt."""
+        data = await self._get(
+            f"{self._user_path}/onlineMeetings",
+            {
+                "$filter": f"startDateTime ge {since}",
+                "$top": str(top),
+                "$orderby": "startDateTime desc",
+            },
+        )
+        return data.get("value", [])
+
+    async def list_meeting_transcripts(self, meeting_id: str) -> list[dict]:
+        """Transkripte eines Online-Meetings auflisten."""
+        data = await self._get(
+            f"{self._user_path}/onlineMeetings/{meeting_id}/transcripts",
+        )
+        return data.get("value", [])
+
+    async def get_meeting_transcript_content(
+        self, meeting_id: str, transcript_id: str
+    ) -> str:
+        """Transkript-Inhalt als VTT-Text laden."""
+        return await self._get_text(
+            f"{self._user_path}/onlineMeetings/{meeting_id}"
+            f"/transcripts/{transcript_id}/content",
+            {"$format": "text/vtt"},
+        )
+
+    # ── OneDrive / SharePoint Files ──────────────────────────────
+
+    async def list_drive_items(self, path: str = "/", top: int = 20) -> list[dict]:
+        """Inhalte eines OneDrive-Ordners auflisten."""
+        if path == "/":
+            endpoint = f"{self._user_path}/drive/root/children"
+        else:
+            clean = path.strip("/")
+            endpoint = f"{self._user_path}/drive/root:/{clean}:/children"
+        data = await self._get(
+            endpoint,
+            {
+                "$top": str(top),
+                "$select": "id,name,size,lastModifiedDateTime,file,folder,webUrl,"
+                           "parentReference",
+            },
+        )
+        return data.get("value", [])
+
+    async def get_drive_item(self, item_id: str) -> dict:
+        """Metadaten eines einzelnen OneDrive-Elements."""
+        return await self._get(f"{self._user_path}/drive/items/{item_id}")
+
+    async def download_drive_item(self, item_id: str) -> bytes:
+        """Datei-Inhalt als Bytes herunterladen."""
+        return await self._get_bytes(
+            f"{self._user_path}/drive/items/{item_id}/content"
+        )
+
+    async def search_drive(self, query: str, top: int = 10) -> list[dict]:
+        """Volltextsuche über OneDrive-Dateien."""
+        data = await self._get(
+            f"{self._user_path}/drive/root/search(q='{query}')",
+            {
+                "$top": str(top),
+                "$select": "id,name,size,lastModifiedDateTime,file,folder,webUrl,"
+                           "parentReference",
+            },
+        )
+        return data.get("value", [])
+
+    async def list_sites(self, search: str = "") -> list[dict]:
+        """SharePoint-Sites auflisten oder durchsuchen."""
+        params: dict[str, str] = {"$top": "20"}
+        if search:
+            params["search"] = search
+        data = await self._get("/sites", params)
+        return data.get("value", [])
+
+    # ── Microsoft Planner ────────────────────────────────────────
+
+    async def list_planner_tasks(self, top: int = 30) -> list[dict]:
+        """Eigene Planner-Aufgaben des Users."""
+        data = await self._get(
+            f"{self._user_path}/planner/tasks",
+            {"$top": str(top)},
+        )
+        return data.get("value", [])
+
+    async def get_planner_task(self, task_id: str) -> dict:
+        """Einzelne Planner-Aufgabe mit Details."""
+        return await self._get(f"/planner/tasks/{task_id}")
+
+    async def get_planner_task_details(self, task_id: str) -> dict:
+        """Erweiterte Details (Beschreibung, Checkliste) einer Planner-Aufgabe."""
+        return await self._get(f"/planner/tasks/{task_id}/details")
+
+    async def create_planner_task(
+        self,
+        plan_id: str,
+        title: str,
+        bucket_id: str | None = None,
+        due_date: str | None = None,
+        assignments: dict | None = None,
+    ) -> dict:
+        """Neue Aufgabe in einem Planner-Plan erstellen."""
+        body: dict = {"planId": plan_id, "title": title}
+        if bucket_id:
+            body["bucketId"] = bucket_id
+        if due_date:
+            body["dueDateTime"] = due_date
+        if assignments:
+            body["assignments"] = assignments
+        return await self._post("/planner/tasks", body)
+
+    async def update_planner_task(
+        self, task_id: str, etag: str, **fields
+    ) -> dict:
+        """Planner-Aufgabe aktualisieren (erfordert @odata.etag für Concurrency)."""
+        client = await self._ensure_client()
+        headers = await self._headers()
+        headers["If-Match"] = etag
+        patch: dict = {}
+        if "title" in fields:
+            patch["title"] = fields["title"]
+        if "percent_complete" in fields:
+            patch["percentComplete"] = fields["percent_complete"]
+        if "due_date" in fields:
+            patch["dueDateTime"] = fields["due_date"]
+        if not patch:
+            return {}
+        resp = await client.patch(
+            f"{GRAPH_BASE}/planner/tasks/{task_id}",
+            headers=headers,
+            json=patch,
+        )
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    async def list_planner_plans(self) -> list[dict]:
+        """Alle Planner-Pläne des Users."""
+        data = await self._get(f"{self._user_path}/planner/plans")
+        return data.get("value", [])
+
+    # ── Lifecycle ────────────────────────────────────────────────
 
     async def close(self) -> None:
         if self._http and not self._http.is_closed:

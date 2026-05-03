@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { CrmBadge } from '../components/CrmBadge';
@@ -10,6 +11,7 @@ import { useSSE } from '../hooks/useSSE';
 import type { AgentJob } from '../types';
 
 type FilterStatus = 'all' | 'active' | 'completed' | 'failed';
+type FilterType = 'all' | 'chat_agent' | 'chat_triage' | 'email_triage' | 'send_email' | 'other';
 
 const STATUS_CONFIG: Record<
   AgentJob['status'],
@@ -22,15 +24,27 @@ const STATUS_CONFIG: Record<
   failed: { label: 'Fehler', color: 'text-red-700', bg: 'bg-red-100 dark:bg-red-900/40 dark:text-red-300' },
 };
 
+const TYPE_FILTERS: { id: FilterType; label: string }[] = [
+  { id: 'all', label: 'Alle Typen' },
+  { id: 'chat_agent', label: 'Chat-Agent' },
+  { id: 'chat_triage', label: 'Chat-Triage' },
+  { id: 'email_triage', label: 'E-Mail-Triage' },
+  { id: 'send_email', label: 'E-Mail-Versand' },
+  { id: 'other', label: 'Sonstige' },
+];
+
 export function AgentQueuePage() {
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState<AgentJob[]>([]);
   const [filter, setFilter] = useState<FilterStatus>('all');
+  const [typeFilter, setTypeFilter] = useState<FilterType>('all');
   const [loading, setLoading] = useState(true);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const cleanupRef = useRef<HTMLDivElement>(null);
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -62,10 +76,16 @@ export function AgentQueuePage() {
   };
 
   const handleDelete = async (jobId: string) => {
+    setActionError(null);
     try {
       await api.delete(`/api/agent-jobs/${jobId}`);
       fetchJobs();
-    } catch { /* silent */ }
+    } catch (e) {
+      console.error('Agent-Job löschen fehlgeschlagen', e);
+      setActionError(
+        e instanceof Error ? e.message.slice(0, 200) : 'Löschen fehlgeschlagen',
+      );
+    }
   };
 
   const handleCancel = async (jobId: string) => {
@@ -75,12 +95,22 @@ export function AgentQueuePage() {
     } catch { /* silent */ }
   };
 
-  const handleBulkDelete = async (status: string, olderThanDays?: number) => {
+  const handleBulkDelete = async (status: string, olderThanDays?: number, forceJobType?: string | null) => {
+    setActionError(null);
     const params = new URLSearchParams({ status });
     if (olderThanDays != null) params.set('older_than_days', String(olderThanDays));
-    await api.delete(`/api/agent-jobs/bulk?${params}`);
-    setCleanupOpen(false);
-    fetchJobs();
+    const jt = forceJobType !== undefined ? forceJobType : (typeFilter !== 'all' ? typeFilter : null);
+    if (jt && jt !== 'other') params.set('job_type', jt);
+    try {
+      await api.delete(`/api/agent-jobs/bulk?${params}`);
+      setCleanupOpen(false);
+      fetchJobs();
+    } catch (e) {
+      console.error('Bulk-Löschen fehlgeschlagen', e);
+      setActionError(
+        e instanceof Error ? e.message.slice(0, 200) : 'Aufräumen fehlgeschlagen',
+      );
+    }
   };
 
   useEffect(() => {
@@ -93,10 +123,21 @@ export function AgentQueuePage() {
   }, [cleanupOpen]);
 
   const filtered = jobs.filter((j) => {
-    if (filter === 'all') return true;
-    if (filter === 'active') return ['queued', 'running', 'awaiting_approval'].includes(j.status);
-    if (filter === 'completed') return j.status === 'completed';
-    if (filter === 'failed') return j.status === 'failed';
+    if (filter === 'active' && !['queued', 'running', 'awaiting_approval'].includes(j.status)) return false;
+    if (filter === 'completed' && j.status !== 'completed') return false;
+    if (filter === 'failed' && j.status !== 'failed') return false;
+
+    if (typeFilter === 'chat_agent' && j.job_type !== 'chat_agent') return false;
+    if (typeFilter === 'chat_triage' && j.job_type !== 'chat_triage') return false;
+    if (typeFilter === 'email_triage' && j.job_type !== 'email_triage') return false;
+    if (typeFilter === 'send_email' && j.job_type !== 'send_email') return false;
+    if (
+      typeFilter === 'other'
+      && ['chat_agent', 'chat_triage', 'email_triage', 'send_email'].includes(j.job_type || '')
+    ) {
+      return false;
+    }
+
     return true;
   });
 
@@ -104,6 +145,9 @@ export function AgentQueuePage() {
   const runningCount = jobs.filter((j) => j.status === 'running').length;
   const completedCount = jobs.filter((j) => j.status === 'completed').length;
   const failedCount = jobs.filter((j) => j.status === 'failed').length;
+  const chatAgentCount = jobs.filter((j) => j.job_type === 'chat_agent').length;
+  const chatTriageCount = jobs.filter((j) => j.job_type === 'chat_triage').length;
+  const triageCount = jobs.filter((j) => j.job_type === 'email_triage').length;
 
   const handleBgSelect = async (url: string | null) => {
     await api.patch('/api/settings', { agents_background_url: url });
@@ -165,22 +209,51 @@ export function AgentQueuePage() {
 
       <div className={`relative z-10 border-b px-4 py-3 sm:px-6 backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-white/40 bg-white/50 dark:border-gray-800 dark:bg-gray-900/50'}`}>
         <div className="flex items-center justify-between">
-          <div className="flex gap-2">
-            {(['all', 'active', 'completed', 'failed'] as FilterStatus[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                  filter === f
-                    ? 'bg-indigo-600 text-white'
-                    : hasBg
-                      ? 'bg-white/10 text-white/80 hover:bg-white/20'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
-                }`}
-              >
-                {{ all: 'Alle', active: 'Aktiv', completed: 'Erledigt', failed: 'Fehler' }[f]}
-              </button>
-            ))}
+          <div className="flex items-center gap-4">
+            <div className="flex gap-1.5">
+              {(['all', 'active', 'completed', 'failed'] as FilterStatus[]).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                    filter === f
+                      ? 'bg-indigo-600 text-white'
+                      : hasBg
+                        ? 'bg-white/10 text-white/80 hover:bg-white/20'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {{ all: 'Alle', active: 'Aktiv', completed: 'Erledigt', failed: 'Fehler' }[f]}
+                </button>
+              ))}
+            </div>
+            <div className={`h-5 w-px ${hasBg ? 'bg-white/20' : 'bg-gray-200 dark:bg-gray-700'}`} />
+            <div className="flex gap-1.5">
+              {TYPE_FILTERS.map((tf) => {
+                const count = tf.id === 'chat_agent' ? chatAgentCount
+                  : tf.id === 'chat_triage' ? chatTriageCount
+                  : tf.id === 'email_triage' ? triageCount
+                  : undefined;
+                return (
+                  <button
+                    key={tf.id}
+                    onClick={() => setTypeFilter(tf.id)}
+                    className={`rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                      typeFilter === tf.id
+                        ? 'bg-violet-600 text-white'
+                        : hasBg
+                          ? 'bg-white/10 text-white/80 hover:bg-white/20'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    {tf.label}
+                    {count != null && count > 0 && (
+                      <span className="ml-1 text-[9px] opacity-70">({count})</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           {(completedCount > 0 || failedCount > 0 || runningCount > 0) && (
             <div className="relative" ref={cleanupRef}>
@@ -191,60 +264,87 @@ export function AgentQueuePage() {
                 <TrashIcon className="h-3.5 w-3.5" />
                 Aufräumen
               </button>
-              {cleanupOpen && (
-                <div className="absolute right-0 top-9 z-50 w-72 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
-                  {runningCount > 0 && (
+              {cleanupOpen && (() => {
+                const typeLabel = TYPE_FILTERS.find((t) => t.id === typeFilter)?.label ?? '';
+                const isFiltered = typeFilter !== 'all';
+                const fJobs = isFiltered ? filtered : jobs;
+                const fCompleted = fJobs.filter((j) => j.status === 'completed').length;
+                const fFailed = fJobs.filter((j) => j.status === 'failed').length;
+                const fRunning = fJobs.filter((j) => j.status === 'running').length;
+                const prefix = isFiltered ? `${typeLabel}: ` : '';
+                return (
+                <div className="absolute right-0 top-9 z-50 w-80 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                  {isFiltered && (
+                    <div className="px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                      Filter: {typeLabel}
+                    </div>
+                  )}
+                  {fRunning > 0 && (
                     <>
                       <button
                         onClick={() => handleBulkDelete('stale')}
                         className="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm text-amber-700 transition-colors hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30"
                       >
-                        <span>Hängende Jobs abbrechen</span>
+                        <span>{prefix}Hängende abbrechen</span>
                         <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
-                          {runningCount}
+                          {fRunning}
                         </span>
                       </button>
                       <div className="mx-3 my-1 border-t border-gray-100 dark:border-gray-800" />
                     </>
                   )}
-                  {completedCount > 0 && (
+                  {fCompleted > 0 && (
                     <button
                       onClick={() => handleBulkDelete('completed')}
                       className="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
-                      <span>Alle erledigten löschen</span>
+                      <span>{prefix}Erledigte löschen</span>
                       <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300">
-                        {completedCount}
+                        {fCompleted}
                       </span>
                     </button>
                   )}
-                  {failedCount > 0 && (
+                  {fFailed > 0 && (
                     <button
                       onClick={() => handleBulkDelete('failed')}
                       className="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
-                      <span>Alle fehlgeschlagenen löschen</span>
+                      <span>{prefix}Fehlgeschlagene löschen</span>
                       <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">
-                        {failedCount}
+                        {fFailed}
                       </span>
                     </button>
                   )}
-                  {completedCount > 0 && (
+                  {fCompleted > 0 && (
                     <button
                       onClick={() => handleBulkDelete('completed', 7)}
                       className="flex w-full items-center px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
-                      Erledigte älter als 7 Tage
+                      {prefix}Erledigte älter als 7 Tage
                     </button>
                   )}
-                  {(completedCount > 0 || failedCount > 0) && (
+                  {(fCompleted > 0 || fFailed > 0) && (
                     <>
                       <div className="mx-3 my-1 border-t border-gray-100 dark:border-gray-800" />
                       <button
                         onClick={() => handleBulkDelete('both')}
                         className="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
                       >
-                        <span>Alles aufräumen</span>
+                        <span>{isFiltered ? `${typeLabel}: Alles aufräumen` : 'Alles aufräumen'}</span>
+                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                          {fCompleted + fFailed}
+                        </span>
+                      </button>
+                    </>
+                  )}
+                  {isFiltered && (completedCount + failedCount) > (fCompleted + fFailed) && (
+                    <>
+                      <div className="mx-3 my-1 border-t border-gray-100 dark:border-gray-800" />
+                      <button
+                        onClick={() => handleBulkDelete('both', undefined, null)}
+                        className="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm text-red-400 transition-colors hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-950/30"
+                      >
+                        <span>Alle Typen aufräumen</span>
                         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300">
                           {completedCount + failedCount}
                         </span>
@@ -252,10 +352,31 @@ export function AgentQueuePage() {
                     </>
                   )}
                 </div>
-              )}
+                );
+              })()}
             </div>
           )}
         </div>
+        {actionError && (
+          <div
+            className={`mt-2 rounded-lg border px-3 py-2 text-xs ${
+              hasBg
+                ? 'border-red-400/50 bg-red-950/40 text-red-100'
+                : 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200'
+            }`}
+            role="alert"
+          >
+            <span className="font-medium">Aktion fehlgeschlagen: </span>
+            {actionError}
+            <button
+              type="button"
+              onClick={() => setActionError(null)}
+              className="ml-2 underline"
+            >
+              Schliessen
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="relative z-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
@@ -317,6 +438,15 @@ export function AgentQueuePage() {
                       <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-medium leading-5 ${cfg.bg}`}>
                         {cfg.label}
                       </span>
+                      {job.job_type === 'chat_agent' && meta.conversation_id && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); navigate(`/chat?conv=${meta.conversation_id}`); }}
+                          className={`rounded-lg p-1.5 transition-colors ${hasBg ? 'text-white/70 hover:bg-white/20 hover:text-white' : 'text-gray-400 hover:bg-indigo-50 hover:text-indigo-600 dark:text-gray-500 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-400'}`}
+                          title="Zur Konversation"
+                        >
+                          <ChatIcon className="h-4 w-4" />
+                        </button>
+                      )}
                       {(job.status === 'completed' || job.status === 'failed' || job.status === 'awaiting_approval') && (
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDelete(job.id); }}
@@ -398,6 +528,16 @@ export function AgentQueuePage() {
 }
 
 function _jobDisplayTitle(job: AgentJob, meta: Record<string, string>): string {
+  if (job.job_type === 'chat_agent') {
+    const preview = meta.prompt_preview;
+    if (preview) return preview.length > 80 ? preview.slice(0, 80) + '…' : preview;
+    return 'Chat-Agent-Anfrage';
+  }
+  if (job.job_type === 'chat_triage') {
+    const preview = meta.body_preview;
+    if (preview) return preview.length > 80 ? preview.slice(0, 80) + '…' : preview;
+    return 'Teams-Chat-Triage';
+  }
   if (job.job_type === 'email_triage') {
     const subject = meta.subject;
     if (subject) return subject;
@@ -410,6 +550,28 @@ function _jobDisplayTitle(job: AgentJob, meta: Record<string, string>): string {
 }
 
 function _jobSubtitle(job: AgentJob, meta: Record<string, string>): string | null {
+  if (job.job_type === 'chat_agent') {
+    const tools = meta.tools_used;
+    if (tools) {
+      const toolList = Array.isArray(tools) ? tools : [];
+      return toolList.length > 0 ? `Tools: ${toolList.join(', ')}` : null;
+    }
+    return null;
+  }
+  if (job.job_type === 'chat_triage') {
+    const parts: string[] = [];
+    if (meta.from_name) {
+      parts.push(`Von: ${meta.from_name}`);
+    }
+    if (meta.chat_type) {
+      parts.push(meta.chat_type);
+    }
+    if (meta.body_preview) {
+      const preview = meta.body_preview.length > 120 ? meta.body_preview.slice(0, 120) + '…' : meta.body_preview;
+      parts.push(preview);
+    }
+    return parts.join(' · ') || null;
+  }
   if (job.job_type === 'email_triage') {
     const parts: string[] = [];
     if (meta.from_name || meta.from_address) {
@@ -429,10 +591,14 @@ function _jobSubtitle(job: AgentJob, meta: Record<string, string>): string | nul
 
 function _jobTypeBadge(job: AgentJob): { label: string; classes: string } | null {
   switch (job.job_type) {
+    case 'chat_agent':
+      return { label: 'Chat-Agent', classes: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' };
+    case 'chat_triage':
+      return { label: 'Chat-Triage', classes: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300' };
     case 'email_triage':
-      return { label: 'E-Mail Triage', classes: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' };
+      return { label: 'E-Mail-Triage', classes: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' };
     case 'send_email':
-      return { label: 'E-Mail', classes: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' };
+      return { label: 'E-Mail-Versand', classes: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' };
     case 'recurring':
       return { label: 'Recurring', classes: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300' };
     default:
@@ -478,6 +644,14 @@ function StopIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 0 1 7.5 5.25h9a2.25 2.25 0 0 1 2.25 2.25v9a2.25 2.25 0 0 1-2.25 2.25h-9a2.25 2.25 0 0 1-2.25-2.25v-9Z" />
+    </svg>
+  );
+}
+
+function ChatIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155" />
     </svg>
   );
 }

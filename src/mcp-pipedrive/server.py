@@ -17,6 +17,11 @@ from mcp.types import TextContent, Tool
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipedrive"))
 from pipedrive_client import PipedriveClient, PipedriveConfig  # noqa: E402
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
 logger = logging.getLogger("mcp_pipedrive")
 
 TOOLS = [

@@ -248,7 +248,7 @@ CREATE TABLE llm_conversations (
     title           TEXT,
     task_id         UUID REFERENCES tasks(id) ON DELETE SET NULL,
     model           TEXT NOT NULL,
-    mode            TEXT DEFAULT 'chat' CHECK (mode IN ('chat', 'deep_research', 'web_search')),
+    mode            TEXT DEFAULT 'chat' CHECK (mode IN ('chat', 'deep_research', 'web_search', 'agent')),
     temperature     REAL DEFAULT 0.7,
     total_tokens    INT DEFAULT 0,
     total_cost_usd  NUMERIC(10,4) DEFAULT 0,
@@ -296,3 +296,28 @@ CREATE INDEX idx_web_searches_user ON web_searches(user_id);
 -- Trigger
 CREATE TRIGGER llm_conversations_updated_at BEFORE UPDATE ON llm_conversations
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- Teams-Chat-Triage
+CREATE TABLE chat_triage (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chat_id         TEXT NOT NULL,
+    message_id      TEXT NOT NULL UNIQUE,
+    from_name       TEXT,
+    from_id         TEXT,
+    body_preview    TEXT,
+    chat_type       TEXT,
+    received_at     TIMESTAMPTZ,
+    triage_class    TEXT CHECK (triage_class IN ('task', 'fyi', 'meeting_summary')),
+    confidence      REAL,
+    suggested_action JSONB,
+    agent_job_id    UUID REFERENCES agent_jobs(id),
+    status          TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'acted', 'dismissed')),
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_chat_triage_status ON chat_triage(status);
+CREATE INDEX idx_chat_triage_message_id ON chat_triage(message_id);
+CREATE INDEX idx_chat_triage_chat_id ON chat_triage(chat_id);
+
+CREATE TRIGGER chat_triage_notify AFTER INSERT OR UPDATE ON chat_triage
+    FOR EACH ROW EXECUTE FUNCTION notify_change('chat_triage_changed');

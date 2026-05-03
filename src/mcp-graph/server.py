@@ -1,16 +1,22 @@
-"""MCP-Server für E-Mail-Zugriff via Microsoft Graph API.
+"""MCP-Server für Microsoft 365-Zugriff via Graph API.
 
-nanobot kann diesen Server als Tool nutzen, um E-Mails zu lesen,
-Entwürfe zu erstellen und (nach Approval) zu versenden.
+nanobot kann diesen Server als Tool nutzen für:
+  - E-Mails lesen, Entwürfe erstellen, versenden (nach Approval)
+  - Kalender: Termine lesen/erstellen, freie Slots finden
+  - Teams-Chat: Nachrichten lesen, Meeting-Transkripte abrufen
+  - OneDrive/SharePoint: Dateien suchen, auflisten, lesen
+  - Planner: Aufgaben lesen/erstellen/aktualisieren
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import sys
 import time
+from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -19,7 +25,12 @@ from mcp.types import TextContent, Tool
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "email-graph"))
 from graph_client import GraphClient, GraphConfig  # noqa: E402
 
-logger = logging.getLogger("mcp_email")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("mcp_graph")
 
 
 def _html_to_text(html: str) -> str:
@@ -168,6 +179,11 @@ TOOLS = [
                 "body": {"type": "string", "description": "Optionale Beschreibung (HTML)"},
                 "location": {"type": "string", "description": "Ort (optional)"},
                 "show_as": {"type": "string", "enum": ["free", "tentative", "busy", "oof"], "default": "busy"},
+                "categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Outlook-Kategorien (z.B. ['Wichtig', 'Schulung']). Müssen in Outlook bereits definiert sein.",
+                },
             },
             "required": ["subject", "start", "end"],
         },
@@ -251,10 +267,148 @@ TOOLS = [
             "required": ["message_id", "folder_name"],
         },
     ),
+    # ── Teams-Chat-Tools ─────────────────────────────────────────
+    Tool(
+        name="list_chats",
+        description="Alle Teams-Chats (1:1 und Gruppen) auflisten, neueste zuerst.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "top": {"type": "integer", "default": 20},
+            },
+        },
+    ),
+    Tool(
+        name="list_chat_messages",
+        description="Letzte Nachrichten eines Teams-Chats lesen.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "ID des Chats"},
+                "top": {"type": "integer", "default": 20},
+            },
+            "required": ["chat_id"],
+        },
+    ),
+    Tool(
+        name="get_meeting_transcript",
+        description="Transkript eines Online-Meetings als Text abrufen. Nützlich für Meeting-Zusammenfassungen.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "meeting_id": {"type": "string", "description": "ID des Online-Meetings"},
+            },
+            "required": ["meeting_id"],
+        },
+    ),
+    # ── OneDrive/SharePoint-Tools ────────────────────────────────
+    Tool(
+        name="search_files",
+        description="Volltextsuche über OneDrive-Dateien. Findet Dokumente, Offerten, Rechnungen etc.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Suchbegriff(e)"},
+                "top": {"type": "integer", "default": 10},
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="list_files",
+        description="Inhalte eines OneDrive-Ordners auflisten.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "default": "/", "description": "Ordnerpfad (z.B. /Dokumente/Kunden)"},
+                "top": {"type": "integer", "default": 20},
+            },
+        },
+    ),
+    Tool(
+        name="read_file_metadata",
+        description="Metadaten einer OneDrive-Datei lesen (Name, Grösse, URL, letztes Änderungsdatum).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "description": "OneDrive Item-ID"},
+            },
+            "required": ["item_id"],
+        },
+    ),
+    Tool(
+        name="download_file",
+        description=(
+            "OneDrive-Datei herunterladen und lokal cachen. "
+            "Bei PDFs wird der Text automatisch extrahiert. "
+            "Gibt den lokalen Pfad und ggf. den extrahierten Text zurück."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "description": "OneDrive Item-ID"},
+                "extract_text": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Bei PDF: Text automatisch extrahieren",
+                },
+                "max_text_chars": {
+                    "type": "integer",
+                    "default": 80000,
+                    "description": "Maximale Textlänge bei Extraktion",
+                },
+            },
+            "required": ["item_id"],
+        },
+    ),
+    # ── Planner-Tools ────────────────────────────────────────────
+    Tool(
+        name="list_planner_tasks",
+        description="Eigene Microsoft Planner-Aufgaben auflisten.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "top": {"type": "integer", "default": 30},
+            },
+        },
+    ),
+    Tool(
+        name="get_planner_task",
+        description="Details einer einzelnen Planner-Aufgabe abrufen.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+            },
+            "required": ["task_id"],
+        },
+    ),
+    Tool(
+        name="create_planner_task",
+        description="Neue Aufgabe in einem Planner-Plan erstellen.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "string", "description": "ID des Planner-Plans"},
+                "title": {"type": "string", "description": "Titel der Aufgabe"},
+                "bucket_id": {"type": "string", "description": "Optionale Bucket-ID"},
+                "due_date": {"type": "string", "description": "Fälligkeitsdatum ISO 8601"},
+            },
+            "required": ["plan_id", "title"],
+        },
+    ),
+    Tool(
+        name="list_planner_plans",
+        description="Alle Planner-Pläne des Users auflisten.",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
 ]
 
 
-server = Server("taskpilot-email")
+server = Server("taskpilot-graph")
 _client: GraphClient | None = None
 
 
@@ -389,6 +543,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 start=arguments["start"],
                 end=arguments["end"],
                 body=arguments.get("body"),
+                categories=arguments.get("categories"),
                 location=arguments.get("location"),
                 show_as=arguments.get("show_as", "busy"),
             )
@@ -504,6 +659,198 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "folder": arguments["folder_name"],
                 "new_id": result.get("id"),
             }, indent=2, ensure_ascii=False))]
+
+        # ── Teams-Chat ────────────────────────────────────────────
+        elif name == "list_chats":
+            chats = await client.list_chats(top=arguments.get("top", 20))
+            result = []
+            for c in chats:
+                preview = c.get("lastMessagePreview") or {}
+                result.append({
+                    "id": c.get("id"),
+                    "topic": c.get("topic"),
+                    "chatType": c.get("chatType"),
+                    "lastMessage": {
+                        "body": (preview.get("body") or {}).get("content", "")[:200],
+                        "from": (preview.get("from") or {}).get("user", {}).get("displayName"),
+                        "createdDateTime": preview.get("createdDateTime"),
+                    } if preview else None,
+                })
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+        elif name == "list_chat_messages":
+            msgs = await client.list_chat_messages(
+                chat_id=arguments["chat_id"],
+                top=arguments.get("top", 20),
+            )
+            result = []
+            for m in msgs:
+                body = (m.get("body") or {}).get("content", "")
+                if (m.get("body") or {}).get("contentType") == "html":
+                    body = _html_to_text(body)
+                sender = (m.get("from") or {}).get("user", {})
+                result.append({
+                    "id": m.get("id"),
+                    "from": sender.get("displayName"),
+                    "from_id": sender.get("id"),
+                    "body": body[:2000],
+                    "createdDateTime": m.get("createdDateTime"),
+                    "messageType": m.get("messageType"),
+                })
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+        elif name == "get_meeting_transcript":
+            meeting_id = arguments["meeting_id"]
+            transcripts = await client.list_meeting_transcripts(meeting_id)
+            if not transcripts:
+                return [TextContent(type="text", text=json.dumps({
+                    "status": "no_transcript",
+                    "message": "Kein Transkript für dieses Meeting verfügbar.",
+                }, indent=2, ensure_ascii=False))]
+            transcript_id = transcripts[0].get("id")
+            content = await client.get_meeting_transcript_content(meeting_id, transcript_id)
+            return [TextContent(type="text", text=content[:50000])]
+
+        # ── OneDrive/SharePoint ──────────────────────────────────
+        elif name == "search_files":
+            items = await client.search_drive(
+                query=arguments["query"],
+                top=arguments.get("top", 10),
+            )
+            result = []
+            for item in items:
+                result.append({
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "size": item.get("size"),
+                    "lastModified": item.get("lastModifiedDateTime"),
+                    "webUrl": item.get("webUrl"),
+                    "isFolder": bool(item.get("folder")),
+                    "path": (item.get("parentReference") or {}).get("path", ""),
+                })
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+        elif name == "list_files":
+            items = await client.list_drive_items(
+                path=arguments.get("path", "/"),
+                top=arguments.get("top", 20),
+            )
+            result = []
+            for item in items:
+                result.append({
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "size": item.get("size"),
+                    "lastModified": item.get("lastModifiedDateTime"),
+                    "webUrl": item.get("webUrl"),
+                    "isFolder": bool(item.get("folder")),
+                })
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+        elif name == "read_file_metadata":
+            item = await client.get_drive_item(arguments["item_id"])
+            return [TextContent(type="text", text=json.dumps({
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "size": item.get("size"),
+                "lastModified": item.get("lastModifiedDateTime"),
+                "webUrl": item.get("webUrl"),
+                "mimeType": (item.get("file") or {}).get("mimeType"),
+                "path": (item.get("parentReference") or {}).get("path", ""),
+            }, indent=2, ensure_ascii=False))]
+
+        elif name == "download_file":
+            item_id = arguments["item_id"]
+            extract = arguments.get("extract_text", True)
+            max_chars = arguments.get("max_text_chars", 80000)
+
+            meta = await client.get_drive_item(item_id)
+            filename = meta.get("name", "unknown")
+            mime = (meta.get("file") or {}).get("mimeType", "")
+            size = meta.get("size", 0)
+
+            cache_dir = Path("/tmp/taskpilot-files")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r"[^\w.\-]", "_", filename)
+            id_hash = hashlib.sha256(item_id.encode()).hexdigest()[:12]
+            local_path = cache_dir / f"{id_hash}_{safe_name}"
+
+            if not local_path.exists():
+                data = await client.download_drive_item(item_id)
+                local_path.write_bytes(data)
+                logger.info("Datei heruntergeladen: %s (%d Bytes)", local_path, len(data))
+
+            result: dict = {
+                "local_path": str(local_path),
+                "filename": filename,
+                "size": size,
+                "mimeType": mime,
+            }
+
+            if extract and filename.lower().endswith(".pdf"):
+                try:
+                    import pymupdf
+                    doc = pymupdf.open(str(local_path))
+                    pages_text = []
+                    total = 0
+                    for page in doc:
+                        text = page.get_text()
+                        if total + len(text) > max_chars:
+                            pages_text.append(text[: max_chars - total])
+                            break
+                        pages_text.append(text)
+                        total += len(text)
+                    doc.close()
+                    result["extracted_text"] = "\n\n--- Seite ---\n\n".join(pages_text)
+                    result["pages_extracted"] = len(pages_text)
+                except Exception as ex:
+                    result["extraction_error"] = str(ex)
+
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+        # ── Planner ──────────────────────────────────────────────
+        elif name == "list_planner_tasks":
+            tasks = await client.list_planner_tasks(top=arguments.get("top", 30))
+            result = []
+            for t in tasks:
+                result.append({
+                    "id": t.get("id"),
+                    "title": t.get("title"),
+                    "percentComplete": t.get("percentComplete"),
+                    "dueDateTime": t.get("dueDateTime"),
+                    "createdDateTime": t.get("createdDateTime"),
+                    "planId": t.get("planId"),
+                    "bucketId": t.get("bucketId"),
+                })
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+        elif name == "get_planner_task":
+            task = await client.get_planner_task(arguments["task_id"])
+            return [TextContent(type="text", text=json.dumps(task, indent=2, ensure_ascii=False))]
+
+        elif name == "create_planner_task":
+            task = await client.create_planner_task(
+                plan_id=arguments["plan_id"],
+                title=arguments["title"],
+                bucket_id=arguments.get("bucket_id"),
+                due_date=arguments.get("due_date"),
+            )
+            return [TextContent(type="text", text=json.dumps({
+                "id": task.get("id"),
+                "title": task.get("title"),
+                "status": "task_created",
+            }, indent=2, ensure_ascii=False))]
+
+        elif name == "list_planner_plans":
+            plans = await client.list_planner_plans()
+            result = []
+            for p in plans:
+                result.append({
+                    "id": p.get("id"),
+                    "title": p.get("title"),
+                    "createdDateTime": p.get("createdDateTime"),
+                })
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
 
         return [TextContent(type="text", text=f"Unbekanntes Tool: {name}")]
 

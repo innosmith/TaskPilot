@@ -34,6 +34,14 @@ logger = logging.getLogger("taskpilot.nanobot_worker")
 
 _worker_task: asyncio.Task | None = None
 _bot: Nanobot | None = None
+_chat_bot: Nanobot | None = None
+_init_lock: asyncio.Lock | None = None
+
+def _get_init_lock() -> asyncio.Lock:
+    global _init_lock
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    return _init_lock
 
 POLL_INTERVAL = 10
 REAP_INTERVAL = 60
@@ -373,40 +381,78 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
 
 
 async def _init_bot() -> Nanobot | None:
-    """Initialisiert den Nanobot einmalig.
-
-    Liest fehlende Env-Vars (z.B. Pipedrive-Token) aus der DB (User-Settings),
-    damit die Nanobot-Config ${VAR}-Platzhalter auflösen kann.
-    DB ist Single Source of Truth -- .env.dev dient nur als Fallback.
-    """
+    """Initialisiert den Worker-Nanobot (für Agent-Jobs wie Triage)."""
     global _bot
-    if _bot is not None:
-        return _bot
+    async with _get_init_lock():
+        if _bot is not None:
+            return _bot
+        return await _create_nanobot_instance("worker")
+
+
+async def _init_chat_bot() -> Nanobot | None:
+    """Initialisiert einen separaten Nanobot für den Chat-Agent-Endpoint.
+
+    Eigene Instanz, damit Worker-Jobs und Chat-Anfragen sich nicht
+    gegenseitig blockieren oder Session-State korrumpieren.
+    """
+    global _chat_bot
+    async with _get_init_lock():
+        if _chat_bot is not None:
+            return _chat_bot
+        return await _create_nanobot_instance("chat")
+
+
+async def _create_nanobot_instance(label: str) -> Nanobot | None:
+    """Erstellt eine neue Nanobot-Instanz mit Lock-Schutz."""
+    global _bot, _chat_bot
     if not NANOBOT_CONFIG.exists():
-        logger.error("Nanobot-Config nicht gefunden: %s", NANOBOT_CONFIG)
+        logger.error("[%s] Nanobot-Config nicht gefunden: %s", label, NANOBOT_CONFIG)
         return None
 
     await _populate_env_from_db()
 
     try:
-        _bot = Nanobot.from_config(config_path=str(NANOBOT_CONFIG))
-        logger.info("Nanobot SDK initialisiert (Config: %s)", NANOBOT_CONFIG)
-        return _bot
+        instance = Nanobot.from_config(config_path=str(NANOBOT_CONFIG))
+        logger.info("[%s] Nanobot SDK initialisiert (Config: %s)", label, NANOBOT_CONFIG)
+        if label == "worker":
+            _bot = instance
+        else:
+            _chat_bot = instance
+        return instance
     except Exception:
-        logger.exception("Nanobot SDK Initialisierung fehlgeschlagen")
+        logger.exception("[%s] Nanobot SDK Initialisierung fehlgeschlagen", label)
         return None
 
 
+def reset_chat_bot() -> None:
+    """Invalidiert den Chat-Bot, damit er beim nächsten Aufruf neu initialisiert wird."""
+    global _chat_bot
+    _chat_bot = None
+    logger.info("Chat-Bot invalidiert — wird beim nächsten Aufruf neu erstellt")
+
+
 async def _populate_env_from_db() -> None:
-    """Liest API-Tokens aus den User-Settings (Owner) und setzt sie als Env-Vars,
-    falls sie noch nicht gesetzt sind. So bleibt die DB die einzige Quelle."""
-    _ENV_KEYS = {
+    """Liest API-Tokens aus den User-Settings (Owner) und setzt sie als Env-Vars.
+
+    Prüfreihenfolge pro Key:
+    1. Bereits gesetzte Env-Var (bleibt bestehen)
+    2. DB-Settings des Owner-Users
+    3. Pydantic Settings aus .env.dev (Fallback)
+    """
+    from app.config import get_settings
+
+    _ENV_KEYS: dict[str, str] = {
         "pipedrive_api_token": "TP_PIPEDRIVE_API_TOKEN",
         "pipedrive_domain": "TP_PIPEDRIVE_DOMAIN",
         "toggl_api_token": "TP_TOGGL_API_TOKEN",
         "toggl_workspace_id": "TP_TOGGL_WORKSPACE_ID",
         "bexio_api_token": "TP_BEXIO_API_TOKEN",
+        "invoiceinsight_api_key": "TP_INVOICEINSIGHT_API_KEY",
+        "invoiceinsight_url": "TP_INVOICEINSIGHT_URL",
     }
+
+    cfg = get_settings()
+
     try:
         async with async_session() as db:
             from app.models import User
@@ -416,22 +462,31 @@ async def _populate_env_from_db() -> None:
             settings = result.scalar_one_or_none() or {}
 
         for db_key, env_key in _ENV_KEYS.items():
-            if not os.environ.get(env_key):
-                value = settings.get(db_key, "")
-                if value:
-                    os.environ[env_key] = str(value)
-                    logger.info("Env-Var %s aus DB-Settings gesetzt", env_key)
-                else:
-                    os.environ[env_key] = ""
-                    logger.debug("Env-Var %s auf leer gesetzt (kein DB-Wert)", env_key)
+            if os.environ.get(env_key):
+                continue
+            value = settings.get(db_key, "") or getattr(cfg, db_key, "")
+            if value:
+                os.environ[env_key] = str(value)
+                logger.info("Env-Var %s gesetzt (Quelle: %s)",
+                            env_key, "DB" if settings.get(db_key) else ".env.dev")
+            else:
+                os.environ[env_key] = ""
+                logger.warning("Env-Var %s ist leer — weder in DB noch in .env.dev konfiguriert", env_key)
 
-        # SIGNA-Env-Vars: TP_ISI_* wird von Pydantic geladen, MCP braucht sie auch
-        for key in ("TP_ISI_HOST", "TP_ISI_DB", "TP_ISI_USER", "TP_ISI_SECRET"):
-            if not os.environ.get(key):
-                os.environ[key] = ""
-                logger.debug("Env-Var %s auf leer gesetzt (nicht in Umgebung)", key)
+        _SIGNA_MAP = {
+            "isi_host": "TP_ISI_HOST",
+            "isi_db": "TP_ISI_DB",
+            "isi_user": "TP_ISI_USER",
+            "isi_secret": "TP_ISI_SECRET",
+        }
+        for cfg_key, env_key in _SIGNA_MAP.items():
+            if not os.environ.get(env_key):
+                value = getattr(cfg, cfg_key, "")
+                os.environ[env_key] = str(value) if value else ""
+                if value:
+                    logger.info("Env-Var %s aus .env.dev gesetzt", env_key)
     except Exception:
-        logger.warning("DB-Settings konnten nicht gelesen werden -- Env-Vars bleiben wie sie sind")
+        logger.warning("DB-Settings konnten nicht gelesen werden — Env-Vars bleiben wie sie sind")
 
 
 async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: dict) -> None:
@@ -670,8 +725,8 @@ async def start_nanobot_worker() -> None:
 
 
 async def stop_nanobot_worker() -> None:
-    """Stoppt den Nanobot-Worker."""
-    global _worker_task, _bot
+    """Stoppt den Nanobot-Worker und gibt alle Bot-Instanzen frei."""
+    global _worker_task, _bot, _chat_bot
     if _worker_task and not _worker_task.done():
         _worker_task.cancel()
         try:
@@ -680,4 +735,5 @@ async def stop_nanobot_worker() -> None:
             pass
     _worker_task = None
     _bot = None
-    logger.info("Nanobot-Worker gestoppt")
+    _chat_bot = None
+    logger.info("Nanobot-Worker gestoppt, alle Bot-Instanzen freigegeben")

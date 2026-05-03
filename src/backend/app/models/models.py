@@ -224,6 +224,25 @@ class EmailTriage(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
+class ChatTriage(Base):
+    __tablename__ = "chat_triage"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    from_name: Mapped[str | None] = mapped_column(Text)
+    from_id: Mapped[str | None] = mapped_column(Text)
+    body_preview: Mapped[str | None] = mapped_column(Text)
+    chat_type: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    triage_class: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    suggested_action: Mapped[dict | None] = mapped_column(JSONB)
+    agent_job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_jobs.id"))
+    status: Mapped[str] = mapped_column(Text, server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
 class SenderProfile(Base):
     __tablename__ = "sender_profiles"
 

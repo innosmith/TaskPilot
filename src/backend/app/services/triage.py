@@ -1,18 +1,16 @@
-"""Inbox-Triage-Service: Pollt automatisch neue E-Mails und erstellt AgentJobs für nanobot.
+"""Triage-Service: Pollt automatisch neue E-Mails (120s) und Teams-Chats (300s).
 
-Läuft als Hintergrund-Task beim Backend-Start (alle 2 Min). Kein manuelles
-Anstossen nötig. Jede neue E-Mail wird als AgentJob(job_type="email_triage")
-in die Queue geschrieben. Nanobot empfängt den Job via Bridge (pg_notify →
-WebSocket) und führt die komplette Verarbeitung durch:
+Läuft als Hintergrund-Tasks beim Backend-Start. Jede neue E-Mail wird als
+AgentJob(job_type="email_triage") in die Queue geschrieben, jede neue
+Chat-Nachricht als AgentJob(job_type="chat_triage"). Nanobot empfängt die
+Jobs via Bridge (pg_notify → WebSocket) und verarbeitet sie.
 
-1. E-Mail lesen (get_email + get_email_categories)
-2. LLM-Klassifikation (via LiteLLM → Ollama lokal)
-3. Outlook-Kategorie setzen (set_email_categories)
-4. Aktion ausführen (create_draft / create_task / move_email_to_folder)
-5. AgentJob-Status aktualisieren
+E-Mail-Triage:
+  1. E-Mail lesen → LLM-Klassifikation → Aktion (Draft / Task / FYI)
 
-Kein Fallback, keine regelbasierte Klassifikation. Wenn nanobot nicht läuft,
-bleiben die Jobs in der Queue bis er wieder verfügbar ist.
+Chat-Triage:
+  1. Chat-Nachricht lesen → LLM-Klassifikation → Aktion (Task / FYI)
+  2. Meeting-Transkript-Benachrichtigungen erkennen → AgentJob(meeting_summary)
 """
 
 import asyncio
@@ -27,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import async_session
-from app.models import AgentJob, EmailTriage
+from app.models import AgentJob, ChatTriage, EmailTriage
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
 from graph_client import GraphClient, GraphConfig  # noqa: E402
@@ -193,25 +191,148 @@ async def triage_loop() -> None:
         await asyncio.sleep(interval)
 
 
+MAX_CHAT_MESSAGES_PER_CYCLE = 30
+
+
+async def _get_known_chat_message_ids(db: AsyncSession) -> set[str]:
+    result = await db.execute(select(ChatTriage.message_id))
+    return {row[0] for row in result.all()}
+
+
+async def _create_chat_triage_job(
+    db: AsyncSession, chat_id: str, msg: dict, chat_type: str | None = None,
+) -> None:
+    """Erstellt einen ChatTriage-Record und einen AgentJob für eine neue Chat-Nachricht."""
+    sender = (msg.get("from") or {}).get("user", {})
+    from_name = sender.get("displayName", "")
+    from_id = sender.get("id", "")
+    body = (msg.get("body") or {}).get("content", "")[:500]
+
+    triage_record = ChatTriage(
+        chat_id=chat_id,
+        message_id=msg["id"],
+        from_name=from_name,
+        from_id=from_id,
+        body_preview=body,
+        chat_type=chat_type,
+        received_at=_parse_received_at(msg.get("createdDateTime")),
+        triage_class=None,
+        confidence=None,
+        suggested_action=None,
+        status="pending",
+    )
+    db.add(triage_record)
+
+    agent_job = AgentJob(
+        task_id=None,
+        job_type="chat_triage",
+        status="queued",
+        llm_model="ollama/qwen3.5:35b",
+        metadata_json={
+            "chat_id": chat_id,
+            "chat_message_id": msg["id"],
+            "from_name": from_name,
+            "from_id": from_id,
+            "body_preview": body,
+            "chat_type": chat_type or "",
+            "created_at": msg.get("createdDateTime", ""),
+        },
+    )
+    db.add(agent_job)
+    await db.flush()
+
+    triage_record.agent_job_id = agent_job.id
+
+
+async def _chat_triage_cycle() -> int:
+    """Ein Chat-Triage-Zyklus: Neue Teams-Nachrichten erkennen, AgentJobs erstellen."""
+    client = _get_graph_client()
+    if client is None:
+        return 0
+
+    processed = 0
+    try:
+        async with async_session() as db:
+            known_ids = await _get_known_chat_message_ids(db)
+
+            chats = await client.list_chats(top=20)
+            for chat in chats:
+                chat_id = chat.get("id")
+                if not chat_id:
+                    continue
+                chat_type = chat.get("chatType")
+
+                try:
+                    msgs = await client.list_chat_messages(chat_id=chat_id, top=10)
+                except Exception:
+                    logger.warning("Chat-Nachrichten für %s nicht ladbar", chat_id[:20])
+                    continue
+
+                for msg in msgs:
+                    msg_id = msg.get("id")
+                    msg_type = msg.get("messageType")
+                    if not msg_id or msg_id in known_ids:
+                        continue
+                    if msg_type in ("systemEventMessage",):
+                        continue
+                    await _create_chat_triage_job(db, chat_id, msg, chat_type)
+                    processed += 1
+
+            await db.commit()
+
+    except PermissionError as e:
+        logger.warning("Graph API Permission-Fehler (Chat): %s", e)
+    except Exception:
+        logger.exception("Chat-Triage-Zyklus Fehler")
+    finally:
+        if client:
+            await client.close()
+
+    return processed
+
+
+async def chat_triage_loop() -> None:
+    """Automatische Endlosschleife: Prüft alle 5 Minuten auf neue Chat-Nachrichten."""
+    settings = get_settings()
+    interval = settings.chat_triage_interval_seconds
+    logger.info(
+        "Chat-Triage-Service gestartet -- automatischer Poll alle %d Sekunden",
+        interval,
+    )
+    await asyncio.sleep(15)
+    while True:
+        try:
+            count = await _chat_triage_cycle()
+            if count:
+                logger.info("Chat-Triage: %d neue Nachricht(en) → AgentJobs erstellt", count)
+        except Exception:
+            logger.exception("Chat-Triage-Service: unerwarteter Fehler")
+        await asyncio.sleep(interval)
+
+
 _triage_task: asyncio.Task | None = None
+_chat_triage_task: asyncio.Task | None = None
 
 
 async def start_triage_service() -> None:
-    global _triage_task
+    global _triage_task, _chat_triage_task
     s = get_settings()
     if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):
         logger.info("Triage-Service deaktiviert (Graph API nicht konfiguriert)")
         return
     _triage_task = asyncio.create_task(triage_loop())
-    logger.info("Triage-Service: Automatischer Hintergrund-Task laeuft")
+    _chat_triage_task = asyncio.create_task(chat_triage_loop())
+    logger.info("Triage-Service: E-Mail (120s) + Chat (300s) Hintergrund-Tasks laufen")
 
 
 async def stop_triage_service() -> None:
-    global _triage_task
-    if _triage_task and not _triage_task.done():
-        _triage_task.cancel()
-        try:
-            await _triage_task
-        except asyncio.CancelledError:
-            pass
+    global _triage_task, _chat_triage_task
+    for task in (_triage_task, _chat_triage_task):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     _triage_task = None
+    _chat_triage_task = None

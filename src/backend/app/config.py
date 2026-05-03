@@ -94,6 +94,7 @@ class Settings(BaseSettings):
 
     # Triage
     triage_interval_seconds: int = 120
+    chat_triage_interval_seconds: int = 300
 
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env.dev"),

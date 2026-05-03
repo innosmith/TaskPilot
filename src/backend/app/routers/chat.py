@@ -10,7 +10,7 @@ import uuid
 import litellm
 import markdown as md_lib
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
@@ -18,7 +18,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.auth.deps import get_current_user
 from app.config import get_settings
 from app.database import get_db, async_session
-from app.models import BoardColumn, Project, Task, User
+from app.models import AgentJob, BoardColumn, Project, Task, User
 from app.models.models import LlmConversation, LlmMessage
 
 litellm.drop_params = True
@@ -35,29 +35,52 @@ async def list_conversations(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Alle Konversationen (paginiert, neueste zuerst)."""
-    query = select(LlmConversation).order_by(LlmConversation.updated_at.desc())
-    if task_id:
-        query = query.where(LlmConversation.task_id == task_id)
-    query = query.offset(skip).limit(limit)
+    """Alle Konversationen (paginiert, neueste zuerst).
 
-    result = await db.execute(query)
-    conversations = result.scalars().all()
+    Eine kombinierte Abfrage mit korrelierten Subqueries vermeidet N+1.
+    """
+
+    msg_count_sq = (
+        select(func.count())
+        .select_from(LlmMessage)
+        .where(LlmMessage.conversation_id == LlmConversation.id)
+        .scalar_subquery()
+        .label("msg_count")
+    )
+
+    last_preview_sq = (
+        select(func.substr(LlmMessage.content, 1, 125))
+        .where(LlmMessage.conversation_id == LlmConversation.id)
+        .order_by(LlmMessage.created_at.desc())
+        .limit(1)
+        .scalar_subquery()
+        .label("last_preview")
+    )
+
+    count_q = select(func.count()).select_from(LlmConversation)
+    if task_id:
+        count_q = count_q.where(LlmConversation.task_id == task_id)
+    total = (await db.execute(count_q)).scalar_one()
+
+    q = (
+        select(LlmConversation, msg_count_sq, last_preview_sq)
+        .order_by(LlmConversation.updated_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    if task_id:
+        q = q.where(LlmConversation.task_id == task_id)
+
+    result = await db.execute(q)
 
     items = []
-    for conv in conversations:
-        msg_count_result = await db.execute(
-            select(func.count()).where(LlmMessage.conversation_id == conv.id)
-        )
-        msg_count = msg_count_result.scalar() or 0
-
-        last_msg_result = await db.execute(
-            select(LlmMessage.content)
-            .where(LlmMessage.conversation_id == conv.id)
-            .order_by(LlmMessage.created_at.desc())
-            .limit(1)
-        )
-        last_msg = last_msg_result.scalar_one_or_none()
+    for row in result.all():
+        conv = row[0]
+        msg_count = row[1] or 0
+        last_raw = row[2]
+        last_preview = None
+        if last_raw:
+            last_preview = (last_raw[:120] + "...") if len(last_raw) > 120 else last_raw
 
         items.append({
             "id": str(conv.id),
@@ -70,10 +93,10 @@ async def list_conversations(
             "created_at": conv.created_at.isoformat(),
             "updated_at": conv.updated_at.isoformat(),
             "message_count": msg_count,
-            "last_message_preview": (last_msg[:120] + "...") if last_msg and len(last_msg) > 120 else last_msg,
+            "last_message_preview": last_preview,
         })
 
-    return {"items": items, "total": len(items)}
+    return {"items": items, "total": total}
 
 
 @router.post("/conversations")
@@ -108,6 +131,16 @@ async def create_conversation(
         "created_at": conv.created_at.isoformat(),
         "updated_at": conv.updated_at.isoformat(),
     }
+
+
+@router.delete("/conversations")
+async def delete_all_conversations(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Alle Chat-Konversationen löschen (Nachrichten per ON DELETE CASCADE)."""
+    res = await db.execute(delete(LlmConversation))
+    return {"ok": True, "deleted": res.rowcount or 0}
 
 
 @router.get("/conversations/{conversation_id}")
@@ -421,8 +454,41 @@ async def create_task_from_message(
     return {"task_id": str(task.id), "title": task.title, "project_id": str(project_id)}
 
 
+MAX_AGENT_TIMEOUT = 120
+_NANOBOT_HOME = os.path.expanduser("~/.nanobot")
+_NANOBOT_CONFIG = os.path.join(_NANOBOT_HOME, "config.json")
+
+# ── Agent-Event-Buffer (Background-Decoupling) ──────────────────
+# Jeder laufende/kürzlich beendete Agent-Run hat eine Event-Liste.
+# Neue Subscriber bekommen alle Events ab einem Offset.
+
+_agent_events: dict[str, list[dict]] = {}
+_agent_conditions: dict[str, asyncio.Condition] = {}
+_agent_running: dict[str, bool] = {}
+_AGENT_EVENT_TTL = 600  # Events 10min nach Abschluss aufbewahren
+
+
+async def _push_agent_event(job_id: str, event: dict):
+    """Event in den Buffer schreiben und wartende Subscriber benachrichtigen."""
+    if job_id not in _agent_events:
+        _agent_events[job_id] = []
+    _agent_events[job_id].append(event)
+    cond = _agent_conditions.get(job_id)
+    if cond:
+        async with cond:
+            cond.notify_all()
+
+
+async def _cleanup_agent_events(job_id: str):
+    """Events nach TTL aufräumen."""
+    await asyncio.sleep(_AGENT_EVENT_TTL)
+    _agent_events.pop(job_id, None)
+    _agent_conditions.pop(job_id, None)
+    _agent_running.pop(job_id, None)
+
+
 def _load_agent_skills() -> str:
-    """Lädt alle Skills aus dem Nanobot-Workspace für den Chat-Agent."""
+    """Lädt alle .md-Skill-Dateien dynamisch aus dem Nanobot-Workspace."""
     from pathlib import Path
 
     skills_dir = Path(os.environ.get(
@@ -433,24 +499,58 @@ def _load_agent_skills() -> str:
     if not skills_dir.exists():
         return ""
 
-    skill_files = [
-        "calendar-management.md",
-        "crm-assistant.md",
-        "signa-recherche.md",
-    ]
-
     parts = []
-    for fname in skill_files:
-        path = skills_dir / fname
-        if path.exists():
-            parts.append(path.read_text(encoding="utf-8"))
+    for path in sorted(skills_dir.glob("*.md")):
+        parts.append(path.read_text(encoding="utf-8"))
 
     return "\n\n---\n\n".join(parts)
+
+
+MCP_SERVER_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "graph": {
+        "label": "Microsoft 365",
+        "description": "E-Mail, Kalender, Teams-Nachrichten, OneDrive, Dateisuche, Planner",
+    },
+    "taskpilot": {
+        "label": "Aufgaben",
+        "description": "Tasks erstellen, aktualisieren, zuweisen, Projekte verwalten",
+    },
+    "pipedrive": {
+        "label": "CRM (Pipedrive)",
+        "description": "Deals, Kontakte, Aktivitäten, Notizen",
+    },
+    "toggl": {
+        "label": "Zeiterfassung (Toggl)",
+        "description": "Zeiteinträge verwalten",
+    },
+    "bexio": {
+        "label": "Buchhaltung (bexio)",
+        "description": "Rechnungen, Kontakte, Finanzdaten",
+    },
+    "signa": {
+        "label": "Recherche (SIGNA)",
+        "description": "ISI-Datenbank, wissenschaftliche Quellen",
+    },
+}
+
+
+def _get_configured_mcp_servers() -> dict:
+    """Liest die MCP-Server-Liste aus der Nanobot-Config."""
+    config_path = os.path.join(_NANOBOT_HOME, "config.json")
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+        return config.get("tools", {}).get("mcpServers", {})
+    except Exception:
+        return {}
 
 
 def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
     """Baut einen vollständigen Prompt mit System-Kontext, Skills und Chat-Verlauf."""
     skills_text = _load_agent_skills()
+
+    mcp_servers = _get_configured_mcp_servers()
+    tools_block = "\n".join(f"- **{name}**" for name in mcp_servers) if mcp_servers else "- (keine MCP-Server konfiguriert)"
 
     history_lines = []
     for msg in conversation_messages[-10:]:
@@ -464,13 +564,8 @@ Du bist der TaskPilot-Agent von Anthony Smith (InnoSmith GmbH, Schweiz).
 Du hast Zugriff auf MCP-Tools für E-Mail, Kalender, CRM, Aufgaben und mehr.
 NUTZE DEINE TOOLS AKTIV! Behaupte NIEMALS, du hättest keinen Zugriff.
 
-### Verfügbare MCP-Server und Tools:
-- **email**: E-Mails lesen/schreiben, Kalender verwalten (list_calendar_events, create_calendar_event, find_free_slots, get_calendar_event)
-- **taskpilot**: Aufgaben und Projekte verwalten (create_task, update_task, list_tasks, etc.)
-- **pipedrive**: CRM-Daten (Deals, Kontakte, Aktivitäten)
-- **toggl**: Zeiterfassung
-- **bexio**: Buchhaltung
-- **signa**: ISI-Datenbank
+### Verfügbare MCP-Server:
+{tools_block}
 
 ### Zeitzone: Europe/Zurich
 
@@ -497,6 +592,21 @@ NUTZE DEINE TOOLS AKTIV! Behaupte NIEMALS, du hättest keinen Zugriff.
 Führe die Anfrage jetzt aus. Nutze die passenden MCP-Tools. Antworte auf Deutsch (Schweizer Hochdeutsch, kein ß)."""
 
 
+@router.get("/agent-tools")
+async def get_agent_tools(user: User = Depends(get_current_user)):
+    """Gibt die konfigurierten MCP-Server mit Beschreibungen zurück."""
+    servers = _get_configured_mcp_servers()
+    result = []
+    for key in servers:
+        meta = MCP_SERVER_DESCRIPTIONS.get(key, {})
+        result.append({
+            "key": key,
+            "label": meta.get("label", key.capitalize()),
+            "description": meta.get("description", ""),
+        })
+    return {"servers": result}
+
+
 @router.post("/conversations/{conversation_id}/agent")
 async def send_agent_message(
     conversation_id: uuid.UUID,
@@ -504,8 +614,15 @@ async def send_agent_message(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Nachricht an Nanobot senden — Agent hat Zugriff auf alle MCP-Tools."""
-    logger.info("Agent-Endpoint aufgerufen für Konversation %s", conversation_id)
+    """Agent-Nachricht absenden — startet Background-Task, gibt job_id zurück.
+
+    Der Agent läuft unabhängig vom Client. Events werden über
+    GET /conversations/{id}/agent-stream?job_id=... gestreamt und
+    können nach Reconnect ab beliebigem Offset fortgesetzt werden.
+    """
+    from datetime import datetime, timezone as tz
+
+    logger.info("[agent] Anfrage für Konversation %s", conversation_id)
 
     result = await db.execute(
         select(LlmConversation)
@@ -514,11 +631,11 @@ async def send_agent_message(
     )
     conv = result.scalar_one_or_none()
     if not conv:
-        logger.warning("Konversation %s nicht gefunden", conversation_id)
         raise HTTPException(status_code=404, detail="Konversation nicht gefunden")
 
     user_content = body.get("content", "")
-    logger.info("Agent-Nachricht erhalten: %.100s…", user_content)
+    selected_model = body.get("model", "nanobot")
+    logger.info("[agent] Nachricht (%.80s…), conv=%s", user_content, conversation_id)
 
     user_msg = LlmMessage(
         conversation_id=conv.id,
@@ -534,60 +651,247 @@ async def send_agent_message(
     sorted_messages = sorted(conv.messages, key=lambda m: m.created_at)
     full_prompt = _build_agent_prompt(user_content, sorted_messages)
 
+    agent_job = AgentJob(
+        job_type="chat_agent",
+        status="running",
+        llm_model=selected_model,
+        metadata_json={
+            "conversation_id": str(conv.id),
+            "prompt_preview": user_content[:200],
+        },
+        started_at=datetime.now(tz.utc),
+    )
+    db.add(agent_job)
+    await db.flush()
+    agent_job_id = agent_job.id
+
     await db.commit()
     conv_id_str = str(conv.id)
+    job_id_str = str(agent_job_id)
+
+    _agent_events[job_id_str] = []
+    _agent_conditions[job_id_str] = asyncio.Condition()
+    _agent_running[job_id_str] = True
+
+    asyncio.create_task(
+        _run_agent_background(job_id_str, conv_id_str, full_prompt, selected_model)
+    )
+
+    return {
+        "job_id": job_id_str,
+        "conversation_id": conv_id_str,
+        "status": "running",
+    }
+
+
+async def _run_agent_background(
+    job_id: str, conv_id: str, prompt: str, model: str
+):
+    """Führt den Nanobot-Agent als Background-Task aus, schreibt Events in den Buffer."""
+    from datetime import datetime, timezone as tz
+    from nanobot.agent.hook import AgentHook
+    from app.services.nanobot_worker import _init_chat_bot, reset_chat_bot
+
+    t_start = time.time()
+
+    async def _update_agent_job(
+        status: str,
+        output: str | None = None,
+        error_message: str | None = None,
+        tools_used: list[str] | None = None,
+    ):
+        async with async_session() as sdb:
+            res = await sdb.execute(
+                select(AgentJob).where(AgentJob.id == uuid.UUID(job_id))
+            )
+            job = res.scalar_one_or_none()
+            if not job:
+                return
+            job.status = status
+            if output is not None:
+                job.output = output[:2000]
+            if error_message is not None:
+                job.error_message = error_message
+            if status in ("completed", "failed"):
+                job.completed_at = datetime.now(tz.utc)
+            if tools_used:
+                meta = dict(job.metadata_json or {})
+                meta["tools_used"] = tools_used
+                job.metadata_json = meta
+            await sdb.commit()
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    class BufferedHook(AgentHook):
+        """Nanobot-Events in Queue schreiben (Background-safe)."""
+
+        def wants_streaming(self) -> bool:
+            return True
+
+        async def on_stream(self, context, delta: str):
+            await queue.put(("chunk", delta))
+
+        async def on_stream_end(self, context, *, resuming: bool = False):
+            if resuming:
+                await queue.put(("status", "InnoPilot arbeitet weiter..."))
+
+        async def before_execute_tools(self, context):
+            tool_names = [tc.name for tc in (context.tool_calls or [])]
+            if tool_names:
+                await queue.put(("tool_start", ", ".join(tool_names)))
+
+        async def after_iteration(self, context):
+            for ev in (context.tool_events or []):
+                await queue.put(("tool_event", json.dumps(ev, ensure_ascii=False)))
+
+    await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": "InnoPilot wird initialisiert..."})})
+    await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": "Agenten-Konfiguration und MCP-Server werden geladen..."})})
+
+    try:
+        bot = await _init_chat_bot()
+    except Exception as e:
+        logger.exception("[agent-bg] Bot-Init fehlgeschlagen")
+        await _update_agent_job("failed", error_message=f"Init fehlgeschlagen: {e}")
+        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot konnte nicht initialisiert werden: {e}"})})
+        _agent_running[job_id] = False
+        asyncio.create_task(_cleanup_agent_events(job_id))
+        return
+
+    if bot is None:
+        logger.error("[agent-bg] Chat-Bot nicht verfügbar")
+        await _update_agent_job("failed", error_message="Bot nicht verfügbar")
+        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot nicht verfügbar — prüfe ~/.nanobot/config.json"})})
+        _agent_running[job_id] = False
+        asyncio.create_task(_cleanup_agent_events(job_id))
+        return
+
+    session_key = f"chat:{conv_id}"
+    hook = BufferedHook()
+
+    mcp_count = len(getattr(bot, '_mcp_servers', None) or {})
+    await _push_agent_event(job_id, {"event": "status", "data": json.dumps(
+        {"content": f"InnoPilot bereit ({mcp_count} MCP-Server) — Aufgabe wird verarbeitet..."})})
+    logger.info("[agent-bg] Run gestartet, session=%s, prompt_len=%d, mcp_servers=%d", session_key, len(prompt), mcp_count)
+
+    bot_task = asyncio.create_task(
+        bot.run(prompt, session_key=session_key, hooks=[hook])
+    )
+
+    try:
+        while not bot_task.done():
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=2.0)
+                evt_type, evt_data = item
+                if evt_type == "chunk":
+                    await _push_agent_event(job_id, {"event": "chunk", "data": json.dumps({"content": evt_data})})
+                elif evt_type == "tool_start":
+                    await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": evt_data})})
+                elif evt_type == "tool_event":
+                    await _push_agent_event(job_id, {"event": "tool_event", "data": evt_data})
+                elif evt_type == "status":
+                    await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": evt_data})})
+            except asyncio.TimeoutError:
+                elapsed = time.time() - t_start
+                if elapsed > MAX_AGENT_TIMEOUT:
+                    bot_task.cancel()
+                    logger.warning("[agent-bg] Timeout nach %.0fs, job=%s", elapsed, job_id)
+                    await _update_agent_job("failed", error_message=f"Timeout nach {MAX_AGENT_TIMEOUT}s")
+                    await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot hat das Zeitlimit überschritten ({MAX_AGENT_TIMEOUT}s)"})})
+                    _agent_running[job_id] = False
+                    asyncio.create_task(_cleanup_agent_events(job_id))
+                    return
+
+        while not queue.empty():
+            item = queue.get_nowait()
+            evt_type, evt_data = item
+            if evt_type == "chunk":
+                await _push_agent_event(job_id, {"event": "chunk", "data": json.dumps({"content": evt_data})})
+            elif evt_type == "tool_start":
+                await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": evt_data})})
+            elif evt_type == "tool_event":
+                await _push_agent_event(job_id, {"event": "tool_event", "data": evt_data})
+
+        bot_result = bot_task.result()
+        content = bot_result.content or ""
+        tools_used = bot_result.tools_used or []
+        elapsed = time.time() - t_start
+        logger.info("[agent-bg] Fertig in %.1fs, Antwort=%d Zeichen, Tools=%s, job=%s",
+                    elapsed, len(content), tools_used, job_id)
+
+    except Exception as e:
+        logger.exception("[agent-bg] Fehler in job=%s", job_id)
+        reset_chat_bot()
+        await _update_agent_job("failed", error_message=str(e))
+        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot-Fehler: {e}"})})
+        _agent_running[job_id] = False
+        asyncio.create_task(_cleanup_agent_events(job_id))
+        return
+
+    async with async_session() as save_db:
+        assistant_msg = LlmMessage(
+            conversation_id=uuid.UUID(conv_id),
+            role="assistant",
+            content=content,
+        )
+        save_db.add(assistant_msg)
+        await save_db.commit()
+
+    await _update_agent_job("completed", output=content, tools_used=tools_used)
+
+    await _push_agent_event(job_id, {"event": "done", "data": json.dumps({
+        "message_id": str(assistant_msg.id),
+        "tokens": 0,
+        "content": content,
+        "tools_used": tools_used,
+        "elapsed_s": round(time.time() - t_start, 1),
+    })})
+
+    _agent_running[job_id] = False
+    asyncio.create_task(_cleanup_agent_events(job_id))
+
+
+@router.get("/conversations/{conversation_id}/agent-stream")
+async def stream_agent_events(
+    conversation_id: uuid.UUID,
+    job_id: str = Query(..., description="Agent-Job-ID aus POST-Antwort"),
+    offset: int = Query(0, ge=0, description="Event-Offset für Reconnect"),
+    user: User = Depends(get_current_user),
+):
+    """SSE-Stream der Agent-Events. Reconnect-fähig über offset-Parameter.
+
+    Der Client verbindet sich nach dem POST hierhin und erhält alle Events
+    ab dem angegebenen Offset. Bei Verbindungsverlust einfach mit dem
+    letzten empfangenen Offset erneut verbinden.
+    """
+    if job_id not in _agent_events:
+        raise HTTPException(status_code=404, detail="Agent-Job nicht gefunden oder bereits abgelaufen")
 
     async def generate():
-        from app.services.nanobot_worker import _init_bot
+        idx = offset
+        while True:
+            events = _agent_events.get(job_id, [])
 
-        yield {"event": "thinking", "data": json.dumps({"content": "Nanobot verarbeitet mit MCP-Tools..."})}
+            while idx < len(events):
+                evt = events[idx]
+                evt_with_idx = dict(evt)
+                data = json.loads(evt.get("data", "{}"))
+                data["_idx"] = idx
+                evt_with_idx["data"] = json.dumps(data, ensure_ascii=False)
+                yield evt_with_idx
+                idx += 1
 
-        logger.info("Nanobot-Init für Konversation %s", conv_id_str)
-        try:
-            bot = await _init_bot()
-        except Exception as e:
-            logger.exception("Nanobot-Init fehlgeschlagen")
-            yield {"event": "error", "data": json.dumps({"error": f"Nanobot konnte nicht initialisiert werden: {e}"})}
-            return
+                if evt.get("event") in ("done", "error"):
+                    return
 
-        if bot is None:
-            logger.error("Nanobot SDK nicht verfügbar (bot=None)")
-            yield {"event": "error", "data": json.dumps({"error": "Nanobot SDK nicht verfügbar — prüfe ~/.nanobot/config.json"})}
-            return
+            if not _agent_running.get(job_id, False):
+                return
 
-        session_key = f"chat:{conv_id_str}"
-        logger.info("Nanobot-Run gestartet, session=%s, prompt_len=%d", session_key, len(full_prompt))
-
-        bot_task = asyncio.create_task(bot.run(full_prompt, session_key=session_key))
-
-        try:
-            while not bot_task.done():
+            cond = _agent_conditions.get(job_id)
+            if cond:
                 try:
-                    await asyncio.wait_for(asyncio.shield(bot_task), timeout=10.0)
+                    async with cond:
+                        await asyncio.wait_for(cond.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": json.dumps({"ts": int(time.time())})}
-
-            bot_result = bot_task.result()
-            content = bot_result.content or ""
-            logger.info("Nanobot-Antwort erhalten, Länge=%d", len(content))
-        except Exception as e:
-            logger.exception("Nanobot-Fehler in Konversation %s", conv_id_str)
-            yield {"event": "error", "data": json.dumps({"error": f"Nanobot-Fehler: {e}"})}
-            return
-
-        async with async_session() as save_db:
-            assistant_msg = LlmMessage(
-                conversation_id=uuid.UUID(conv_id_str),
-                role="assistant",
-                content=content,
-            )
-            save_db.add(assistant_msg)
-            await save_db.commit()
-
-        yield {"event": "done", "data": json.dumps({
-            "message_id": str(assistant_msg.id),
-            "tokens": 0,
-            "content": content,
-        })}
 
     return EventSourceResponse(generate())

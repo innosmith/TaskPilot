@@ -71,4 +71,4 @@ Tests liegen in `src/backend/tests/`. Aktuell existieren:
 - **Kein LLM** in Tests -- nur Prompt-Strings prüfen, nicht LLM-Output
 - **Kein DB** in Tests -- kein `async_session()`, nur isolierte Funktionen
 - Tests nur für **neuralgische Punkte** (Kontextaufbereitung, Prompt-Qualität, API-Fallbacks)
-- `conftest.py` setzt `sys.path` für Imports aus `src/email-graph/` und `src/mcp-email/`
+- `conftest.py` setzt `sys.path` für Imports aus `src/email-graph/` und `src/mcp-graph/`

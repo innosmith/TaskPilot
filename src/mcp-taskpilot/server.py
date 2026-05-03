@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import logging
 import os
+import sys
 from datetime import datetime, timezone
 
 import asyncpg
@@ -10,6 +12,13 @@ import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("mcp_taskpilot")
 
 
 def _env(key: str, default: str = "") -> str:
