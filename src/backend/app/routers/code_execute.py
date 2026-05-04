@@ -252,7 +252,7 @@ async def generate_code(
         conversation_id=conv.id,
         role="assistant",
         content=f"```python\n{code}\n```",
-        metadata_json={"type": "code_generated", "model": model},
+        model=model,
     )
     db.add(assistant_msg)
     await db.commit()
@@ -317,12 +317,6 @@ async def execute_code(
         conversation_id=conv.id,
         role="assistant",
         content=result_content,
-        metadata_json={
-            "type": "code_executed",
-            "success": exec_result["success"],
-            "duration_seconds": exec_result.get("duration_seconds"),
-            "run_id": exec_result.get("run_id"),
-        },
     )
     db.add(result_msg)
     await db.commit()
@@ -431,7 +425,7 @@ async def generate_and_execute(
                 conversation_id=uuid.UUID(conv_id_str),
                 role="assistant",
                 content=f"```python\n{code}\n```",
-                metadata_json={"type": "code_generated", "model": model},
+                model=model,
             )
             save_db.add(code_msg)
 
@@ -449,11 +443,6 @@ async def generate_and_execute(
                 conversation_id=uuid.UUID(conv_id_str),
                 role="assistant",
                 content="\n\n".join(output_parts),
-                metadata_json={
-                    "type": "code_executed",
-                    "success": exec_result["success"],
-                    "run_id": exec_result.get("run_id"),
-                },
             )
             save_db.add(result_msg)
             await save_db.commit()

@@ -78,10 +78,6 @@ async def _execute_in_sandbox(
     output_dir.mkdir(exist_ok=True)
     os.chmod(output_dir, 0o777)
 
-    seccomp_arg = []
-    if SECCOMP_PROFILE.exists():
-        seccomp_arg = ["--security-opt", f"seccomp={SECCOMP_PROFILE}"]
-
     docker_args = [
         "docker", "run",
         "--rm", "-i",
@@ -92,7 +88,6 @@ async def _execute_in_sandbox(
         "--cpus", "2",
         "--pids-limit", "50",
         "--tmpfs", "/tmp:size=256m",
-        *seccomp_arg,
         "-v", f"{input_dir}:/input:ro",
         "-v", f"{output_dir}:/workspace:rw",
         "--entrypoint", "python",
