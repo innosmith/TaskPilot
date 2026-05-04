@@ -6,11 +6,29 @@ import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/tokyo-night-dark.css';
-import mermaid from 'mermaid';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 
-mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+let mermaidReady: Promise<typeof import('mermaid')> | null = null;
+function getMermaid() {
+  if (!mermaidReady) {
+    mermaidReady = import('mermaid').then(m => {
+      m.default.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+      return m;
+    });
+  }
+  return mermaidReady;
+}
+
+function uuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return uuid();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
 
 interface LlmModel {
   id: string;
@@ -74,6 +92,8 @@ function MermaidBlock({ code }: { code: string }) {
     let cancelled = false;
     (async () => {
       try {
+        const m = await getMermaid();
+        const mermaid = m.default;
         const valid = await mermaid.parse(code, { suppressErrors: true });
         if (!valid || cancelled) { if (!valid) setError('Ungültige Mermaid-Syntax'); return; }
         const id = `mermaid-${Math.random().toString(36).slice(2, 9)}`;
@@ -323,7 +343,7 @@ export function ChatPage() {
         setActiveId(conv.id);
       } catch (err) {
         setMessages(prev => [...prev, {
-          id: crypto.randomUUID(), role: 'assistant',
+          id: uuid(), role: 'assistant',
           content: `Konversation konnte nicht erstellt werden: ${(err as Error).message}`,
           tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
         }]);
@@ -333,7 +353,7 @@ export function ChatPage() {
 
     updateAgentState(convId, { isStreaming: true, status: 'running' });
     const userMsg: ChatMessage = {
-      id: crypto.randomUUID(), role: 'user', content: query,
+      id: uuid(), role: 'user', content: query,
       tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
     };
     setMessages(prev => [...prev, userMsg]);
@@ -363,7 +383,7 @@ export function ChatPage() {
       content += `---\n*Quelle: Tavily · ${data.credits_used} Credit(s)*`;
 
       const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(), role: 'assistant', content,
+        id: uuid(), role: 'assistant', content,
         tokens: null, cost_usd: null, citations: data.results, created_at: new Date().toISOString(),
       };
       setMessages(prev => [...prev, assistantMsg]);
@@ -376,7 +396,7 @@ export function ChatPage() {
       }).catch(() => {});
     } catch (err) {
       setMessages(prev => [...prev, {
-        id: crypto.randomUUID(), role: 'assistant',
+        id: uuid(), role: 'assistant',
         content: `Suchfehler: ${(err as Error).message}`,
         tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
       }]);
@@ -422,7 +442,7 @@ export function ChatPage() {
             updateAgentState(cid, { streamingContent: acc });
           } else if (evt === 'done') {
             setMessages(prev => [...prev, {
-              id: data.message_id || crypto.randomUUID(), role: 'assistant',
+              id: data.message_id || uuid(), role: 'assistant',
               content: data.content || acc, model: data.model || null,
               tokens: data.tokens, cost_usd: data.cost_usd || null,
               reasoning_tokens: data.reasoning_tokens || null,
@@ -435,7 +455,7 @@ export function ChatPage() {
             updateAgentState(cid, { streamingContent: '', thinkingContent: '', toolTrace: [] });
           } else if (evt === 'error') {
             setMessages(prev => [...prev, {
-              id: crypto.randomUUID(), role: 'assistant',
+              id: uuid(), role: 'assistant',
               content: `Fehler: ${data.error}`, tokens: null, cost_usd: null,
               tool_trace: traceAcc.length > 0 ? traceAcc : null,
               citations: null, created_at: new Date().toISOString(),
@@ -509,7 +529,7 @@ export function ChatPage() {
               updateAgentState(convId, { thinkingContent: acc.think });
             } else if (evt === 'done') {
               setMessages(prev => [...prev, {
-                id: data.message_id || crypto.randomUUID(), role: 'assistant',
+                id: data.message_id || uuid(), role: 'assistant',
                 content: data.content || acc.stream, tokens: data.tokens, cost_usd: data.cost_usd || null,
                 tool_trace: acc.trace.length > 0 ? [...acc.trace] : null,
                 tools_used: data.tools_used || null,
@@ -524,7 +544,7 @@ export function ChatPage() {
               return;
             } else if (evt === 'error') {
               setMessages(prev => [...prev, {
-                id: crypto.randomUUID(), role: 'assistant',
+                id: uuid(), role: 'assistant',
                 content: `Fehler: ${data.error}`, tokens: null, cost_usd: null,
                 tool_trace: acc.trace.length > 0 ? [...acc.trace] : null,
                 citations: null, created_at: new Date().toISOString(),
@@ -591,7 +611,7 @@ export function ChatPage() {
         setActiveId(conv.id);
       } catch (err) {
         setMessages(prev => [...prev, {
-          id: crypto.randomUUID(), role: 'assistant',
+          id: uuid(), role: 'assistant',
           content: `Konversation konnte nicht erstellt werden: ${(err as Error).message || 'Unbekannter Fehler'}`,
           tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
         }]);
@@ -603,7 +623,7 @@ export function ChatPage() {
     // User-Nachricht sofort anzeigen
     const attachmentMeta = attachments.map(f => ({ name: f.name, type: f.type }));
     const userMsg: ChatMessage = {
-      id: crypto.randomUUID(), role: 'user', content,
+      id: uuid(), role: 'user', content,
       tokens: null, cost_usd: null, citations: null,
       attachments: attachmentMeta.length > 0 ? attachmentMeta : undefined,
       created_at: new Date().toISOString(),
@@ -637,7 +657,7 @@ export function ChatPage() {
       } catch (err) {
         updateAgentState(convId, { isStreaming: false, streamingContent: '', thinkingContent: '', status: 'error' });
         setMessages(prev => [...prev, {
-          id: crypto.randomUUID(), role: 'assistant',
+          id: uuid(), role: 'assistant',
           content: `Fehler: ${(err as Error).message}`,
           tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
         }]);
@@ -665,7 +685,7 @@ export function ChatPage() {
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
           setMessages(prev => [...prev, {
-            id: crypto.randomUUID(), role: 'assistant',
+            id: uuid(), role: 'assistant',
             content: `Fehler: ${(err as Error).message}`,
             tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
           }]);
@@ -688,7 +708,7 @@ export function ChatPage() {
       const currentTrace = agentStates[cid]?.toolTrace || [];
       if (currentContent) {
         setMessages(prev => [...prev, {
-          id: crypto.randomUUID(), role: 'assistant',
+          id: uuid(), role: 'assistant',
           content: currentContent + '\n\n*(Abgebrochen)*',
           tokens: null, cost_usd: null,
           tool_trace: currentTrace.length > 0 ? currentTrace : null,
