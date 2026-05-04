@@ -44,9 +44,10 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
-    # nanobot WebSocket Bridge
-    nanobot_ws_url: str = "ws://127.0.0.1:8765"
-    nanobot_ws_token: str = "taskpilot-dev-token"
+    # Hermes Agent Worker
+    hermes_home: str = "~/.hermes"
+    litellm_url: str = "http://localhost:4000/v1"
+    honcho_url: str = "http://localhost:8001"
 
     # Unsplash (optional, for background image search)
     unsplash_access_key: str = ""

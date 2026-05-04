@@ -34,3 +34,43 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
+  honcho:
+    image: ghcr.io/plastic-labs/honcho:latest
+    container_name: taskpilot-honcho
+    ports:
+      - "127.0.0.1:8001:8000"
+    environment:
+      DATABASE_URL: "postgresql://${TP_DB_USER:-taskpilot}:${TP_DB_PASSWORD:-taskpilot_dev_2026}@postgres:5432/honcho"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  hermes-worker:
+    profiles: ["prod"]
+    build:
+      context: ../src/backend
+      dockerfile: ../../docker/Dockerfile.worker
+    container_name: taskpilot-hermes-worker
+    volumes:
+      - ${HOME}/.hermes:/root/.hermes
+      - ../src:/app/src
+    environment:
+      TP_DB_HOST: postgres
+      TP_DB_PORT: 5432
+      TP_DB_USER: ${TP_DB_USER:-taskpilot}
+      TP_DB_PASSWORD: ${TP_DB_PASSWORD:-taskpilot_dev_2026}
+      TP_DB_NAME: ${TP_DB_NAME:-taskpilot_dev}
+      TP_LITELLM_URL: http://litellm:4000/v1
+      TP_HONCHO_URL: http://honcho:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+      honcho:
+        condition: service_started
+    restart: unless-stopped

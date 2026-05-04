@@ -9,7 +9,8 @@ alwaysApply: false
 
 - Python-venv: `/home/innosmith/dev/github/TaskPilot/.venv/`
 - Docker Compose Config: `docker/docker-compose.dev.yml`
-- Nanobot Config: `~/.nanobot/config.json`
+- Hermes Config: `~/.hermes/config.yaml`
+- Honcho Config: `~/.hermes/honcho.json`
 - Dependencies: `pip install -r src/backend/requirements.txt`
 - Private Packages: `pip install -e ~/dev/github/mdConverter -e ~/dev/github/md2powerpoint`
 - Pandoc-Symlink: muss in `.venv/bin/pandoc` zeigen (via pypandoc_binary)
@@ -25,7 +26,7 @@ Verifizieren, dass der Mount kein tmpfs ist:
 
 ## Startreihenfolge
 
-### 1. Docker-Container (PostgreSQL + LiteLLM)
+### 1. Docker-Container (PostgreSQL + LiteLLM + Honcho)
 
 ```bash
 cd /home/innosmith/dev/github/TaskPilot
@@ -38,6 +39,9 @@ Prüfen ob sie laufen: `docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Po
 |---|---|---|
 | taskpilot-postgres | pgvector/pgvector:pg16 | 127.0.0.1:**5435**→5432 |
 | taskpilot-litellm | ghcr.io/berriai/litellm | 127.0.0.1:**4000**→4000 |
+| taskpilot-honcho | ghcr.io/plastic-labs/honcho | 127.0.0.1:**8001**→8000 |
+
+**Hinweis:** Der `hermes-worker` Container ist für Docker-Deployment (Produktion). Im Dev-Modus wird der Worker als separater Python-Prozess gestartet (siehe Schritt 3b).
 
 ### 2. Ollama (LLM-Inference)
 
@@ -60,9 +64,29 @@ Health-Check (prüft auch DB-Verbindung): `curl http://localhost:8000/api/health
 → `"db": "ok"` = Postgres erreichbar, `"db": "unreachable"` + Status 503 = Problem.
 
 Startet automatisch im Lifespan:
-- **Nanobot Worker** (pollt alle 10s nach queued AgentJobs via Python SDK)
 - **Recurring Scheduler** (wiederkehrende Tasks, Intervall 300s)
 - **Triage Service** (E-Mail-Triage, nur wenn Graph-API-Credentials konfiguriert)
+
+**WICHTIG:** Der Hermes Worker läuft NICHT mehr im Backend-Prozess (siehe Schritt 3b).
+
+### 3b. Hermes Worker (separater Prozess)
+
+Der Worker ist ein eigenständiger Python-Prozess, der über PostgreSQL (Polling + NOTIFY) mit dem Backend kommuniziert. **Muss in einem separaten Terminal gestartet werden:**
+
+```bash
+cd /home/innosmith/dev/github/TaskPilot
+source .venv/bin/activate
+PYTHONPATH=src/backend python -m app.services.hermes_worker
+```
+
+Der Worker:
+- Pollt alle 10s nach queued AgentJobs (email_triage, etc.)
+- Lauscht via PG LISTEN auf Chat-Jobs (sofortige Reaktion)
+- Hat einen eigenen Connection-Pool und Event-Loop
+- Kann unabhängig vom Backend neu gestartet werden
+- Bereinigt beim Start verwaiste running-Jobs automatisch
+
+Stoppen: `Ctrl+C` oder `kill <PID>` (SIGTERM wird sauber behandelt)
 
 ### 4. Vite Frontend Dev-Server (Port 5173)
 
@@ -79,10 +103,10 @@ Proxy-Config in `vite.config.ts`: `/api` und `/uploads` → `http://localhost:80
 |---|---|---|
 | PostgreSQL (pgvector) | 5435 | Docker |
 | LiteLLM Proxy | 4000 | Docker |
+| Honcho (Memory) | 8001 | Docker |
 | Ollama | 11434 | systemd |
 | FastAPI Backend | 8000 | uvicorn (venv) |
 | Vite Frontend | 5173 | npm (node) |
-| Nanobot WebSocket | 8765 | (innerhalb Backend) |
 
 ## Schnell-Check: Läuft alles?
 
@@ -90,6 +114,7 @@ Proxy-Config in `vite.config.ts`: `/api` und `/uploads` → `http://localhost:80
 curl -s http://localhost:8000/api/health        # Backend
 curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/  # Frontend
 curl -s http://localhost:11434/api/tags | head -c 100          # Ollama
+curl -s http://localhost:8001/health || echo "Honcho nicht erreichbar"  # Honcho
 docker ps --format "{{.Names}}: {{.Status}}" | grep taskpilot  # Docker
 ```
 
@@ -111,20 +136,26 @@ cd /home/innosmith/dev/github/TaskPilot
 docker compose -f docker/docker-compose.dev.yml down
 ```
 
-## Neustart (Backend + Frontend)
+## Neustart (Backend + Worker + Frontend)
 
 Verwaiste Prozesse sind ein **wiederkehrendes Problem** -- bei Neustarts immer zuerst die Ports freigeben:
 
 ```bash
 lsof -ti:8000 | xargs -r kill -9; lsof -ti:5173 | xargs -r kill -9
+pkill -f "python -m app.services.hermes_worker" 2>/dev/null
 sleep 1
 
-# Backend
+# Backend (Terminal 1)
 cd /home/innosmith/dev/github/TaskPilot
 source .venv/bin/activate
 PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src/backend &
 
-# Frontend
+# Worker (Terminal 2)
+cd /home/innosmith/dev/github/TaskPilot
+source .venv/bin/activate
+PYTHONPATH=src/backend python -m app.services.hermes_worker &
+
+# Frontend (Terminal 3)
 cd /home/innosmith/dev/github/TaskPilot/src/frontend
 npm run dev &
 ```
@@ -137,9 +168,32 @@ npm run dev &
 | Neue pip-Pakete installiert | **Ja** -- Backend neu starten |
 | DB-Schema geändert (Alembic/SQL) | **Ja** -- Backend neu starten |
 | `.env.dev` geändert | **Ja** -- Backend neu starten |
+| `~/.hermes/config.yaml` geändert | **Ja** -- Backend neu starten (Agent wird neu initialisiert) |
 | Frontend-Dateien (TSX/TS/CSS) | Nein -- Vite HMR |
 | Neue npm-Pakete installiert | **Ja** -- Frontend neu starten |
 | Docker-Compose geändert | **Ja** -- `docker compose down && up -d` |
+
+## Hermes Agent-Architektur
+
+```
+Backend (FastAPI, Port 8000)          ←── Separater Prozess
+ ├── Recurring Scheduler
+ └── Triage Service (E-Mail-Erkennung → AgentJob-Erstellung)
+
+Hermes Worker (python -m ...)         ←── Separater Prozess
+ ├── Persistenter AIAgent (model-switch pro Job)
+ ├── PG Polling (Triage-Jobs, 10s)
+ └── PG LISTEN chat_job_dispatch (Chat-Jobs, sofort)
+
+Kommunikation: PostgreSQL (agent_jobs Tabelle + PG NOTIFY)
+
+Honcho (Docker, Port 8001)
+ └── Cross-Session-Learning (PostgreSQL-backed)
+
+LiteLLM (Docker, Port 4000)
+ ├── Ollama (lokal) → private Daten
+ └── Cloud (Claude, GPT) → öffentliche Daten
+```
 
 ## Docker-Deployment (Produktion)
 
@@ -150,7 +204,7 @@ npm run dev &
 # 2. Images bauen
 docker compose -f docker/docker-compose.prod.yml build
 
-# 3. Starten
+# 3. Starten (inkl. Hermes-Worker als eigener Container)
 docker compose -f docker/docker-compose.prod.yml up -d
 ```
 

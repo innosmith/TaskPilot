@@ -85,6 +85,22 @@ interface AgentSkillData {
   content: string;
 }
 
+interface HermesBrainFile {
+  name: string;
+  category: string;
+  content: string;
+  size: number;
+  last_modified: string | null;
+}
+
+interface HermesBrainData {
+  files: HermesBrainFile[];
+  config_summary: Record<string, unknown>;
+  honcho_status: string;
+  agent_model: string;
+  mcp_servers: string[];
+}
+
 type SettingsTab = 'profile' | 'display' | 'cockpit' | 'llm' | 'integrations' | 'triage' | 'team' | 'intelligence';
 
 export function SettingsPage() {
@@ -128,6 +144,7 @@ export function SettingsPage() {
   const [triageStats, setTriageStats] = useState<TriageStatsData | null>(null);
   const [agentSkills, setAgentSkills] = useState<AgentSkillData[]>([]);
   const [totalSenders, setTotalSenders] = useState(0);
+  const [hermesBrain, setHermesBrain] = useState<HermesBrainData | null>(null);
 
   const [pdToken, setPdToken] = useState('');
   const [pdDomain, setPdDomain] = useState('innosmith');
@@ -179,13 +196,15 @@ export function SettingsPage() {
       api.get<{ profiles: SenderProfile[]; total_senders: number }>('/api/intelligence/sender-profiles?limit=20').catch(() => ({ profiles: [], total_senders: 0 })),
       api.get<TriageStatsData>('/api/intelligence/triage-stats?days=30').catch(() => null),
       api.get<{ skills: AgentSkillData[] }>('/api/intelligence/skills').catch(() => ({ skills: [] })),
-    ]).then(([hb, files, sp, ts, sk]) => {
+      api.get<HermesBrainData>('/api/intelligence/brain').catch(() => null),
+    ]).then(([hb, files, sp, ts, sk, brain]) => {
       setHeartbeat(hb);
       setMemFiles(files ?? []);
       setSenderProfiles(sp?.profiles ?? []);
       setTotalSenders(sp?.total_senders ?? 0);
       setTriageStats(ts);
       setAgentSkills(sk?.skills ?? []);
+      setHermesBrain(brain);
     }).finally(() => setMemLoading(false));
   }, [tab]);
 
@@ -1145,9 +1164,9 @@ export function SettingsPage() {
           {/* ── Intelligenz ── */}
           {tab === 'intelligence' && (
             <section>
-              <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Intelligenz</h2>
+              <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Agent Intelligence</h2>
               <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-                Systemwissen — Triage-Statistiken, Agent-Skills, Memory und Absenderprofile
+                Hermes Agent — Memory, Skills, Konfiguration, Triage-Statistiken und Absenderprofile
               </p>
 
               {memLoading ? (
@@ -1156,6 +1175,113 @@ export function SettingsPage() {
                 </div>
               ) : (
                 <div className="space-y-2">
+
+                  {/* Agent-Status Header */}
+                  {hermesBrain && (
+                    <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-800 dark:bg-indigo-950/30">
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-100 dark:bg-indigo-900/50">
+                          <span className="text-lg">🧠</span>
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-gray-900 dark:text-white">Hermes Agent</h3>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">Modell: {hermesBrain.agent_model}</p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <div className="rounded-lg bg-white/60 p-2.5 dark:bg-gray-800/60">
+                          <div className="text-xs font-medium text-gray-500 dark:text-gray-400">MCP-Server</div>
+                          <div className="text-sm font-semibold text-gray-900 dark:text-white">{hermesBrain.mcp_servers.length} verbunden</div>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {hermesBrain.mcp_servers.map((s) => (
+                              <span key={s} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-300">{s}</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-white/60 p-2.5 dark:bg-gray-800/60">
+                          <div className="text-xs font-medium text-gray-500 dark:text-gray-400">Honcho (Memory)</div>
+                          <div className="text-sm font-semibold text-gray-900 dark:text-white">{hermesBrain.honcho_status}</div>
+                        </div>
+                        <div className="rounded-lg bg-white/60 p-2.5 dark:bg-gray-800/60">
+                          <div className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory-Provider</div>
+                          <div className="text-sm font-semibold text-gray-900 dark:text-white">{String(hermesBrain.config_summary.memory_provider || 'lokal')}</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Hermes Brain Files: Profile (USER.md, MEMORY.md etc.) */}
+                  {hermesBrain?.files.filter(f => f.category === 'profile').map((file) => (
+                    <CollapsibleBlock
+                      key={`brain-${file.name}`}
+                      id={`brain-${file.name}`}
+                      title={file.name}
+                      subtitle={file.last_modified ? `Aktualisiert: ${new Date(file.last_modified).toLocaleString('de-CH')}` : ''}
+                      badge={
+                        <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
+                          Profil
+                        </span>
+                      }
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                      defaultOpen={file.name === 'USER.md' || file.name === 'MEMORY.md'}
+                    >
+                      <div className="max-h-[500px] overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-4 font-mono text-sm leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+                        {file.content || <span className="italic text-gray-400">Leer — der Agent hat hier noch nichts gelernt</span>}
+                      </div>
+                      <div className="mt-2 text-right text-xs text-gray-400">
+                        {file.size < 1024 ? `${file.size} Bytes` : `${(file.size / 1024).toFixed(1)} KB`}
+                      </div>
+                    </CollapsibleBlock>
+                  ))}
+
+                  {/* Hermes Brain Files: Memory */}
+                  {hermesBrain?.files.filter(f => f.category === 'memory').map((file) => (
+                    <CollapsibleBlock
+                      key={`brain-mem-${file.name}`}
+                      id={`brain-mem-${file.name}`}
+                      title={file.name}
+                      subtitle={file.last_modified ? `Aktualisiert: ${new Date(file.last_modified).toLocaleString('de-CH')}` : ''}
+                      badge={
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                          Memory
+                        </span>
+                      }
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                    >
+                      <div className="max-h-[400px] overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-4 font-mono text-sm leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+                        {file.content || <span className="italic text-gray-400">Leer</span>}
+                      </div>
+                      <div className="mt-2 text-right text-xs text-gray-400">
+                        {file.size < 1024 ? `${file.size} Bytes` : `${(file.size / 1024).toFixed(1)} KB`}
+                      </div>
+                    </CollapsibleBlock>
+                  ))}
+
+                  {/* Hermes Brain Files: Skills */}
+                  {hermesBrain?.files.filter(f => f.category === 'skill').map((file) => (
+                    <CollapsibleBlock
+                      key={`brain-skill-${file.name}`}
+                      id={`brain-skill-${file.name}`}
+                      title={file.name.replace('.md', '')}
+                      subtitle={file.content.split('\n').find(l => l.trim() && !l.startsWith('#'))?.slice(0, 120) || ''}
+                      badge={
+                        <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                          Skill
+                        </span>
+                      }
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                    >
+                      <div className="max-h-[500px] overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-4 text-sm leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+                        {file.content || <span className="italic text-gray-400">Kein Inhalt</span>}
+                      </div>
+                      <div className="mt-2 text-right text-xs text-gray-400">
+                        {file.size < 1024 ? `${file.size} Bytes` : `${(file.size / 1024).toFixed(1)} KB`}
+                      </div>
+                    </CollapsibleBlock>
+                  ))}
 
                   {/* Triage-Statistiken */}
                   {triageStats && (
@@ -1192,44 +1318,6 @@ export function SettingsPage() {
                     </CollapsibleBlock>
                   )}
 
-                  {/* Agent-Skills */}
-                  {agentSkills.length > 0 && agentSkills.map((skill) => (
-                    <CollapsibleBlock
-                      key={`skill-${skill.name}`}
-                      id={`skill-${skill.name}`}
-                      title={skill.name}
-                      subtitle={skill.description}
-                      badge={<span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">Skill</span>}
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                    >
-                      <div className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-4 text-sm leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200">
-                        {skill.content || <span className="italic text-gray-400">Kein Inhalt</span>}
-                      </div>
-                    </CollapsibleBlock>
-                  ))}
-
-                  {/* Memory-Dateien */}
-                  {memFiles.map((file) => (
-                    <CollapsibleBlock
-                      key={`mem-${file.name}`}
-                      id={`mem-${file.name}`}
-                      title={file.name}
-                      subtitle=""
-                      badge={
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                          {file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`}
-                        </span>
-                      }
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                    >
-                      <div className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
-                        {file.content || <span className="italic text-gray-400">Leer</span>}
-                      </div>
-                    </CollapsibleBlock>
-                  ))}
-
                   {/* Absenderprofile */}
                   {senderProfiles.length > 0 && (
                     <CollapsibleBlock
@@ -1260,36 +1348,6 @@ export function SettingsPage() {
                           </div>
                         ))}
                       </div>
-                    </CollapsibleBlock>
-                  )}
-
-                  {/* Heartbeat */}
-                  {heartbeat && (
-                    <CollapsibleBlock
-                      id="heartbeat"
-                      title="Heartbeat"
-                      subtitle=""
-                      badge={
-                        <span className="flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300">
-                          <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
-                          Aktiv
-                        </span>
-                      }
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                    >
-                      <div className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
-                        {heartbeat.content}
-                      </div>
-                      {heartbeat.skills.length > 0 && (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {heartbeat.skills.map((skill) => (
-                            <span key={skill} className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-                              {skill}
-                            </span>
-                          ))}
-                        </div>
-                      )}
                     </CollapsibleBlock>
                   )}
                 </div>

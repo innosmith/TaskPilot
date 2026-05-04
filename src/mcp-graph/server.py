@@ -1,6 +1,6 @@
 """MCP-Server für Microsoft 365-Zugriff via Graph API.
 
-nanobot kann diesen Server als Tool nutzen für:
+Hermes Agent kann diesen Server als Tool nutzen für:
   - E-Mails lesen, Entwürfe erstellen, versenden (nach Approval)
   - Kalender: Termine lesen/erstellen, freie Slots finden
   - Teams-Chat: Nachrichten lesen, Meeting-Transkripte abrufen

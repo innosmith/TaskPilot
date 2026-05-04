@@ -44,7 +44,6 @@ from app.routers import (
 )
 from app.routers import settings as user_settings
 from app.routers.auth import ensure_owner_exists
-from app.services.nanobot_worker import start_nanobot_worker, stop_nanobot_worker
 from app.services.recurring import start_recurring_scheduler, stop_recurring_scheduler
 from app.services.triage import start_triage_service, stop_triage_service
 
@@ -62,34 +61,11 @@ async def lifespan(app: FastAPI):
     async with async_session() as db:
         await ensure_owner_exists(db)
 
-    # Verwaiste "running"-Jobs nach Server-Neustart bereinigen
-    async with async_session() as db:
-        result = await db.execute(
-            text(
-                "UPDATE agent_jobs "
-                "SET status = 'failed', "
-                "    error_message = 'Durch Server-Neustart abgebrochen', "
-                "    completed_at = NOW() "
-                "WHERE status = 'running' "
-                "RETURNING id"
-            )
-        )
-        stale_ids = result.scalars().all()
-        if stale_ids:
-            logging.getLogger("taskpilot.lifespan").warning(
-                "Startup-Cleanup: %d verwaiste running-Jobs auf failed gesetzt: %s",
-                len(stale_ids),
-                [str(i) for i in stale_ids],
-            )
-        await db.commit()
-
-    await start_nanobot_worker()
     await start_recurring_scheduler()
     await start_triage_service()
     yield
     await stop_triage_service()
     await stop_recurring_scheduler()
-    await stop_nanobot_worker()
 
 
 app = FastAPI(

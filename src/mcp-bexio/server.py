@@ -1,6 +1,6 @@
 """MCP-Server für Bexio Buchhaltung.
 
-Nanobot kann diesen Server als Tool nutzen, um Kontakte, Aufträge,
+Hermes Agent kann diesen Server als Tool nutzen, um Kontakte, Aufträge,
 Rechnungen und Projekte in Bexio zu lesen und anzulegen.
 """
 

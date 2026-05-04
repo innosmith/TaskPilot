@@ -44,5 +44,36 @@ services:
       - backend
     restart: unless-stopped
 
+  honcho:
+    image: ghcr.io/plastic-labs/honcho:latest
+    container_name: taskpilot-honcho-prod
+    environment:
+      DATABASE_URL: "postgresql://${TP_DB_USER}:${TP_DB_PASSWORD}@postgres:5432/honcho"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  hermes-worker:
+    build:
+      context: ../src/backend
+      dockerfile: ../../docker/Dockerfile.worker
+    container_name: taskpilot-hermes-worker-prod
+    volumes:
+      - hermes-data:/root/.hermes
+      - ../src:/app/src
+    env_file:
+      - ../.env.prod
+    environment:
+      TP_DB_HOST: postgres
+      TP_DB_PORT: 5432
+      TP_LITELLM_URL: http://litellm:4000/v1
+      TP_HONCHO_URL: http://honcho:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   taskpilot-exports:
+  hermes-data:

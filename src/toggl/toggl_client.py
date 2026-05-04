@@ -189,6 +189,21 @@ class TogglClient:
         term = name.lower()
         return [p for p in all_projects if term in (p.get("name") or "").lower()]
 
+    # ── Time Entries (API v9 — flat entries) ─────────────────
+
+    async def get_time_entries(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict]:
+        """Zeiteinträge des authentifizierten Users (GET /me/time_entries).
+
+        Liefert flache Liste mit: start, duration, billable, project_id, etc.
+        """
+        params = {"start_date": f"{start_date}T00:00:00Z", "end_date": f"{end_date}T23:59:59Z"}
+        data = await self._get("/me/time_entries", params=params)
+        return data if isinstance(data, list) else []
+
     # ── Time Entries (Reports API v3) ────────────────────────
 
     async def search_time_entries(

@@ -396,14 +396,14 @@ async def get_agent_job_trace(
     _user: User = Depends(get_current_user),
 ) -> dict:
     """Session-Trace eines Agent-Jobs: Tool-Aufrufe, Reasoning, Fehler."""
-    from app.routers.memory import NANOBOT_WORKSPACE
+    from app.routers.memory import HERMES_HOME
 
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Agent job not found")
 
-    sessions_dir = NANOBOT_WORKSPACE / "sessions"
+    sessions_dir = HERMES_HOME / "sessions"
     prefix = f"{job.job_type or 'generic'}_{job_id}_"
     session_file = None
     if sessions_dir.exists():

@@ -117,6 +117,12 @@ class TogglProjectRow(BaseModel):
     budget_pct: float | None = None
 
 
+class DailyHours(BaseModel):
+    date: str
+    billable: float = 0
+    non_billable: float = 0
+
+
 class TogglMonthSummary(BaseModel):
     total_hours: float = 0
     billable_hours: float = 0
@@ -128,6 +134,7 @@ class TogglMonthSummary(BaseModel):
     working_days_total: int = 0
     working_days_elapsed: int = 0
     projects: list[TogglProjectRow] = []
+    daily_hours: list[DailyHours] = []
 
 
 class DebtorSummary(BaseModel):
@@ -326,6 +333,43 @@ async def get_debtors(
         rate_avg = total_amount / total_billable if total_billable > 0 else 0
         forecast_amount = billable_daily * wd_total * rate_avg if wd_elapsed > 0 else 0
 
+        # Tägliche Stunden via GET /me/time_entries (flache Einträge)
+        daily_hours: list[DailyHours] = []
+        try:
+            entries = await toggl.get_time_entries(month_start, month_end)
+            day_map: dict[str, dict[str, float]] = {}
+            for entry in entries:
+                start_str = entry.get("start", "")
+                if len(start_str) >= 10:
+                    day_key = start_str[:10]
+                else:
+                    continue
+                duration_secs = entry.get("duration", 0) or 0
+                if duration_secs < 0:
+                    continue
+                h = duration_secs / 3600
+                if day_key not in day_map:
+                    day_map[day_key] = {"billable": 0.0, "non_billable": 0.0}
+                if entry.get("billable", False):
+                    day_map[day_key]["billable"] += h
+                else:
+                    day_map[day_key]["non_billable"] += h
+
+            # Alle Tage des Monats einfügen (auch ohne Einträge)
+            first_of_month = today.replace(day=1)
+            d = first_of_month
+            while d <= today:
+                day_key = d.isoformat()
+                vals = day_map.get(day_key, {"billable": 0.0, "non_billable": 0.0})
+                daily_hours.append(DailyHours(
+                    date=day_key,
+                    billable=round(vals["billable"], 2),
+                    non_billable=round(vals["non_billable"], 2),
+                ))
+                d += timedelta(days=1)
+        except Exception as e:
+            logger.warning("Toggl daily hours nicht verfuegbar: %s", e)
+
         toggl_month = TogglMonthSummary(
             total_hours=round(total_hours, 1),
             billable_hours=round(total_billable, 1),
@@ -337,6 +381,7 @@ async def get_debtors(
             working_days_total=wd_total,
             working_days_elapsed=wd_elapsed,
             projects=rows,
+            daily_hours=daily_hours,
         )
     except Exception as e:
         logger.warning("Toggl-Daten nicht verfuegbar: %s", e)

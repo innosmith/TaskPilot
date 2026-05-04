@@ -1,6 +1,6 @@
 """MCP-Server für Toggl Track Zeiterfassung.
 
-Nanobot kann diesen Server als Tool nutzen, um Workspaces, Clients,
+Hermes Agent kann diesen Server als Tool nutzen, um Workspaces, Clients,
 Projects und Time Entries in Toggl Track zu lesen und anzulegen.
 """
 

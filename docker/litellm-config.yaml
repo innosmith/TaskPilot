@@ -1,7 +1,7 @@
 # LiteLLM Proxy Configuration -- TaskPilot LLM Gateway
 # Docs: https://docs.litellm.ai/docs/proxy/configs
 #
-# Alle LLM-Aufrufe (nanobot + Backend) gehen ueber diesen Proxy.
+# Alle LLM-Aufrufe (Hermes Agent + Backend) gehen ueber diesen Proxy.
 # Modell-String im Request bestimmt das Routing:
 #   ollama/* → Ollama lokal
 #   anthropic/* → Anthropic Cloud
@@ -10,25 +10,32 @@
 
 model_list:
   # ── Lokale Modelle (Ollama) ────────────────────────────────
+  # think: false → Workaround fuer LiteLLM Bug #18922:
+  # Tool-Calls werden gedroppt wenn Thinking-Tokens vorhanden sind.
+  # Sobald LiteLLM diesen Bug fixt, kann think entfernt werden.
   - model_name: ollama/qwen3.6:latest
     litellm_params:
       model: ollama/qwen3.6:latest
       api_base: http://host.docker.internal:11434
+      think: false
 
   - model_name: ollama/qwen3.5:35b
     litellm_params:
       model: ollama/qwen3.5:35b
       api_base: http://host.docker.internal:11434
+      think: false
 
   - model_name: ollama/qwen3.5:9b
     litellm_params:
       model: ollama/qwen3.5:9b
       api_base: http://host.docker.internal:11434
+      think: false
 
   - model_name: ollama/qwen3:32b
     litellm_params:
       model: ollama/qwen3:32b
       api_base: http://host.docker.internal:11434
+      think: false
 
   - model_name: ollama/gemma4:31b
     litellm_params:

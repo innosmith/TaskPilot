@@ -12,12 +12,12 @@ Das verbindliche Pflichtenheft liegt in [docs/pflichtenheft-taskpilot.md](docs/p
 - **Frontend:** React 19 + Vite + Tailwind CSS + @dnd-kit + Lucide-React Icons
 - **Backend:** FastAPI (Python 3.12) + SQLAlchemy 2.0 (async) + asyncpg + Pydantic v2
 - **Datenbank:** PostgreSQL mit pgvector, Port 5435
-- **Agent-Runtime:** nanobot (HKUDS), Config: `~/.nanobot/config.json`
+- **Agent-Runtime:** Hermes Agent (Nous Research), Config: `~/.hermes/config.yaml`, Memory: Honcho (Self-Hosted)
 - **LLM-Gateway:** LiteLLM-Proxy, Default-Modell: Qwen 3.5 35B (Ollama lokal)
 - **MCP-Server:** `src/mcp-taskpilot/` (DB), `src/mcp-graph/` (Microsoft Graph), `src/mcp-pipedrive/` (Pipedrive CRM), `src/mcp-bexio/` (Buchhaltung), `src/mcp-toggl/` (Zeiterfassung), `src/mcp-signa/` (Strategic Intelligence), `src/mcp-invoiceinsight/` (Kreditoren-Analyse), `src/mcp-scripts/` (Script-Orchestrierung), `src/mcp-sandbox/` (Code-Sandbox)
 - **Graph API:** `src/email-graph/graph_client.py` (Shared Library)
 - **Pipedrive API:** `src/pipedrive/pipedrive_client.py` (Shared Library)
-- **Skills:** `~/.nanobot/workspace/skills/*.md`
+- **Skills:** `~/.hermes/skills/*.md`
 
 ## Verzeichnisstruktur
 ```
@@ -63,7 +63,7 @@ queued → running → awaiting_approval → completed
                  → failed (bei Fehlern)
 ```
 
-- **queued:** Nanobot-Worker pollt alle 10s, greift Jobs auf
+- **queued:** Hermes-Worker pollt alle 10s (Triage) oder empfängt via PG NOTIFY (Chat)
 - **running:** Agent verarbeitet (LLM + MCP-Tool-Aufrufe)
 - **awaiting_approval:** Agent hat Draft erstellt, wartet auf HITL-Freigabe
 - **completed:** Abgeschlossen (automatisch oder nach Freigabe)
@@ -94,8 +94,9 @@ Endpoint: `GET /api/sse/events`
 **Eiserne Regel:** Externe Kommunikation = immer L1. Kein Auto-Versand von E-Mails.
 
 ## Verworfene Alternativen (nicht erneut vorschlagen)
-- **LangGraph / LangChain** — zu komplex, nanobot AgentLoop reicht
+- **LangGraph / LangChain** — zu komplex
 - **CrewAI / AutoGen** — Multi-Agent formal zurückgewiesen
+- **Nanobot (HKUDS)** — ersetzt durch Hermes Agent (Memory-System funktionierte nicht, weniger Features)
 - **n8n als Agent-Kern** — nur für deterministische Pipelines
 - **Telegram-Bot** — Datenschutz-Bedenken (Dubai-Server, kein E2E)
 - **Plane / WeKan / Focalboard** — Paradigmen-Entscheid: eigenes agentisches Cockpit

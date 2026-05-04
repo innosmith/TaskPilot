@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, get_current_user_light
 from app.config import get_settings
 from app.database import get_db, async_session
 from app.models import AgentJob, BoardColumn, Project, Task, User
@@ -292,44 +292,44 @@ async def batch_save_messages(
 async def send_message(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user_light),
 ):
     """Nachricht senden und LLM-Antwort als SSE streamen."""
-    result = await db.execute(
-        select(LlmConversation)
-        .options(selectinload(LlmConversation.messages))
-        .where(LlmConversation.id == conversation_id)
-    )
-    conv = result.scalar_one_or_none()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Konversation nicht gefunden")
+    async with async_session() as db:
+        result = await db.execute(
+            select(LlmConversation)
+            .options(selectinload(LlmConversation.messages))
+            .where(LlmConversation.id == conversation_id)
+        )
+        conv = result.scalar_one_or_none()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Konversation nicht gefunden")
 
-    user_content = body.get("content", "")
-    user_attachments = body.get("attachments", [])
+        user_content = body.get("content", "")
+        user_attachments = body.get("attachments", [])
 
-    user_msg = LlmMessage(
-        conversation_id=conv.id,
-        role="user",
-        content=user_content,
-        attachments=user_attachments,
-    )
-    db.add(user_msg)
-    await db.flush()
+        user_msg = LlmMessage(
+            conversation_id=conv.id,
+            role="user",
+            content=user_content,
+            attachments=user_attachments,
+        )
+        db.add(user_msg)
+        await db.flush()
 
-    if not conv.title and len(conv.messages) <= 1:
-        conv.title = user_content[:80] + ("..." if len(user_content) > 80 else "")
+        if not conv.title and len(conv.messages) <= 1:
+            conv.title = user_content[:80] + ("..." if len(user_content) > 80 else "")
 
-    messages_for_llm = []
-    for msg in conv.messages:
-        messages_for_llm.append({"role": msg.role, "content": msg.content})
-    messages_for_llm.append({"role": "user", "content": user_content})
+        messages_for_llm = []
+        for msg in conv.messages:
+            messages_for_llm.append({"role": msg.role, "content": msg.content})
+        messages_for_llm.append({"role": "user", "content": user_content})
 
-    await db.commit()
+        await db.commit()
 
-    conv_id_str = str(conv.id)
-    model = conv.model
-    temperature = conv.temperature
+        conv_id_str = str(conv.id)
+        model = conv.model
+        temperature = conv.temperature
 
     def _setup_api_keys():
         """API-Keys als Env-Vars setzen, damit litellm sie findet."""
@@ -602,17 +602,12 @@ async def create_task_from_message(
 
 
 MAX_AGENT_TIMEOUT = 600
-_NANOBOT_HOME = os.path.expanduser("~/.nanobot")
-_NANOBOT_CONFIG = os.path.join(_NANOBOT_HOME, "config.json")
-
-# ── Agent-Event-Buffer (Background-Decoupling) ──────────────────
-# Jeder laufende/kürzlich beendete Agent-Run hat eine Event-Liste.
-# Neue Subscriber bekommen alle Events ab einem Offset.
+_HERMES_HOME = os.path.expanduser(os.environ.get("TP_HERMES_HOME", "~/.hermes"))
 
 _agent_events: dict[str, list[dict]] = {}
 _agent_conditions: dict[str, asyncio.Condition] = {}
 _agent_running: dict[str, bool] = {}
-_AGENT_EVENT_TTL = 600  # Events 10min nach Abschluss aufbewahren
+_AGENT_EVENT_TTL = 600
 
 
 async def _push_agent_event(job_id: str, event: dict):
@@ -635,13 +630,10 @@ async def _cleanup_agent_events(job_id: str):
 
 
 def _load_agent_skills() -> str:
-    """Lädt alle .md-Skill-Dateien dynamisch aus dem Nanobot-Workspace."""
+    """Lädt alle .md-Skill-Dateien dynamisch aus dem Hermes-Home."""
     from pathlib import Path
 
-    skills_dir = Path(os.environ.get(
-        "TP_NANOBOT_WORKSPACE",
-        os.path.expanduser("~/.nanobot/workspace"),
-    )) / "skills"
+    skills_dir = Path(_HERMES_HOME) / "skills"
 
     if not skills_dir.exists():
         return ""
@@ -732,18 +724,19 @@ MCP_SERVER_DESCRIPTIONS: dict[str, dict[str, str]] = {
 
 
 def _get_configured_mcp_servers() -> dict:
-    """Liest die MCP-Server-Liste aus der Nanobot-Config."""
-    config_path = os.path.join(_NANOBOT_HOME, "config.json")
+    """Liest die MCP-Server-Liste aus der Hermes-Config."""
+    import yaml
+    config_path = os.path.join(_HERMES_HOME, "config.yaml")
     try:
         with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-        return config.get("tools", {}).get("mcpServers", {})
+            config = yaml.safe_load(f)
+        return config.get("mcp_servers", {})
     except Exception:
         return {}
 
 
 def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
-    """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Nanobot SDK via MCP."""
+    """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Hermes Agent via MCP."""
     skills_text = _load_agent_skills()
 
     history_lines = []
@@ -819,7 +812,7 @@ async def send_agent_message(
         raise HTTPException(status_code=404, detail="Konversation nicht gefunden")
 
     user_content = body.get("content", "")
-    selected_model = body.get("model", "nanobot")
+    selected_model = body.get("model", "hermes")
     logger.info("[agent] Nachricht (%.80s…), conv=%s", user_content, conversation_id)
 
     user_msg = LlmMessage(
@@ -838,13 +831,14 @@ async def send_agent_message(
 
     agent_job = AgentJob(
         job_type="chat_agent",
-        status="running",
+        status="queued",
         llm_model=selected_model,
         metadata_json={
             "conversation_id": str(conv.id),
+            "prompt": full_prompt,
             "prompt_preview": user_content[:200],
+            "llm_model": selected_model,
         },
-        started_at=datetime.now(tz.utc),
     )
     db.add(agent_job)
     await db.flush()
@@ -869,192 +863,98 @@ async def send_agent_message(
     }
 
 
-OLLAMA_API_BASE = "http://localhost:11434/v1"
-LITELLM_API_BASE = "http://localhost:4000/v1"
-
-
-def _apply_model_routing(bot, selected_model: str) -> None:
-    """Setzt Modell und Provider-Endpoint basierend auf User-Wahl.
-
-    Modell-ID-Format aus Frontend: 'ollama/qwen3.5:35b', 'anthropic/claude-sonnet-4-6', etc.
-    Für lokale Modelle → direkt Ollama. Für Cloud → LiteLLM-Proxy.
-    """
-    if not selected_model or selected_model == "nanobot":
-        return
-
-    if selected_model.startswith("ollama/"):
-        bot._loop.model = selected_model.removeprefix("ollama/")
-        bot._loop.provider.api_base = OLLAMA_API_BASE
-    else:
-        bot._loop.model = selected_model
-        bot._loop.provider.api_base = LITELLM_API_BASE
-
-
 async def _run_agent_background(
     job_id: str, conv_id: str, prompt: str, model: str
 ):
-    """Führt den Nanobot-Agent als Background-Task aus, schreibt Events in den Buffer."""
+    """Dispatcht Chat-Job an den Hermes-Worker via PG NOTIFY und streamt Events zurück."""
     from datetime import datetime, timezone as tz
-    from nanobot.agent.hook import AgentHook
-    from app.services.nanobot_worker import _init_chat_bot, reset_chat_bot
+
+    import psycopg
 
     t_start = time.time()
 
-    async def _update_agent_job(
-        status: str,
-        output: str | None = None,
-        error_message: str | None = None,
-        tools_used: list[str] | None = None,
-    ):
-        async with async_session() as sdb:
-            res = await sdb.execute(
-                select(AgentJob).where(AgentJob.id == uuid.UUID(job_id))
-            )
-            job = res.scalar_one_or_none()
-            if not job:
-                return
-            job.status = status
-            if output is not None:
-                job.output = output[:2000]
-            if error_message is not None:
-                job.error_message = error_message
-            if status in ("completed", "failed"):
-                job.completed_at = datetime.now(tz.utc)
-            if tools_used:
-                meta = dict(job.metadata_json or {})
-                meta["tools_used"] = tools_used
-                job.metadata_json = meta
-            await sdb.commit()
-
-    queue: asyncio.Queue = asyncio.Queue()
-
-    class BufferedHook(AgentHook):
-        """Nanobot-Events in Queue schreiben (Background-safe)."""
-
-        def wants_streaming(self) -> bool:
-            return True
-
-        async def on_stream(self, context, delta: str):
-            await queue.put(("chunk", delta))
-
-        async def on_stream_end(self, context, *, resuming: bool = False):
-            if resuming:
-                await queue.put(("status", "InnoPilot arbeitet weiter..."))
-
-        async def before_execute_tools(self, context):
-            tool_names = [tc.name for tc in (context.tool_calls or [])]
-            if tool_names:
-                await queue.put(("tool_start", ", ".join(tool_names)))
-
-        async def after_iteration(self, context):
-            for ev in (context.tool_events or []):
-                await queue.put(("tool_event", json.dumps(ev, ensure_ascii=False)))
-
     await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": "InnoPilot wird initialisiert..."})})
-    await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": "Agenten-Konfiguration und MCP-Server werden geladen..."})})
 
-    try:
-        bot = await _init_chat_bot()
-    except Exception as e:
-        logger.exception("[agent-bg] Bot-Init fehlgeschlagen")
-        await _update_agent_job("failed", error_message=f"Init fehlgeschlagen: {e}")
-        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot konnte nicht initialisiert werden: {e}"})})
-        _agent_running[job_id] = False
-        asyncio.create_task(_cleanup_agent_events(job_id))
-        return
-
-    if bot is None:
-        logger.error("[agent-bg] Chat-Bot nicht verfügbar")
-        await _update_agent_job("failed", error_message="Bot nicht verfügbar")
-        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot nicht verfügbar — prüfe ~/.nanobot/config.json"})})
-        _agent_running[job_id] = False
-        asyncio.create_task(_cleanup_agent_events(job_id))
-        return
-
-    session_key = f"chat:{conv_id}"
-    hook = BufferedHook()
-
-    _apply_model_routing(bot, model)
-
-    mcp_count = len(getattr(bot._loop, '_mcp_servers', None) or {})
-    active_model = getattr(bot._loop, 'model', '?')
-    await _push_agent_event(job_id, {"event": "status", "data": json.dumps(
-        {"content": f"InnoPilot bereit ({mcp_count} MCP-Server, Modell: {active_model}) — Aufgabe wird verarbeitet..."})})
-    logger.info("[agent-bg] Run gestartet, session=%s, model=%s, prompt_len=%d, mcp_servers=%d",
-                session_key, active_model, len(prompt), mcp_count)
-
-    bot_task = asyncio.create_task(
-        bot.run(prompt, session_key=session_key, hooks=[hook])
+    settings = get_settings()
+    dsn = (
+        f"postgresql://{settings.db_user}:{settings.db_password}"
+        f"@{settings.db_host}:{settings.db_port}/{settings.db_name}"
     )
 
+    stream_channel = f"chat_stream_{str(job_id).replace('-', '')}"
+
     try:
-        while not bot_task.done():
+        notify_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
+        await notify_conn.execute(f"LISTEN {stream_channel}")
+
+        dispatch_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
+        dispatch_payload = json.dumps({"job_id": job_id}, ensure_ascii=False)
+        await dispatch_conn.execute(
+            "SELECT pg_notify('chat_job_dispatch', %s)", [dispatch_payload]
+        )
+        await dispatch_conn.close()
+
+        await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": f"InnoPilot arbeitet (Modell: {model})..."})})
+
+        async for notify in notify_conn.notifies():
+            elapsed = time.time() - t_start
+            if elapsed > MAX_AGENT_TIMEOUT:
+                logger.warning("[agent-bg] Timeout nach %.0fs, job=%s", elapsed, job_id)
+                await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot hat das Zeitlimit überschritten ({MAX_AGENT_TIMEOUT}s)"})})
+                _agent_running[job_id] = False
+                asyncio.create_task(_cleanup_agent_events(job_id))
+                await notify_conn.close()
+                return
+
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=2.0)
-                evt_type, evt_data = item
-                if evt_type == "chunk":
-                    await _push_agent_event(job_id, {"event": "chunk", "data": json.dumps({"content": evt_data})})
-                elif evt_type == "tool_start":
-                    await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": evt_data})})
-                elif evt_type == "tool_event":
-                    await _push_agent_event(job_id, {"event": "tool_event", "data": evt_data})
-                elif evt_type == "status":
-                    await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": evt_data})})
-            except asyncio.TimeoutError:
-                elapsed = time.time() - t_start
-                if elapsed > MAX_AGENT_TIMEOUT:
-                    bot_task.cancel()
-                    logger.warning("[agent-bg] Timeout nach %.0fs, job=%s", elapsed, job_id)
-                    await _update_agent_job("failed", error_message=f"Timeout nach {MAX_AGENT_TIMEOUT}s")
-                    await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot hat das Zeitlimit überschritten ({MAX_AGENT_TIMEOUT}s)"})})
-                    _agent_running[job_id] = False
-                    asyncio.create_task(_cleanup_agent_events(job_id))
-                    return
+                data = json.loads(notify.payload)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("[agent-bg] Ungültiges JSON in NOTIFY (job=%s): %s", job_id, notify.payload[:200])
+                continue
 
-        while not queue.empty():
-            item = queue.get_nowait()
-            evt_type, evt_data = item
-            if evt_type == "chunk":
-                await _push_agent_event(job_id, {"event": "chunk", "data": json.dumps({"content": evt_data})})
-            elif evt_type == "tool_start":
-                await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": evt_data})})
-            elif evt_type == "tool_event":
-                await _push_agent_event(job_id, {"event": "tool_event", "data": evt_data})
+            msg_type = data.get("type")
 
-        bot_result = bot_task.result()
-        content = bot_result.content or ""
-        tools_used = bot_result.tools_used or []
-        elapsed = time.time() - t_start
-        logger.info("[agent-bg] Fertig in %.1fs, Antwort=%d Zeichen, Tools=%s, job=%s",
-                    elapsed, len(content), tools_used, job_id)
+            if msg_type == "chunk":
+                await _push_agent_event(job_id, {"event": "chunk", "data": json.dumps({"content": data.get("content", "")})})
+            elif msg_type == "clear":
+                await _push_agent_event(job_id, {"event": "clear", "data": json.dumps({})})
+            elif msg_type == "tool_start":
+                await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": data.get("tools", "")})})
+            elif msg_type == "status":
+                await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": data.get("content", "")})})
+            elif msg_type == "done":
+                async with async_session() as save_db:
+                    job_row = await save_db.execute(
+                        select(AgentJob).where(AgentJob.id == job_id)
+                    )
+                    job_obj = job_row.scalar_one_or_none()
+                    content = (job_obj.output if job_obj else "") or ""
+
+                    assistant_msg = LlmMessage(
+                        conversation_id=uuid.UUID(conv_id),
+                        role="assistant",
+                        content=content,
+                    )
+                    save_db.add(assistant_msg)
+                    await save_db.commit()
+
+                await _push_agent_event(job_id, {"event": "done", "data": json.dumps({
+                    "message_id": str(assistant_msg.id),
+                    "tokens": 0,
+                    "content": content,
+                    "tools_used": data.get("tools_used", []),
+                    "elapsed_s": round(time.time() - t_start, 1),
+                })})
+                break
+            elif msg_type == "error":
+                await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": data.get("error", "Unbekannter Fehler")})})
+                break
+
+        await notify_conn.close()
 
     except Exception as e:
         logger.exception("[agent-bg] Fehler in job=%s", job_id)
-        reset_chat_bot()
-        await _update_agent_job("failed", error_message=str(e))
         await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot-Fehler: {e}"})})
-        _agent_running[job_id] = False
-        asyncio.create_task(_cleanup_agent_events(job_id))
-        return
-
-    async with async_session() as save_db:
-        assistant_msg = LlmMessage(
-            conversation_id=uuid.UUID(conv_id),
-            role="assistant",
-            content=content,
-        )
-        save_db.add(assistant_msg)
-        await save_db.commit()
-
-    await _update_agent_job("completed", output=content, tools_used=tools_used)
-
-    await _push_agent_event(job_id, {"event": "done", "data": json.dumps({
-        "message_id": str(assistant_msg.id),
-        "tokens": 0,
-        "content": content,
-        "tools_used": tools_used,
-        "elapsed_s": round(time.time() - t_start, 1),
-    })})
 
     _agent_running[job_id] = False
     asyncio.create_task(_cleanup_agent_events(job_id))
@@ -1065,7 +965,7 @@ async def stream_agent_events(
     conversation_id: uuid.UUID,
     job_id: str = Query(..., description="Agent-Job-ID aus POST-Antwort"),
     offset: int = Query(0, ge=0, description="Event-Offset für Reconnect"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_light),
 ):
     """SSE-Stream der Agent-Events. Reconnect-fähig über offset-Parameter.
 

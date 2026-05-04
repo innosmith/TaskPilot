@@ -37,7 +37,7 @@ alwaysApply: false
 ## Background-Services
 - Pattern: `start_*()` / `stop_*()` Funktionen, `asyncio.create_task()`
 - Registrierung im Lifespan-Hook in `main.py`
-- Beispiele: `nanobot_bridge`, `recurring`, `triage`
+- Beispiele: `hermes_worker`, `recurring`, `triage`
 
 ## Document Export (`routers/export.py`)
 - Private Packages `mdconverter` und `md2powerpoint` werden als editable installiert
@@ -81,7 +81,7 @@ Tests liegen in `src/backend/tests/`. Aktuell existieren:
 |-------|--------|
 | `test_graph_client.py` | Graph-Client (Sortierung, $search-Fallback, Body in $select) |
 | `test_mcp_handlers.py` | MCP-Email-Kontextaufbereitung (HTML→Text, Thread-Limits) |
-| `test_triage_prompt.py` | Nanobot-Prompt (PFLICHT-Aufrufe, Umlaute, Felder) |
+| `test_triage_prompt.py` | Triage-Prompt (PFLICHT-Aufrufe, Umlaute, Felder) |
 | `test_pipedrive_client.py` | Pipedrive-Client (Search, Deals, Activities) |
 
 ### Prinzipien

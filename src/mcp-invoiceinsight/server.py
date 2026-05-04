@@ -1,7 +1,7 @@
 """MCP-Server (stdio) für InvoiceInsight Kreditoren-Analyse.
 
 Proxy zum HTTP-MCP von InvoiceInsight — exponiert die wichtigsten Tools
-und Ressourcen als stdio-MCP, damit Nanobot darauf zugreifen kann.
+und Ressourcen als stdio-MCP, damit Hermes Agent darauf zugreifen kann.
 """
 
 import asyncio

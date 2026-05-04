@@ -1,6 +1,6 @@
 """MCP-Server für Pipedrive CRM-Zugriff.
 
-Nanobot kann diesen Server als Tool nutzen, um Deals, Leads, Kontakte,
+Hermes Agent kann diesen Server als Tool nutzen, um Deals, Leads, Kontakte,
 Aktivitaeten und Notizen in Pipedrive zu lesen und zu schreiben.
 """
 

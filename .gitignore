@@ -74,4 +74,4 @@ src/backend/vendor/
 scratch/
 
 # Nanobot Runtime (User-spezifisch)
-.nanobot/
+.hermes/

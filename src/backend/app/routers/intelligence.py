@@ -1,11 +1,13 @@
-"""Intelligence-Router: Sender-Profile, Agent-Skills, Triage-Statistiken.
+"""Intelligence-Router: Hermes Agent Brain, Sender-Profile, Skills, Triage-Statistiken.
 
-Liefert aggregierte Einblicke in das Systemwissen von TaskPilot,
-damit der Benutzer sieht, was der Agent gelernt hat.
+Liefert aggregierte Einblicke in das Systemwissen von TaskPilot und dem
+Hermes Agent, damit der Benutzer sieht, was der Agent gelernt hat.
 """
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -19,6 +21,8 @@ from app.models import EmailTriage, User
 logger = logging.getLogger("taskpilot.intelligence")
 
 router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
+
+HERMES_HOME = Path(os.environ.get("TP_HERMES_HOME", os.path.expanduser("~/.hermes")))
 
 
 # ── Sender-Profile ───────────────────────────────────────
@@ -152,12 +156,8 @@ class AgentSkillsResponse(BaseModel):
 async def get_agent_skills(
     _user: User = Depends(get_current_user),
 ) -> AgentSkillsResponse:
-    """Listet die verfügbaren Nanobot-Skills mit Kurzbeschreibung."""
-    import os
-    from pathlib import Path
-
-    workspace = Path(os.environ.get("TP_NANOBOT_WORKSPACE", os.path.expanduser("~/.nanobot/workspace")))
-    skills_dir = workspace / "skills"
+    """Listet die verfügbaren Hermes-Skills mit Kurzbeschreibung."""
+    skills_dir = HERMES_HOME / "skills"
 
     skills: list[AgentSkill] = []
     if skills_dir.exists():
@@ -176,3 +176,123 @@ async def get_agent_skills(
                     continue
 
     return AgentSkillsResponse(skills=skills)
+
+
+# ── Agent Brain (Hermes) ─────────────────────────────────
+
+class HermesBrainFile(BaseModel):
+    name: str
+    category: str
+    content: str
+    size: int
+    last_modified: str | None = None
+
+
+class HermesBrainResponse(BaseModel):
+    files: list[HermesBrainFile]
+    config_summary: dict
+    honcho_status: str
+    agent_model: str
+    mcp_servers: list[str]
+
+
+@router.get("/brain", response_model=HermesBrainResponse)
+async def get_agent_brain(
+    _user: User = Depends(get_current_user),
+) -> HermesBrainResponse:
+    """Vollständiger Einblick ins Hermes-Agent-Gehirn: Memory, User-Profil, Skills, Config."""
+    import yaml
+
+    files: list[HermesBrainFile] = []
+
+    memories_dir = HERMES_HOME / "memories"
+    if memories_dir.exists():
+        for f in sorted(memories_dir.iterdir()):
+            if f.is_file() and f.suffix in (".md", ".jsonl", ".txt"):
+                try:
+                    content = f.read_text(encoding="utf-8", errors="replace")
+                    mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat()
+                    files.append(HermesBrainFile(
+                        name=f.name,
+                        category="memory",
+                        content=content[:50000],
+                        size=f.stat().st_size,
+                        last_modified=mtime,
+                    ))
+                except OSError:
+                    continue
+
+    for root_file in ("USER.md", "MEMORY.md", "AGENTS.md", "HEARTBEAT.md", "SOUL.md"):
+        fp = HERMES_HOME / root_file
+        if fp.exists():
+            try:
+                content = fp.read_text(encoding="utf-8", errors="replace")
+                mtime = datetime.fromtimestamp(fp.stat().st_mtime, tz=timezone.utc).isoformat()
+                files.append(HermesBrainFile(
+                    name=root_file,
+                    category="profile",
+                    content=content[:50000],
+                    size=fp.stat().st_size,
+                    last_modified=mtime,
+                ))
+            except OSError:
+                continue
+
+    skills_dir = HERMES_HOME / "skills"
+    if skills_dir.exists():
+        for f in sorted(skills_dir.iterdir()):
+            if f.is_file() and f.suffix == ".md":
+                try:
+                    content = f.read_text(encoding="utf-8", errors="replace")
+                    mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat()
+                    files.append(HermesBrainFile(
+                        name=f.name,
+                        category="skill",
+                        content=content[:50000],
+                        size=f.stat().st_size,
+                        last_modified=mtime,
+                    ))
+                except OSError:
+                    continue
+
+    config_summary = {}
+    agent_model = "unbekannt"
+    mcp_servers: list[str] = []
+
+    config_path = HERMES_HOME / "config.yaml"
+    if config_path.exists():
+        try:
+            cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            agent_model = cfg.get("model", "unbekannt")
+            config_summary = {
+                "model": agent_model,
+                "base_url": cfg.get("base_url", ""),
+                "max_iterations": cfg.get("max_iterations", 0),
+                "memory_enabled": cfg.get("memory", {}).get("memory_enabled", False),
+                "memory_provider": cfg.get("memory", {}).get("provider", "local"),
+                "approvals_mode": cfg.get("approvals", {}).get("mode", ""),
+            }
+            mcp_servers = list(cfg.get("mcp_servers", {}).keys())
+        except (yaml.YAMLError, OSError):
+            pass
+
+    honcho_status = "nicht konfiguriert"
+    honcho_path = HERMES_HOME / "honcho.json"
+    if honcho_path.exists():
+        try:
+            import json
+            honcho_cfg = json.loads(honcho_path.read_text(encoding="utf-8"))
+            base_url = honcho_cfg.get("baseUrl", "")
+            hosts = honcho_cfg.get("hosts", {})
+            enabled_hosts = [k for k, v in hosts.items() if v.get("enabled")]
+            honcho_status = f"aktiv ({base_url}, {len(enabled_hosts)} Host{'s' if len(enabled_hosts) != 1 else ''})"
+        except (OSError, Exception):
+            honcho_status = "Fehler beim Lesen"
+
+    return HermesBrainResponse(
+        files=files,
+        config_summary=config_summary,
+        honcho_status=honcho_status,
+        agent_model=agent_model,
+        mcp_servers=mcp_servers,
+    )

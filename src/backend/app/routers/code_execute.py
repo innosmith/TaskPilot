@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, get_current_user_light
 from app.config import get_settings
 from app.database import get_db, async_session
 from app.models import User
@@ -336,19 +336,21 @@ async def execute_code(
 async def generate_and_execute(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user_light),
 ):
     """Code generieren UND ausführen in einem Schritt (für Chat-Flow mit impliziter Genehmigung).
 
     SSE-Stream: code_generated → executing → result
     """
-    result = await db.execute(
-        select(LlmConversation).where(LlmConversation.id == conversation_id)
-    )
-    conv = result.scalar_one_or_none()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Konversation nicht gefunden")
+    async with async_session() as db:
+        result = await db.execute(
+            select(LlmConversation).where(LlmConversation.id == conversation_id)
+        )
+        conv = result.scalar_one_or_none()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Konversation nicht gefunden")
+
+        conv_id_str = str(conv.id)
 
     task_description = body.get("content", "")
     user_settings = user.settings or {}
@@ -356,7 +358,6 @@ async def generate_and_execute(
     model = body.get("model") or code_model_fallback
     input_files = body.get("input_files")
     timeout = min(body.get("timeout_seconds", 300), 900)
-    conv_id_str = str(conv.id)
 
     if not task_description:
         raise HTTPException(status_code=400, detail="content (Aufgabenbeschreibung) fehlt")

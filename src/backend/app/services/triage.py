@@ -2,8 +2,8 @@
 
 Läuft als Hintergrund-Tasks beim Backend-Start. Jede neue E-Mail wird als
 AgentJob(job_type="email_triage") in die Queue geschrieben, jede neue
-Chat-Nachricht als AgentJob(job_type="chat_triage"). Nanobot empfängt die
-Jobs via Bridge (pg_notify → WebSocket) und verarbeitet sie.
+Chat-Nachricht als AgentJob(job_type="chat_triage"). Der Hermes-Worker
+empfängt die Jobs via Polling und verarbeitet sie.
 
 E-Mail-Triage:
   1. E-Mail lesen → LLM-Klassifikation → Aktion (Draft / Task / FYI)
@@ -64,7 +64,7 @@ def _parse_received_at(raw: str | None) -> datetime | None:
 async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
     """Erstellt einen EmailTriage-Record und einen AgentJob für eine neue E-Mail.
 
-    Keine Vorab-Klassifikation -- nanobot uebernimmt alles via LLM.
+    Keine Vorab-Klassifikation -- Hermes Agent uebernimmt alles via LLM.
     """
     from app.services.llm_defaults import get_default_local_model
 
@@ -112,7 +112,7 @@ async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
 
 
 async def _triage_cycle() -> int:
-    """Ein Triage-Zyklus: Neue E-Mails erkennen, AgentJobs für nanobot erstellen."""
+    """Ein Triage-Zyklus: Neue E-Mails erkennen, AgentJobs für Hermes erstellen."""
     client = _get_graph_client()
     if client is None:
         return 0
@@ -189,7 +189,7 @@ async def triage_loop() -> None:
         try:
             count = await _triage_cycle()
             if count:
-                logger.info("Triage: %d neue E-Mail(s) → AgentJobs für nanobot erstellt", count)
+                logger.info("Triage: %d neue E-Mail(s) → AgentJobs für Hermes erstellt", count)
         except Exception:
             logger.exception("Triage-Service: unerwarteter Fehler")
         await asyncio.sleep(interval)

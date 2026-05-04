@@ -336,12 +336,12 @@ export function ChatPage() {
   }, []);
 
   const modelLabel = (id: string) => {
-    if (id === 'nanobot') return 'InnoPilot';
+    if (id === 'hermes') return 'InnoPilot';
     const m = models.find(x => x.id === id);
     return m?.name || id.split('/').pop() || id;
   };
 
-  const isAgentConversation = (c: Conversation) => c.mode === 'agent' || c.model === 'nanobot';
+  const isAgentConversation = (c: Conversation) => c.mode === 'agent' || c.model === 'hermes';
 
   const modelInfo = (id: string) => models.find(x => x.id === id);
 
@@ -613,6 +613,9 @@ export function ChatPage() {
           } else if (evt === 'tool_event') {
             traceAcc.push({ type: 'tool_event', content: typeof data === 'string' ? data : JSON.stringify(data), ts: Date.now() });
             updateAgentState(cid, { toolTrace: [...traceAcc] });
+          } else if (evt === 'clear') {
+            acc = '';
+            updateAgentState(cid, { streamingContent: '' });
           } else if (evt === 'chunk') {
             acc += data.content || '';
             updateAgentState(cid, { streamingContent: acc });
@@ -640,7 +643,9 @@ export function ChatPage() {
           } else if (evt === 'ping') {
             // Keepalive
           }
-        } catch { /* */ }
+        } catch (parseErr) {
+          console.warn('[chat-stream] JSON-Parse-Fehler:', line.slice(0, 200), parseErr);
+        }
       }
     }
   };
@@ -697,6 +702,9 @@ export function ChatPage() {
             } else if (evt === 'tool_event') {
               acc.trace.push({ type: 'tool_event', content: typeof data === 'string' ? data : JSON.stringify(data), ts: Date.now() });
               updateAgentState(convId, { toolTrace: [...acc.trace] });
+            } else if (evt === 'clear') {
+              acc.stream = '';
+              updateAgentState(convId, { streamingContent: '' });
             } else if (evt === 'chunk') {
               acc.stream += data.content || '';
               updateAgentState(convId, { streamingContent: acc.stream });
@@ -731,7 +739,9 @@ export function ChatPage() {
               loadConversations();
               return;
             }
-          } catch { /* */ }
+          } catch (parseErr) {
+            console.warn('[agent-stream] JSON-Parse-Fehler:', line.slice(0, 200), parseErr);
+          }
         }
       }
 
@@ -783,7 +793,7 @@ export function ChatPage() {
     if (!convId) {
       try {
         const conv = await api.post<Conversation>('/api/chat/conversations', {
-          model: mode === 'agent' ? 'nanobot' : selectedModel,
+          model: mode === 'agent' ? 'hermes' : selectedModel,
           temperature,
           mode,
         });

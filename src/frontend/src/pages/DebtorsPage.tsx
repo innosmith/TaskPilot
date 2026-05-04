@@ -22,6 +22,12 @@ interface TogglProjectRow {
   budget_pct: number | null;
 }
 
+interface DailyHours {
+  date: string;
+  billable: number;
+  non_billable: number;
+}
+
 interface TogglMonthSummary {
   total_hours: number;
   billable_hours: number;
@@ -33,6 +39,7 @@ interface TogglMonthSummary {
   working_days_total: number;
   working_days_elapsed: number;
   projects: TogglProjectRow[];
+  daily_hours: DailyHours[];
 }
 
 interface DebtorSummary {
@@ -74,6 +81,12 @@ function formatCHF(value: number | null | undefined): string {
 
 function formatHours(h: number): string {
   return `${h.toFixed(1)}h`;
+}
+
+function formatHoursHM(h: number): string {
+  const hours = Math.floor(h);
+  const mins = Math.round((h - hours) * 60);
+  return `${hours}:${String(mins).padStart(2, '0')}:00`;
 }
 
 function formatPct(v: number | null | undefined): string {
@@ -162,13 +175,6 @@ export default function DebtorsPage() {
     }
   }, [data?.debtors, debtorSort]);
 
-  const billablePieData = useMemo(() => {
-    if (!toggl) return [];
-    return [
-      { name: 'Billable', value: toggl.billable_hours, fill: '#22c55e' },
-      { name: 'Non-billable', value: toggl.non_billable_hours, fill: '#94a3b8' },
-    ].filter(d => d.value > 0);
-  }, [toggl]);
 
   const agingData = useMemo(() => {
     if (!data?.debtors) return [];
@@ -233,46 +239,18 @@ export default function DebtorsPage() {
             sectionClass={sectionClass} textPrimary={textPrimary} textSecondary={textSecondary} textMuted={textMuted} />
         )}
 
-        {toggl && (
-          <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {billablePieData.length > 0 && (
-              <div className={sectionClass}>
-                <h3 className={`mb-3 text-sm font-semibold ${textPrimary}`}>Billable-Verteilung</h3>
-                <div className="flex items-center gap-4">
-                  <ResponsiveContainer width={120} height={120}>
-                    <PieChart>
-                      <Pie data={billablePieData} cx="50%" cy="50%" innerRadius={35} outerRadius={55} dataKey="value" strokeWidth={0}>
-                        {billablePieData.map((entry, idx) => <Cell key={idx} fill={entry.fill} />)}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="flex flex-col gap-2">
-                    <div>
-                      <p className="text-2xl font-bold text-green-500">{formatPct(toggl.billable_ratio)}</p>
-                      <p className={`text-xs ${textMuted}`}>Billable-Quote</p>
-                    </div>
-                    <div className="flex items-center gap-3 text-xs">
-                      <div><span className="font-semibold text-green-500">{formatHours(toggl.billable_hours)}</span><span className={` ${textMuted}`}> billable</span></div>
-                      <div><span className={`font-semibold ${textSecondary}`}>{formatHours(toggl.non_billable_hours)}</span><span className={` ${textMuted}`}> intern</span></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-            {agingData.length > 0 && (
-              <div className={sectionClass}>
-                <h3 className={`mb-3 text-sm font-semibold ${textPrimary}`}>Fälligkeitsstruktur</h3>
-                <ResponsiveContainer width="100%" height={120}>
-                  <BarChart data={agingData} layout="vertical" barSize={16}>
-                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={(v: number) => formatCHF(v).replace('CHF', '').trim()} />
-                    <YAxis type="category" dataKey="range" tick={{ fontSize: 11 }} width={40} />
-                    <Tooltip cursor={CURSOR_STYLE} contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }} formatter={(v: number) => [formatCHF(v), 'Betrag']} />
-                    <Bar dataKey="amount" radius={[0, 4, 4, 0]}>{agingData.map((entry, idx) => <Cell key={idx} fill={entry.fill} />)}</Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-                <p className={`mt-2 text-center text-[11px] ${textMuted}`}>Tage seit Rechnungsdatum</p>
-              </div>
-            )}
+        {toggl && agingData.length > 0 && (
+          <div className={`mb-6 ${sectionClass}`}>
+            <h3 className={`mb-3 text-sm font-semibold ${textPrimary}`}>Fälligkeitsstruktur</h3>
+            <ResponsiveContainer width="100%" height={120}>
+              <BarChart data={agingData} layout="vertical" barSize={16}>
+                <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={(v: number) => formatCHF(v).replace('CHF', '').trim()} />
+                <YAxis type="category" dataKey="range" tick={{ fontSize: 11 }} width={40} />
+                <Tooltip cursor={CURSOR_STYLE} contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }} formatter={(v: number) => [formatCHF(v), 'Betrag']} />
+                <Bar dataKey="amount" radius={[0, 4, 4, 0]}>{agingData.map((entry, idx) => <Cell key={idx} fill={entry.fill} />)}</Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <p className={`mt-2 text-center text-[11px] ${textMuted}`}>Tage seit Rechnungsdatum</p>
           </div>
         )}
 
@@ -346,8 +324,29 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
   toggl: TogglMonthSummary; monthProgress: number; hasBg: boolean;
   sectionClass: string; textPrimary: string; textSecondary: string; textMuted: string;
 }) {
+  const [expandedProject, setExpandedProject] = useState<number | null>(null);
+
+  const dailyChartData = useMemo(() => {
+    if (!toggl.daily_hours?.length) return [];
+    const dayNames = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+    return toggl.daily_hours.map(d => {
+      const dt = new Date(d.date + 'T12:00:00');
+      return {
+        label: `${dayNames[dt.getDay()]} ${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`,
+        billable: d.billable,
+        non_billable: d.non_billable,
+      };
+    });
+  }, [toggl.daily_hours]);
+
+  const pieData = useMemo(() =>
+    toggl.projects.map((p, i) => ({ name: p.project_name, value: p.hours, fill: PROJECT_COLORS[i % PROJECT_COLORS.length] })),
+    [toggl.projects]
+  );
+
   return (
     <div className={`mb-6 ${sectionClass}`}>
+      {/* Header */}
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className={`text-lg font-semibold ${textPrimary}`}>Monats-Cockpit</h2>
@@ -355,9 +354,11 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-green-500" /><span className={`text-xs ${textSecondary}`}>Billable</span></div>
-          <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-slate-400" /><span className={`text-xs ${textSecondary}`}>Non-billable</span></div>
+          <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-rose-400" /><span className={`text-xs ${textSecondary}`}>Non-billable</span></div>
         </div>
       </div>
+
+      {/* Progress bar */}
       <div className="mb-5">
         <div className="flex items-center justify-between text-xs">
           <span className={textSecondary}>Monatsfortschritt</span>
@@ -367,79 +368,76 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
           <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-700" style={{ width: `${monthProgress}%` }} />
         </div>
       </div>
-      <div className={`mb-4 grid grid-cols-2 gap-3 rounded-xl p-3 sm:grid-cols-4 ${hasBg ? 'bg-white/5' : 'bg-gray-50 dark:bg-gray-800/50'}`}>
-        <SummaryCell label="Total" value={formatHours(toggl.total_hours)} textPrimary={textPrimary} textMuted={textMuted} />
-        <SummaryCell label="Billable" value={formatHours(toggl.billable_hours)} textPrimary="text-green-500" textMuted={textMuted} />
-        <SummaryCell label="Non-billable" value={formatHours(toggl.non_billable_hours)} textPrimary={textSecondary} textMuted={textMuted} />
-        <SummaryCell label="Betrag" value={formatCHF(toggl.total_amount)} textPrimary={textPrimary} textMuted={textMuted} />
+
+      {/* KPI summary */}
+      <div className={`mb-6 grid grid-cols-2 gap-3 rounded-xl p-3 sm:grid-cols-4 ${hasBg ? 'bg-white/5' : 'bg-gray-50 dark:bg-gray-800/50'}`}>
+        <SummaryCell label="Total Hours" value={formatHoursHM(toggl.total_hours)} textPrimary={textPrimary} textMuted={textMuted} />
+        <SummaryCell label="Billable Hours" value={`${formatHoursHM(toggl.billable_hours)} (${formatPct(toggl.billable_ratio)})`} textPrimary="text-green-500" textMuted={textMuted} />
+        <SummaryCell label="Amount" value={formatCHF(toggl.total_amount)} textPrimary={textPrimary} textMuted={textMuted} />
+        <SummaryCell label="Average Daily Hours" value={`${toggl.avg_daily_hours.toFixed(2)} Hours`} textPrimary={textPrimary} textMuted={textMuted} />
       </div>
-      {/* Desktop: Tabelle links + Doughnut rechts */}
-      <div className="hidden sm:flex sm:gap-6">
-        <div className="min-w-0 flex-1">
-          <table className="w-full">
-            <thead>
-              <tr className={`border-b text-left text-[11px] font-medium uppercase tracking-wider ${hasBg ? 'border-white/10 text-white/40' : 'border-gray-100 text-gray-400 dark:border-gray-700 dark:text-gray-500'}`}>
-                <th className="py-2 pl-1 pr-2">Projekt / Kunde</th>
-                <th className="w-[70px] px-2 py-2 text-right">Stunden</th>
-                <th className="w-[160px] px-2 py-2 text-right">Budget</th>
-                <th className="w-[55px] px-2 py-2 text-right">Anteil</th>
-                <th className="w-[100px] px-2 py-2 text-right">Betrag</th>
-                <th className="w-[30px] py-2 pl-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {toggl.projects.map((p, i) => (
-                <tr key={p.project_id || i} className={`border-b transition-colors ${hasBg ? 'border-white/5 hover:bg-white/5' : 'border-gray-50 hover:bg-gray-50/50 dark:border-gray-800 dark:hover:bg-gray-800/30'}`}>
-                  <td className="py-3 pl-1 pr-2">
-                    <div className="flex items-center gap-2.5">
-                      <div className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: PROJECT_COLORS[i % PROJECT_COLORS.length] }} />
-                      <div className="min-w-0">
-                        <p className={`truncate text-sm font-medium ${textPrimary}`}>{p.project_name}</p>
-                        {p.client_name && <p className={`truncate text-xs ${textMuted}`}>{p.client_name}</p>}
-                      </div>
-                    </div>
-                  </td>
-                  <td className={`px-2 py-3 text-right text-sm font-semibold tabular-nums ${textPrimary}`}>{formatHours(p.hours)}</td>
-                  <td className="px-2 py-3 text-right">
-                    {p.budget_hours != null ? (
-                      <div className="flex flex-col items-end gap-1">
-                        <span className={`text-xs tabular-nums ${textSecondary}`}>{formatHours(p.hours)} / {formatHours(p.budget_hours)}</span>
-                        <div className={`h-1.5 w-20 overflow-hidden rounded-full ${hasBg ? 'bg-white/10' : 'bg-gray-100 dark:bg-gray-700'}`}>
-                          <div className={`h-full rounded-full transition-all ${(p.budget_pct ?? 0) > 100 ? 'bg-red-500' : (p.budget_pct ?? 0) > 80 ? 'bg-amber-500' : 'bg-green-500'}`} style={{ width: `${Math.min(p.budget_pct ?? 0, 100)}%` }} />
-                        </div>
-                      </div>
-                    ) : <span className={`text-xs ${textMuted}`}>–</span>}
-                  </td>
-                  <td className={`px-2 py-3 text-right text-sm tabular-nums ${textSecondary}`}>{formatPct(p.pct_of_total)}</td>
-                  <td className={`px-2 py-3 text-right text-sm font-semibold tabular-nums ${textPrimary}`}>{p.amount > 0 ? formatCHF(p.amount) : '–'}</td>
-                  <td className="py-3 pl-2">
-                    {p.is_billable
-                      ? <span className="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-400">$</span>
-                      : <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${hasBg ? 'bg-white/10 text-white/40' : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500'}`}>–</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+
+      {/* Charts: Duration by day + Project distribution (Toggl-Layout) */}
+      <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Duration by day — nimmt 2/3 der Breite */}
+        <div className="lg:col-span-2">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className={`text-sm font-semibold ${textPrimary}`}>Duration by day</h3>
+            <span className={`rounded-md px-2 py-0.5 text-[11px] ${hasBg ? 'bg-white/10 text-white/60' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>Stack by: Billable</span>
+          </div>
+          {dailyChartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={dailyChartData} barCategoryGap="20%">
+                <CartesianGrid strokeDasharray="3 3" className="opacity-20" vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 9 }}
+                  interval={dailyChartData.length > 20 ? 1 : 0}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <YAxis
+                  tick={{ fontSize: 10 }}
+                  tickFormatter={(v: number) => {
+                    if (v === 0) return '0h';
+                    const h = Math.floor(v);
+                    const m = Math.round((v - h) * 60);
+                    return m > 0 ? `${h}h ${m.toString().padStart(2, '0')}` : `${h}h`;
+                  }}
+                  width={45}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <Tooltip
+                  cursor={CURSOR_STYLE}
+                  contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }}
+                  formatter={(v: number, name: string) => [`${v.toFixed(2)}h`, name === 'billable' ? 'Billable' : 'Non-billable']}
+                />
+                <Bar dataKey="non_billable" stackId="a" fill="#fb7185" radius={[0, 0, 0, 0]} name="non_billable" />
+                <Bar dataKey="billable" stackId="a" fill="#22c55e" radius={[2, 2, 0, 0]} name="billable" />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className={`flex h-[220px] items-center justify-center text-sm ${textMuted}`}>Lade tägliche Daten...</div>
+          )}
+          <div className="mt-2 flex items-center justify-center gap-4 text-xs">
+            <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded bg-rose-400" /><span className={textSecondary}>Non-billable</span></div>
+            <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded bg-green-500" /><span className={textSecondary}>Billable</span></div>
+          </div>
         </div>
-        {toggl.projects.length > 1 && (
-          <div className="flex w-[220px] shrink-0 flex-col items-center justify-center">
-            <p className={`mb-2 text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Stundenverteilung</p>
+
+        {/* Project distribution — nimmt 1/3 der Breite */}
+        <div className="lg:col-span-1">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className={`text-sm font-semibold ${textPrimary}`}>Project distribution</h3>
+            <span className={`rounded-md px-2 py-0.5 text-[11px] ${hasBg ? 'bg-white/10 text-white/60' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>Slice by: Projects</span>
+          </div>
+          <div className="flex flex-col items-center gap-3">
             <div className="relative">
-              <ResponsiveContainer width={180} height={180}>
+              <ResponsiveContainer width={160} height={160}>
                 <PieChart>
-                  <Pie
-                    data={toggl.projects.map((p, i) => ({ name: p.project_name, value: p.hours, fill: PROJECT_COLORS[i % PROJECT_COLORS.length] }))}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={50}
-                    outerRadius={80}
-                    dataKey="value"
-                    strokeWidth={0}
-                  >
-                    {toggl.projects.map((_, i) => (
-                      <Cell key={i} fill={PROJECT_COLORS[i % PROJECT_COLORS.length]} />
-                    ))}
+                  <Pie data={pieData} cx="50%" cy="50%" innerRadius={45} outerRadius={72} dataKey="value" strokeWidth={0}>
+                    {pieData.map((_, i) => <Cell key={i} fill={PROJECT_COLORS[i % PROJECT_COLORS.length]} />)}
                   </Pie>
                   <Tooltip
                     contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }}
@@ -448,30 +446,107 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
                 </PieChart>
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className={`text-lg font-bold ${textPrimary}`}>{formatHours(toggl.total_hours)}</span>
-                <span className={`text-[10px] ${textMuted}`}>Total</span>
+                <span className={`text-sm font-bold ${textPrimary}`}>{formatHoursHM(toggl.total_hours)}</span>
+                <span className={`text-[9px] uppercase tracking-wider ${textMuted}`}>Project</span>
               </div>
             </div>
+            <div className="w-full space-y-1.5">
+              {toggl.projects.map((p, i) => (
+                <div key={p.project_id || i} className="flex items-center gap-2 text-xs">
+                  <div className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: PROJECT_COLORS[i % PROJECT_COLORS.length] }} />
+                  <span className={`shrink-0 font-semibold tabular-nums ${textPrimary}`}>{p.pct_of_total.toFixed(1)}%</span>
+                  <span className={`min-w-0 truncate font-medium ${textSecondary}`}>{p.project_name}</span>
+                  {p.client_name && <span className={`shrink-0 ${textMuted}`}>&middot; {p.client_name}</span>}
+                </div>
+              ))}
+            </div>
           </div>
-        )}
+        </div>
       </div>
 
-      {/* Mobile: kompakte Tabelle + Doughnut darunter */}
+      {/* Project and description breakdown — Desktop */}
+      <div className="hidden sm:block">
+        <div className="mb-3">
+          <h3 className={`text-sm font-semibold ${textPrimary}`}>Project and description breakdown</h3>
+        </div>
+        <table className="w-full max-w-3xl">
+          <thead>
+            <tr className={`border-b text-left text-[11px] font-medium uppercase tracking-wider ${hasBg ? 'border-white/10 text-white/40' : 'border-gray-100 text-gray-400 dark:border-gray-700 dark:text-gray-500'}`}>
+              <th className="w-8 py-2" />
+              <th className="py-2 pr-2">Project / Description</th>
+              <th className="w-[90px] px-2 py-2 text-right">Duration</th>
+              <th className="w-[70px] px-2 py-2 text-right">Duration %</th>
+              <th className="w-[100px] py-2 pl-2 text-right">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {toggl.projects.map((p, i) => (
+              <React.Fragment key={p.project_id || i}>
+                <tr
+                  className={`border-b cursor-pointer transition-colors ${hasBg ? 'border-white/5 hover:bg-white/5' : 'border-gray-50 hover:bg-gray-50/50 dark:border-gray-800 dark:hover:bg-gray-800/30'}`}
+                  onClick={() => setExpandedProject(expandedProject === p.project_id ? null : p.project_id)}
+                >
+                  <td className="py-2 pl-2">
+                    <svg className={`h-3.5 w-3.5 transition-transform ${expandedProject === p.project_id ? 'rotate-90' : ''} ${textMuted}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                    </svg>
+                  </td>
+                  <td className="py-2 pr-2">
+                    <div className="flex items-center gap-2">
+                      <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: PROJECT_COLORS[i % PROJECT_COLORS.length] }} />
+                      <span className={`text-sm font-medium ${textPrimary}`}>{p.project_name}</span>
+                      {p.client_name && <span className={`text-xs ${textMuted}`}>&middot; {p.client_name}</span>}
+                    </div>
+                  </td>
+                  <td className={`px-2 py-2 text-right text-sm font-semibold tabular-nums ${textPrimary}`}>{formatHoursHM(p.hours)}</td>
+                  <td className={`px-2 py-2 text-right text-sm tabular-nums ${textSecondary}`}>{p.pct_of_total.toFixed(2)}%</td>
+                  <td className={`py-2 pl-2 text-right text-sm font-semibold tabular-nums ${textPrimary}`}>{p.amount > 0 ? formatCHF(p.amount) : '–'}</td>
+                </tr>
+                {expandedProject === p.project_id && (
+                  <tr className={hasBg ? 'bg-white/[0.02]' : 'bg-gray-25 dark:bg-gray-800/20'}>
+                    <td />
+                    <td colSpan={4} className="py-2 pr-2">
+                      <div className={`flex items-center gap-4 text-xs ${textSecondary}`}>
+                        <span>Billable: <strong className="text-green-500">{formatHours(p.billable_hours)}</strong></span>
+                        <span>Rate: <strong>{p.rate_per_hour > 0 ? `CHF ${p.rate_per_hour}/h` : '–'}</strong></span>
+                        {p.budget_hours != null && (
+                          <span>Budget: <strong>{formatHours(p.hours)} / {formatHours(p.budget_hours)}</strong>
+                            <span className={`ml-1 ${(p.budget_pct ?? 0) > 100 ? 'text-red-500' : (p.budget_pct ?? 0) > 80 ? 'text-amber-500' : 'text-green-500'}`}>({p.budget_pct?.toFixed(0)}%)</span>
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+            <tr className={`border-t-2 ${hasBg ? 'border-white/20' : 'border-gray-200 dark:border-gray-600'}`}>
+              <td className="py-2" />
+              <td className={`py-2 pr-2 text-sm font-bold ${textPrimary}`}>TOTAL</td>
+              <td className={`px-2 py-2 text-right text-sm font-bold tabular-nums ${textPrimary}`}>{formatHoursHM(toggl.total_hours)}</td>
+              <td className={`px-2 py-2 text-right text-sm font-bold tabular-nums ${textPrimary}`}>100%</td>
+              <td className={`py-2 pl-2 text-right text-sm font-bold tabular-nums ${textPrimary}`}>{formatCHF(toggl.total_amount)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* Mobile: kompakte Tabelle */}
       <div className="sm:hidden">
+        <h3 className={`mb-2 text-sm font-semibold ${textPrimary}`}>Projekt-Aufschlüsselung</h3>
         <table className="w-full">
           <thead>
             <tr className={`border-b text-left text-[10px] font-medium uppercase tracking-wider ${hasBg ? 'border-white/10 text-white/40' : 'border-gray-100 text-gray-400 dark:border-gray-700 dark:text-gray-500'}`}>
               <th className="py-2 pl-1 pr-1">Projekt</th>
-              <th className="w-[50px] px-1 py-2 text-right">h</th>
-              <th className="w-[45px] px-1 py-2 text-right">%</th>
+              <th className="w-[55px] px-1 py-2 text-right">Zeit</th>
+              <th className="w-[40px] px-1 py-2 text-right">%</th>
               <th className="w-[80px] py-2 pl-1 pr-1 text-right">CHF</th>
-              <th className="w-[22px] py-2 pl-1" />
             </tr>
           </thead>
           <tbody>
             {toggl.projects.map((p, i) => (
               <tr key={p.project_id || i} className={`border-b transition-colors ${hasBg ? 'border-white/5' : 'border-gray-50 dark:border-gray-800'}`}>
-                <td className="py-2.5 pl-1 pr-1">
+                <td className="py-2 pl-1 pr-1">
                   <div className="flex items-center gap-2">
                     <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: PROJECT_COLORS[i % PROJECT_COLORS.length] }} />
                     <div className="min-w-0">
@@ -480,46 +555,19 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
                     </div>
                   </div>
                 </td>
-                <td className={`px-1 py-2.5 text-right text-[13px] font-semibold tabular-nums ${textPrimary}`}>{p.hours.toFixed(1)}</td>
-                <td className={`px-1 py-2.5 text-right text-[12px] tabular-nums ${textSecondary}`}>{p.pct_of_total.toFixed(0)}%</td>
-                <td className={`py-2.5 pl-1 pr-1 text-right text-[13px] font-semibold tabular-nums ${textPrimary}`}>{p.amount > 0 ? formatCHF(p.amount) : '–'}</td>
-                <td className="py-2.5 pl-1">
-                  {p.is_billable
-                    ? <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
-                    : <span className={`inline-block h-2 w-2 rounded-full ${hasBg ? 'bg-white/20' : 'bg-gray-200 dark:bg-gray-700'}`} />}
-                </td>
+                <td className={`px-1 py-2 text-right text-[13px] font-semibold tabular-nums ${textPrimary}`}>{formatHoursHM(p.hours)}</td>
+                <td className={`px-1 py-2 text-right text-[12px] tabular-nums ${textSecondary}`}>{p.pct_of_total.toFixed(0)}%</td>
+                <td className={`py-2 pl-1 pr-1 text-right text-[13px] font-semibold tabular-nums ${textPrimary}`}>{p.amount > 0 ? formatCHF(p.amount) : '–'}</td>
               </tr>
             ))}
+            <tr className={`border-t-2 ${hasBg ? 'border-white/20' : 'border-gray-200 dark:border-gray-600'}`}>
+              <td className={`py-2 pl-1 text-[13px] font-bold ${textPrimary}`}>TOTAL</td>
+              <td className={`px-1 py-2 text-right text-[13px] font-bold tabular-nums ${textPrimary}`}>{formatHoursHM(toggl.total_hours)}</td>
+              <td className={`px-1 py-2 text-right text-[12px] font-bold tabular-nums ${textPrimary}`}>100%</td>
+              <td className={`py-2 pl-1 pr-1 text-right text-[13px] font-bold tabular-nums ${textPrimary}`}>{formatCHF(toggl.total_amount)}</td>
+            </tr>
           </tbody>
         </table>
-        {toggl.projects.length > 1 && (
-          <div className="mt-4 flex flex-col items-center">
-            <p className={`mb-2 text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Stundenverteilung</p>
-            <div className="relative">
-              <ResponsiveContainer width={160} height={160}>
-                <PieChart>
-                  <Pie
-                    data={toggl.projects.map((p, i) => ({ name: p.project_name, value: p.hours, fill: PROJECT_COLORS[i % PROJECT_COLORS.length] }))}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={40}
-                    outerRadius={70}
-                    dataKey="value"
-                    strokeWidth={0}
-                  >
-                    {toggl.projects.map((_, i) => (
-                      <Cell key={i} fill={PROJECT_COLORS[i % PROJECT_COLORS.length]} />
-                    ))}
-                  </Pie>
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className={`text-base font-bold ${textPrimary}`}>{formatHours(toggl.total_hours)}</span>
-                <span className={`text-[10px] ${textMuted}`}>Total</span>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

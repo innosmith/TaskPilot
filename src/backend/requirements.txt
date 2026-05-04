@@ -28,6 +28,7 @@ litellm>=1.83
 openai>=2.24
 anthropic>=0.97
 tiktoken>=0.12
+hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git
 
 # ── MCP (Model Context Protocol) ──
 mcp>=1.27

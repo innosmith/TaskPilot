@@ -1,6 +1,6 @@
 """MCP-Server für SIGNA Strategic Intelligence.
 
-Nanobot kann diesen Server nutzen, um Signale zu recherchieren,
+Hermes Agent kann diesen Server nutzen, um Signale zu recherchieren,
 Briefings zu lesen und Deep-Dive-Berichte abzurufen.
 Read-only-Zugriff auf die SIGNA PostgreSQL-Datenbank.
 """

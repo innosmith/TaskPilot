@@ -1,0 +1,94 @@
+---
+description: Hermes Agent-Runtime, MCP-Server und Worker-Konventionen
+globs: "**/*hermes*,**/*triage*,**/*mcp*"
+alwaysApply: false
+---
+
+# Hermes Agent-Runtime
+
+## Konfiguration
+
+- Config-Datei: `~/.hermes/config.yaml`
+- Memories: `~/.hermes/memories/`
+- Skills: `~/.hermes/skills/*.md`
+- Honcho-Config: `~/.hermes/honcho.json`
+
+### Wichtige Einstellungen
+| Setting | Wert | Bedeutung |
+|---------|------|-----------|
+| `model` | `ollama/qwen3.5:35b` | Default-LLM via LiteLLM-Proxy |
+| `base_url` | `http://localhost:4000/v1` | LiteLLM-Proxy (routet zu Ollama/Cloud) |
+| `max_iterations` | `50` | Hermes standard |
+| `memory.provider` | `honcho` | Cross-Session-Learning via Honcho |
+| `temperature` | `0.1` | Niedrig für konsistente Ergebnisse |
+
+## Model-Switch pro Job
+
+Der Worker nutzt einen **persistenten AIAgent** — ein einziger Agent, der für die gesamte Laufzeit lebt. Pro Job wird `agent.model` dynamisch gewechselt:
+
+```python
+agent.model = meta.get("llm_model") or "ollama/qwen3.5:35b"
+```
+
+MCP-Connections und Memory bleiben erhalten.
+
+## MCP-Server
+
+Neun MCP-Server sind in `config.yaml → mcp_servers` registriert:
+
+| Name | Quellcode | Zweck | Env-Vars |
+|------|-----------|-------|----------|
+| `taskpilot` | `src/mcp-taskpilot/server.py` | DB-Zugriff (Tasks, Projekte, Boards) | `TP_DB_*` |
+| `graph` | `src/mcp-graph/server.py` | Microsoft Graph (E-Mails, Kalender, Chat, Files, Planner) | `GRAPH_*` |
+| `pipedrive` | `src/mcp-pipedrive/server.py` | Pipedrive CRM (Kontakte, Deals, Leads) | `TP_PIPEDRIVE_*` |
+| `bexio` | `src/mcp-bexio/server.py` | Buchhaltung (Rechnungen, Journal, Kontenplan) | `TP_BEXIO_API_TOKEN` |
+| `toggl` | `src/mcp-toggl/server.py` | Zeiterfassung (Projekte, Kunden, Einträge) | `TP_TOGGL_*` |
+| `signa` | `src/mcp-signa/server.py` | SIGNA Strategic Intelligence | `TP_ISI_*` |
+| `invoiceinsight` | `src/mcp-invoiceinsight/server.py` | Kreditoren-Analyse | `TP_INVOICEINSIGHT_*` |
+| `scripts` | `src/mcp-scripts/server.py` | Script-Orchestrierung (Docker) | `TP_SECRETS_DIR` |
+| `sandbox` | `src/mcp-sandbox/server.py` | Code-Sandbox (isoliert) | `TP_SANDBOX_IMAGE` |
+
+Alle Server werden als Subprocess vom Agent gestartet (stdio-Transport).
+
+## Worker (`hermes_worker.py`)
+
+1. **Triage-Jobs**: Polling alle 10s nach `status='queued'`, `job_type != 'chat_agent'`
+2. **Chat-Jobs**: PG `LISTEN chat_job_dispatch` für sofortige Reaktion
+3. **Streaming**: `PG NOTIFY chat_stream_{job_id}` für Echtzeit-Chunks an Frontend
+4. Post-Processing: Triage-Klasse extrahieren, Task anlegen, Draft zuordnen
+
+## Chat-Streaming Architektur
+
+```
+Frontend → POST /conversations/{id}/agent → Backend erstellt Job (status=queued)
+                                           → PG NOTIFY chat_job_dispatch
+                                           → Worker empfängt, verarbeitet
+                                           → PG NOTIFY chat_stream_{job_id} (Chunks)
+                                           → Backend lauscht, SSE an Frontend
+```
+
+## Honcho (Cross-Session-Learning)
+
+- Docker-Service auf Port 8001
+- Eigene PostgreSQL-DB ("honcho")
+- Modelliert Benutzerverhalten über Sessions hinweg
+- Aktiviert via `memory.provider: honcho` in config.yaml
+
+## Metadata-Keys für AgentJobs
+
+| Key | PFLICHT | Beschreibung |
+|-----|---------|-------------|
+| `email_message_id` | **Ja** | Graph-API Message-ID |
+| `subject` | Ja | E-Mail-Betreff |
+| `from_address` | Ja | Absender-Adresse |
+| `from_name` | Ja | Absender-Name |
+| `conversation_id` | Ja | Graph-API Conversation-ID |
+| `body_preview` | Ja | Vorschau-Text (max 300 Zeichen) |
+| `llm_model` | Nein | Model-Override pro Job |
+
+## Bekannte Gotchas
+
+1. **Hermes ist synchron** — deshalb separater Worker-Prozess (blockiert nicht FastAPI)
+2. **PG NOTIFY Payload-Limit** — max 8000 Bytes, Chunks werden gebuffert
+3. **model-Switch** — `agent.model = "..."` ist ein einfaches Attribut-Set, kein Restart
+4. **Schweizer Deutsch** — ss statt ß, korrekte Umlaute (ä, ö, ü)

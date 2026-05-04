@@ -103,8 +103,8 @@ class TestTriagePrompt:
 
     async def _build_prompt(self, job):
         """Importiert und ruft _build_triage_prompt auf, mit gemockten DB-Calls."""
-        with patch("app.services.nanobot_worker._load_projects_context", new_callable=AsyncMock) as mock_projects:
+        with patch("app.services.hermes_worker._load_projects_context", new_callable=AsyncMock) as mock_projects:
             mock_projects.return_value = "## VERFÜGBARE PROJEKTE\n- \"TestProjekt\" (id: 123)"
 
-            from app.services.nanobot_worker import _build_triage_prompt
+            from app.services.hermes_worker import _build_triage_prompt
             return await _build_triage_prompt(job)

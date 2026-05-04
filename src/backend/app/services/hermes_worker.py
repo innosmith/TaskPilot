@@ -1,18 +1,14 @@
-"""Nanobot SDK Worker: Verarbeitet queued AgentJobs direkt via Python SDK.
+"""Hermes Agent Worker: Verarbeitet queued AgentJobs via persistentem AIAgent.
 
-Läuft als Hintergrund-Task beim Backend-Start. Pollt alle 10 Sekunden nach
-queued AgentJobs und verarbeitet sie sequentiell mit dem Nanobot SDK:
+Läuft als Hintergrund-Task beim Backend-Start
+oder als eigenständiger Docker-Container.
 
-    bot = Nanobot.from_config()
-    result = await bot.run(prompt, session_key=f"triage:{job_id}:{ts}")
-
-Nanobot nutzt dabei seine konfigurierten MCP-Tools (email, taskpilot) um
-E-Mails zu lesen, zu klassifizieren und Aktionen auszuführen.
-Jeder Durchlauf verwendet einen einzigartigen Session-Key (mit Timestamp),
-damit keine alte Konversationshistorie wiederverwendet wird.
-
-Nach der LLM-Klassifikation führt der Worker deterministische Post-Processing-
-Logik aus: JSON-Output parsen, Tasks erstellen, Drafts zuordnen.
+Kern-Architektur:
+- Ein persistenter AIAgent pro Worker-Prozess (MCP-Connections bleiben offen)
+- Model-Switch pro Job via agent.model = job.llm_model
+- PG NOTIFY für Chat-Jobs (sofortige Reaktion)
+- Polling für reguläre Jobs (10s Intervall)
+- Stream-Callback für Chat-Streaming via PG NOTIFY
 """
 
 import asyncio
@@ -20,37 +16,31 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from nanobot import Nanobot
+import psycopg
 from sqlalchemy import select, update
 
 from app.database import async_session
 from app.models import AgentJob, BoardColumn, EmailTriage, Project, Task, User
 
-logger = logging.getLogger("taskpilot.nanobot_worker")
+logger = logging.getLogger("taskpilot.hermes_worker")
 
 _worker_task: asyncio.Task | None = None
-_bot: Nanobot | None = None
-_chat_bot: Nanobot | None = None
-_init_lock: asyncio.Lock | None = None
-
-def _get_init_lock() -> asyncio.Lock:
-    global _init_lock
-    if _init_lock is None:
-        _init_lock = asyncio.Lock()
-    return _init_lock
+_listener_task: asyncio.Task | None = None
+_agent = None
+_agent_lock = asyncio.Lock()
 
 POLL_INTERVAL = 10
 REAP_INTERVAL = 60
-DRAFT_CLEANUP_INTERVAL = 300  # 5 Minuten
-DREAM_INTERVAL = 2 * 3600  # 2 Stunden
+DRAFT_CLEANUP_INTERVAL = 300
 STALE_TIMEOUT_MINUTES = 30
-_NANOBOT_HOME = Path(os.environ.get("TP_NANOBOT_WORKSPACE", os.path.expanduser("~/.nanobot/workspace")))
-NANOBOT_CONFIG = _NANOBOT_HOME.parent / "config.json"
-TRIAGE_SKILL = _NANOBOT_HOME / "skills" / "mail-triage.md"
+
+HERMES_HOME = Path(os.environ.get("TP_HERMES_HOME", os.path.expanduser("~/.hermes")))
+TRIAGE_SKILL = HERMES_HOME / "skills" / "mail-triage.md"
 
 PIPELINE_COLUMNS = {
     "focus": "a0000000-0000-0000-0000-000000000001",
@@ -58,6 +48,41 @@ PIPELINE_COLUMNS = {
     "next_week": "a0000000-0000-0000-0000-000000000003",
     "this_month": "a0000000-0000-0000-0000-000000000005",
 }
+
+
+def _get_litellm_url() -> str:
+    return os.environ.get("TP_LITELLM_URL", "http://localhost:4000/v1")
+
+
+def _get_default_model() -> str:
+    return os.environ.get("TP_DEFAULT_MODEL", "ollama/qwen3.5:35b")
+
+
+def _init_agent():
+    """Erstellt den persistenten Hermes AIAgent (einmalig beim Worker-Start)."""
+    global _agent
+    if _agent is not None:
+        return _agent
+
+    sys.path.insert(0, str(Path(sys.prefix) / "lib" / "python3.12" / "site-packages"))
+
+    from run_agent import AIAgent
+
+    config_path = HERMES_HOME / "config.yaml"
+    logger.info("Initialisiere Hermes Agent (config: %s)", config_path)
+
+    _agent = AIAgent(
+        model=_get_default_model(),
+        base_url=_get_litellm_url(),
+        api_key=os.environ.get("TP_LITELLM_API_KEY", "sk-litellm-local"),
+        quiet_mode=True,
+        max_iterations=50,
+        reasoning_config={"enabled": False},
+    )
+
+    logger.info("Hermes Agent initialisiert (model=%s, base_url=%s)",
+                _agent.model, _get_litellm_url())
+    return _agent
 
 
 def _load_triage_skill() -> str:
@@ -91,11 +116,7 @@ async def _load_projects_context() -> str:
 
 
 async def _build_triage_prompt(job: AgentJob) -> str:
-    """Baut den Prompt für einen email_triage Job aus Metadata.
-
-    Lädt den Triage-Skill und die Projektliste bei jedem Aufruf frisch,
-    damit Änderungen sofort wirksam werden.
-    """
+    """Baut den Prompt für einen email_triage Job aus Metadata."""
     skill_text = _load_triage_skill()
     projects_context = await _load_projects_context()
 
@@ -190,7 +211,6 @@ def _extract_json_block(content: str) -> dict | None:
             logger.warning("JSON-Block gefunden aber nicht parsebar: %s", match.group(1)[:200])
             return None
 
-    # Fallback: letztes {...} im Text
     json_pattern = r"\{[^{}]*\"label\"[^{}]*\"triage_class\"[^{}]*\}"
     matches = list(re.finditer(json_pattern, content, re.DOTALL))
     if matches:
@@ -237,12 +257,7 @@ def _determine_pipeline_column(deadline_str: str | None) -> str | None:
 
 
 async def _post_process_triage(job_id, content: str, meta: dict) -> str:
-    """Deterministische Post-Processing-Logik nach LLM-Klassifikation.
-
-    Parst den JSON-Block, erstellt Tasks bei 'task', speichert draft_id
-    bei 'auto_reply', und aktualisiert den EmailTriage-Record.
-    Returns: finaler Status für den AgentJob.
-    """
+    """Deterministische Post-Processing-Logik nach LLM-Klassifikation."""
     parsed = _extract_json_block(content)
     if parsed is None:
         logger.warning("Job %s: Kein JSON-Block im Output gefunden", job_id)
@@ -258,7 +273,6 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     rationale = parsed.get("rationale")
     reply_expected = bool(parsed.get("reply_expected", False))
 
-    # Legacy-Werte migrieren
     if triage_class == "quick_response":
         triage_class = "auto_reply"
     elif triage_class == "board_task":
@@ -267,7 +281,6 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     elif triage_class == "bedenkzeit":
         triage_class = "task"
 
-    # Konsistenz-Checks zwischen triage_class, draft_id und task_title
     if draft_id and triage_class != "auto_reply":
         logger.warning("Job %s: draft_id vorhanden aber triage_class=%s, korrigiere zu auto_reply", job_id, triage_class)
         triage_class = "auto_reply"
@@ -380,65 +393,8 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     return final_status
 
 
-async def _init_bot() -> Nanobot | None:
-    """Initialisiert den Worker-Nanobot (für Agent-Jobs wie Triage)."""
-    global _bot
-    async with _get_init_lock():
-        if _bot is not None:
-            return _bot
-        return await _create_nanobot_instance("worker")
-
-
-async def _init_chat_bot() -> Nanobot | None:
-    """Initialisiert einen separaten Nanobot für den Chat-Agent-Endpoint.
-
-    Eigene Instanz, damit Worker-Jobs und Chat-Anfragen sich nicht
-    gegenseitig blockieren oder Session-State korrumpieren.
-    """
-    global _chat_bot
-    async with _get_init_lock():
-        if _chat_bot is not None:
-            return _chat_bot
-        return await _create_nanobot_instance("chat")
-
-
-async def _create_nanobot_instance(label: str) -> Nanobot | None:
-    """Erstellt eine neue Nanobot-Instanz mit Lock-Schutz."""
-    global _bot, _chat_bot
-    if not NANOBOT_CONFIG.exists():
-        logger.error("[%s] Nanobot-Config nicht gefunden: %s", label, NANOBOT_CONFIG)
-        return None
-
-    await _populate_env_from_db()
-
-    try:
-        instance = Nanobot.from_config(config_path=str(NANOBOT_CONFIG))
-        logger.info("[%s] Nanobot SDK initialisiert (Config: %s)", label, NANOBOT_CONFIG)
-        if label == "worker":
-            _bot = instance
-        else:
-            _chat_bot = instance
-        return instance
-    except Exception:
-        logger.exception("[%s] Nanobot SDK Initialisierung fehlgeschlagen", label)
-        return None
-
-
-def reset_chat_bot() -> None:
-    """Invalidiert den Chat-Bot, damit er beim nächsten Aufruf neu initialisiert wird."""
-    global _chat_bot
-    _chat_bot = None
-    logger.info("Chat-Bot invalidiert — wird beim nächsten Aufruf neu erstellt")
-
-
 async def _populate_env_from_db() -> None:
-    """Liest API-Tokens aus den User-Settings (Owner) und setzt sie als Env-Vars.
-
-    Prüfreihenfolge pro Key:
-    1. Bereits gesetzte Env-Var (bleibt bestehen)
-    2. DB-Settings des Owner-Users
-    3. Pydantic Settings aus .env.dev (Fallback)
-    """
+    """Liest API-Tokens aus den User-Settings (Owner) und setzt sie als Env-Vars."""
     from app.config import get_settings
 
     _ENV_KEYS: dict[str, str] = {
@@ -456,7 +412,6 @@ async def _populate_env_from_db() -> None:
 
     try:
         async with async_session() as db:
-            from app.models import User
             result = await db.execute(
                 select(User.settings).where(User.role == "owner").limit(1)
             )
@@ -468,11 +423,8 @@ async def _populate_env_from_db() -> None:
             value = settings.get(db_key, "") or getattr(cfg, db_key, "")
             if value:
                 os.environ[env_key] = str(value)
-                logger.info("Env-Var %s gesetzt (Quelle: %s)",
-                            env_key, "DB" if settings.get(db_key) else ".env.dev")
             else:
                 os.environ[env_key] = ""
-                logger.warning("Env-Var %s ist leer — weder in DB noch in .env.dev konfiguriert", env_key)
 
         _SIGNA_MAP = {
             "isi_host": "TP_ISI_HOST",
@@ -484,16 +436,14 @@ async def _populate_env_from_db() -> None:
             if not os.environ.get(env_key):
                 value = getattr(cfg, cfg_key, "")
                 os.environ[env_key] = str(value) if value else ""
-                if value:
-                    logger.info("Env-Var %s aus .env.dev gesetzt", env_key)
     except Exception:
         logger.warning("DB-Settings konnten nicht gelesen werden — Env-Vars bleiben wie sie sind")
 
 
-async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: dict) -> None:
-    """Verarbeitet einen einzelnen AgentJob via Nanobot SDK."""
-    session_key = f"{job_type}:{job_id}:{int(time.time())}"
-    logger.info("Starte Job %s (type=%s, session=%s)", job_id, job_type, session_key)
+async def _process_job(job_id, job_type: str, prompt: str, meta: dict) -> None:
+    """Verarbeitet einen einzelnen AgentJob via Hermes AIAgent."""
+    agent = _init_agent()
+    logger.info("Starte Job %s (type=%s)", job_id, job_type)
 
     async with async_session() as db:
         await db.execute(
@@ -503,16 +453,23 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
         )
         await db.commit()
 
+    llm_model = meta.get("llm_model") or _get_default_model()
+    if agent.model != llm_model:
+        agent.model = llm_model
+        logger.info("Job %s: Model-Switch → %s", job_id, llm_model)
+
     try:
-        result = await bot.run(prompt, session_key=session_key)
-        content = result.content or ""
-        logger.info("Job %s abgeschlossen: %s", job_id, content[:200])
+        result = await asyncio.to_thread(agent.chat, prompt)
+        content = result or ""
+        if hasattr(result, "content"):
+            content = result.content or ""
+        logger.info("Job %s abgeschlossen: %s", job_id, str(content)[:200])
 
         if job_type == "email_triage":
-            status = await _post_process_triage(job_id, content, meta)
+            status = await _post_process_triage(job_id, str(content), meta)
         else:
             status = "completed"
-            if "awaiting_approval" in content.lower():
+            if "awaiting_approval" in str(content).lower():
                 status = "awaiting_approval"
 
         async with async_session() as db:
@@ -521,24 +478,11 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
                 .where(AgentJob.id == job_id)
                 .values(
                     status=status,
-                    output=content[:4000],
+                    output=str(content)[:4000],
                     completed_at=datetime.now(timezone.utc),
                 )
             )
             await db.commit()
-
-        # Session-Ergebnis in history.jsonl archivieren fuer Dream
-        try:
-            store = bot._loop.context.memory
-            subject = meta.get("subject", "")
-            from_addr = meta.get("from_address", "")
-            summary = f"E-Mail-Triage: '{subject}' von {from_addr} → {status}"
-            if content:
-                summary += f"\n{content[:500]}"
-            store.append_history(summary)
-            logger.info("Session-Summary fuer Job %s in history.jsonl geschrieben", job_id)
-        except Exception:
-            logger.warning("Session-Archivierung fehlgeschlagen fuer Job %s", job_id)
 
     except Exception as e:
         logger.exception("Job %s fehlgeschlagen", job_id)
@@ -561,10 +505,165 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
             await db.commit()
 
 
+_TOOL_CALL_RENDERERS: dict[str, callable] = {
+    "clarify": lambda args: args.get("question", ""),
+    "ask_user": lambda args: args.get("question", args.get("message", "")),
+    "user_confirmation": lambda args: args.get("message", ""),
+}
+
+
+def _extract_readable_content(content: str) -> str:
+    """Wandelt Tool-Call-JSON (z.B. clarify) in lesbaren Text um.
+
+    Erkennt sowohl einzelne Tool-Calls als auch Arrays.
+    Unbekannte Tool-Calls werden als 'Tool: <name>' zusammengefasst.
+    """
+    stripped = content.strip()
+    if not stripped or stripped[0] not in ("{", "["):
+        return content
+
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError):
+        return content
+
+    calls = [parsed] if isinstance(parsed, dict) else parsed if isinstance(parsed, list) else []
+    if not calls or not all(isinstance(c, dict) and "name" in c for c in calls):
+        return content
+
+    parts = []
+    for call in calls:
+        name = call.get("name", "")
+        args = call.get("arguments", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+
+        renderer = _TOOL_CALL_RENDERERS.get(name)
+        if renderer:
+            text = renderer(args)
+            if text:
+                parts.append(text)
+        else:
+            parts.append(f"*Tool ausgeführt: {name}*")
+
+    return "\n\n".join(parts) if parts else content
+
+
+async def _process_chat_job(job_id, prompt: str, meta: dict, pg_conn) -> None:
+    """Verarbeitet einen Chat-Job mit Streaming via PG NOTIFY."""
+    agent = _init_agent()
+    job_id_str = str(job_id)
+
+    async with async_session() as db:
+        await db.execute(
+            update(AgentJob)
+            .where(AgentJob.id == job_id)
+            .values(status="running", started_at=datetime.now(timezone.utc))
+        )
+        await db.commit()
+
+    llm_model = meta.get("llm_model") or _get_default_model()
+    if agent.model != llm_model:
+        agent.model = llm_model
+        logger.info("Chat-Job %s: Model-Switch → %s", job_id, llm_model)
+
+    stream_channel = f"chat_stream_{job_id_str.replace('-', '')}"
+    buffer = []
+    last_flush = time.monotonic()
+    MAX_NOTIFY_BYTES = 7500
+
+    def _send_chunk(text: str):
+        """Sendet einen Chunk per pg_notify(), splittet bei Überschreitung des PG-Limits."""
+        payload = json.dumps({"type": "chunk", "content": text}, ensure_ascii=False)
+        if len(payload.encode("utf-8")) <= MAX_NOTIFY_BYTES:
+            pg_conn.execute("SELECT pg_notify(%s, %s)", [stream_channel, payload])
+            return
+        mid = len(text) // 2
+        _send_chunk(text[:mid])
+        _send_chunk(text[mid:])
+
+    def _flush_buffer():
+        nonlocal last_flush
+        if buffer:
+            chunk = "".join(buffer)
+            buffer.clear()
+            try:
+                _send_chunk(chunk)
+            except Exception as e:
+                logger.warning("NOTIFY fehlgeschlagen: %s", e)
+            last_flush = time.monotonic()
+
+    def on_stream_delta(text: str):
+        buffer.append(text)
+        if time.monotonic() - last_flush > 0.5 or len("".join(buffer)) > 200:
+            _flush_buffer()
+
+    def _run_sync():
+        """Synchroner Block: agent.chat + NOTIFY (läuft in separatem Thread)."""
+        result = agent.chat(prompt, stream_callback=on_stream_delta)
+        _flush_buffer()
+
+        content = result or ""
+        if hasattr(result, "content"):
+            content = result.content or ""
+        content = str(content)
+
+        readable = _extract_readable_content(content)
+        if readable != content:
+            clear_payload = json.dumps({"type": "clear"}, ensure_ascii=False)
+            pg_conn.execute("SELECT pg_notify(%s, %s)", [stream_channel, clear_payload])
+            _send_chunk(readable)
+
+        done_payload = json.dumps({"type": "done"}, ensure_ascii=False)
+        pg_conn.execute("SELECT pg_notify(%s, %s)", [stream_channel, done_payload])
+        return readable
+
+    try:
+        content = await asyncio.to_thread(_run_sync)
+
+        async with async_session() as db:
+            await db.execute(
+                update(AgentJob)
+                .where(AgentJob.id == job_id)
+                .values(
+                    status="completed",
+                    output=content,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+            await db.commit()
+
+        logger.info("Chat-Job %s abgeschlossen (%d Zeichen)", job_id, len(content))
+
+    except Exception as e:
+        logger.exception("Chat-Job %s fehlgeschlagen", job_id)
+        error_msg = str(e)[:500]
+        error_payload = json.dumps({"type": "error", "error": error_msg}, ensure_ascii=False)
+        try:
+            pg_conn.execute("SELECT pg_notify(%s, %s)", [stream_channel, error_payload])
+        except Exception:
+            pass
+
+        async with async_session() as db:
+            await db.execute(
+                update(AgentJob)
+                .where(AgentJob.id == job_id)
+                .values(
+                    status="failed",
+                    error_message=str(e)[:2000],
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+            await db.commit()
+
+
 async def _cleanup_orphaned_drafts() -> int:
     """Schliesst awaiting_approval-Jobs ab, deren Draft in Outlook nicht mehr existiert."""
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
     from graph_client import GraphClient, GraphConfig
     from app.config import get_settings
 
@@ -651,20 +750,50 @@ async def _reap_stale_jobs() -> int:
     return len(reaped_ids)
 
 
+def _get_pg_dsn() -> str:
+    """Baut DSN aus Env-Vars."""
+    host = os.environ.get("TP_DB_HOST", "localhost")
+    port = os.environ.get("TP_DB_PORT", "5435")
+    user = os.environ.get("TP_DB_USER", "taskpilot")
+    password = os.environ.get("TP_DB_PASSWORD", "taskpilot_dev_2026")
+    dbname = os.environ.get("TP_DB_NAME", "taskpilot_dev")
+    return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
+
+async def _cleanup_stale_running_jobs() -> None:
+    """Setzt verwaiste running-Jobs nach Worker-Neustart auf failed."""
+    async with async_session() as db:
+        result = await db.execute(
+            update(AgentJob)
+            .where(AgentJob.status == "running")
+            .values(
+                status="failed",
+                error_message="Durch Worker-Neustart abgebrochen",
+                completed_at=datetime.now(timezone.utc),
+            )
+            .returning(AgentJob.id)
+        )
+        stale_ids = result.scalars().all()
+        if stale_ids:
+            logger.warning(
+                "Startup-Cleanup: %d verwaiste running-Jobs auf failed gesetzt: %s",
+                len(stale_ids), [str(i) for i in stale_ids],
+            )
+        await db.commit()
+
+
 async def _worker_loop() -> None:
     """Pollt nach queued Jobs und verarbeitet sie sequentiell."""
     await asyncio.sleep(3)
 
-    bot = await _init_bot()
-    if bot is None:
-        logger.error("Nanobot-Worker kann nicht starten (SDK nicht verfügbar)")
-        return
+    await _cleanup_stale_running_jobs()
+    await _populate_env_from_db()
 
-    logger.info("Nanobot-Worker gestartet -- pollt alle %ds nach queued Jobs", POLL_INTERVAL)
+    _init_agent()
+    logger.info("Hermes-Worker gestartet -- pollt alle %ds nach queued Jobs", POLL_INTERVAL)
 
     last_reap = time.monotonic()
     last_draft_cleanup = time.monotonic()
-    last_dream = time.monotonic()
 
     while True:
         try:
@@ -679,22 +808,13 @@ async def _worker_loop() -> None:
                     logger.exception("Draft-Cleanup fehlgeschlagen")
                 last_draft_cleanup = time.monotonic()
 
-            if time.monotonic() - last_dream >= DREAM_INTERVAL:
-                try:
-                    dream = bot._loop.dream
-                    ran = await dream.run()
-                    if ran:
-                        logger.info("Dream-Zyklus abgeschlossen -- MEMORY.md aktualisiert")
-                    else:
-                        logger.debug("Dream-Zyklus: keine neuen History-Eintraege zu verarbeiten")
-                except Exception:
-                    logger.exception("Dream-Zyklus fehlgeschlagen")
-                last_dream = time.monotonic()
-
             async with async_session() as db:
                 result = await db.execute(
                     select(AgentJob)
-                    .where(AgentJob.status == "queued")
+                    .where(
+                        AgentJob.status == "queued",
+                        AgentJob.job_type != "chat_agent",
+                    )
                     .order_by(AgentJob.created_at)
                     .limit(1)
                 )
@@ -707,34 +827,172 @@ async def _worker_loop() -> None:
                 else:
                     prompt = f"Führe den AgentJob {job.id} aus: {job.metadata_json}"
 
-                await _process_job(bot, job.id, job.job_type or "generic", prompt, meta)
+                await _process_job(job.id, job.job_type or "generic", prompt, meta)
             else:
                 await asyncio.sleep(POLL_INTERVAL)
 
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Nanobot-Worker: unerwarteter Fehler")
+            logger.exception("Hermes-Worker: unerwarteter Fehler")
             await asyncio.sleep(POLL_INTERVAL)
 
 
-async def start_nanobot_worker() -> None:
-    """Startet den Nanobot-Worker als Hintergrund-Task."""
-    global _worker_task
-    _worker_task = asyncio.create_task(_worker_loop())
-    logger.info("Nanobot-Worker: Hintergrund-Task gestartet")
+CHAT_SWEEP_INTERVAL = 30
 
 
-async def stop_nanobot_worker() -> None:
-    """Stoppt den Nanobot-Worker und gibt alle Bot-Instanzen frei."""
-    global _worker_task, _bot, _chat_bot
-    if _worker_task and not _worker_task.done():
-        _worker_task.cancel()
+async def _sweep_orphaned_chat_jobs(pg_conn) -> int:
+    """Findet und verarbeitet verwaiste queued chat_agent Jobs."""
+    async with async_session() as db:
+        result = await db.execute(
+            select(AgentJob)
+            .where(
+                AgentJob.status == "queued",
+                AgentJob.job_type == "chat_agent",
+                AgentJob.created_at < datetime.now(timezone.utc) - timedelta(seconds=10),
+            )
+            .order_by(AgentJob.created_at)
+        )
+        orphans = result.scalars().all()
+
+    for job in orphans:
         try:
-            await _worker_task
+            meta = job.metadata_json or {}
+            prompt = meta.get("prompt", "")
+            logger.info("Chat-Sweep: verwaisten Job %s aufgenommen", job.id)
+            await _process_chat_job(job.id, prompt, meta, pg_conn)
+        except Exception:
+            logger.exception("Chat-Sweep: Fehler bei Job %s", job.id)
+    return len(orphans)
+
+
+async def _chat_listener_loop() -> None:
+    """Lauscht auf PG NOTIFY für Chat-Jobs, mit periodischem Sweep als Fallback."""
+    await asyncio.sleep(4)
+
+    dsn = _get_pg_dsn()
+    notify_conn = None
+    pg_conn = None
+
+    while True:
+        try:
+            notify_conn = await psycopg.AsyncConnection.connect(
+                dsn, autocommit=True
+            )
+            pg_conn = psycopg.connect(dsn, autocommit=True)
+
+            await notify_conn.execute("LISTEN chat_job_dispatch")
+            logger.info("Chat-Listener: LISTEN chat_job_dispatch aktiv")
+
+            swept = await _sweep_orphaned_chat_jobs(pg_conn)
+            if swept:
+                logger.info("Chat-Listener: %d verwaiste Jobs beim Start verarbeitet", swept)
+
+            gen = notify_conn.notifies()
+            last_sweep = time.monotonic()
+
+            while True:
+                try:
+                    notify = await asyncio.wait_for(
+                        gen.__anext__(), timeout=CHAT_SWEEP_INTERVAL
+                    )
+                except (asyncio.TimeoutError, StopAsyncIteration):
+                    if time.monotonic() - last_sweep >= CHAT_SWEEP_INTERVAL:
+                        await _sweep_orphaned_chat_jobs(pg_conn)
+                        last_sweep = time.monotonic()
+                    continue
+
+                try:
+                    data = json.loads(notify.payload)
+                    job_id = data.get("job_id")
+                    if not job_id:
+                        continue
+
+                    async with async_session() as db:
+                        result = await db.execute(
+                            select(AgentJob).where(AgentJob.id == job_id)
+                        )
+                        job = result.scalar_one_or_none()
+
+                    if job and job.status == "queued":
+                        meta = job.metadata_json or {}
+                        prompt = meta.get("prompt", "")
+                        await _process_chat_job(job.id, prompt, meta, pg_conn)
+
+                except Exception:
+                    logger.exception("Chat-Listener: Fehler bei Job-Verarbeitung")
+
         except asyncio.CancelledError:
-            pass
+            raise
+        except Exception:
+            logger.exception("Chat-Listener: Verbindungsfehler, Reconnect in 5s")
+            await asyncio.sleep(5)
+        finally:
+            if notify_conn:
+                await notify_conn.close()
+            if pg_conn:
+                pg_conn.close()
+
+
+async def start_hermes_worker() -> None:
+    """Startet den Hermes-Worker als Hintergrund-Task."""
+    global _worker_task, _listener_task
+    _worker_task = asyncio.create_task(_worker_loop())
+    _listener_task = asyncio.create_task(_chat_listener_loop())
+    logger.info("Hermes-Worker: Hintergrund-Tasks gestartet")
+
+
+async def stop_hermes_worker() -> None:
+    """Stoppt den Hermes-Worker und gibt Ressourcen frei."""
+    global _worker_task, _listener_task, _agent
+    for task in (_worker_task, _listener_task):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     _worker_task = None
-    _bot = None
-    _chat_bot = None
-    logger.info("Nanobot-Worker gestoppt, alle Bot-Instanzen freigegeben")
+    _listener_task = None
+    _agent = None
+    logger.info("Hermes-Worker gestoppt, Agent freigegeben")
+
+
+if __name__ == "__main__":
+    import signal
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    async def _run() -> None:
+        """Startet Worker-Loop und Chat-Listener als eigenständiger Prozess."""
+        loop = asyncio.get_running_loop()
+
+        def _handle_signal() -> None:
+            logger.info("Shutdown-Signal empfangen, Worker wird gestoppt...")
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _handle_signal)
+
+        logger.info(
+            "Hermes Worker startet als eigenständiger Prozess (PID=%d)", os.getpid()
+        )
+
+        try:
+            await asyncio.gather(
+                _worker_loop(),
+                _chat_listener_loop(),
+            )
+        except asyncio.CancelledError:
+            logger.info("Worker-Tasks beendet")
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+    logger.info("Hermes Worker beendet (PID=%d)", os.getpid())
