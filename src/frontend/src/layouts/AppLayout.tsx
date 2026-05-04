@@ -80,9 +80,7 @@ export function AppLayout() {
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const openSearch = useCallback(() => setSearchOpen(true), []);
 
-  const mainRef = useRef<HTMLElement>(null);
-  const scrollDir = useScrollDirection(mainRef);
-  const tabBarHidden = scrollDir === 'down';
+  // BottomTabBar deaktiviert — Code bleibt in BottomTabBar.tsx erhalten
   const isMobile = useMediaQuery('(max-width: 1023px)');
 
   return (
@@ -102,11 +100,9 @@ export function AppLayout() {
         <div className="flex flex-1 flex-col overflow-hidden">
           <MobileHeader onMenuOpen={openSidebar} onSearchOpen={openSearch} />
 
-          <main ref={mainRef} className="flex-1 overflow-hidden" style={isMobile ? { paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))', paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' } : undefined}>
+          <main className="flex-1 overflow-hidden" style={isMobile ? { paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))' } : undefined}>
             <Outlet context={{ refreshSidebar, refreshAppSettings }} />
           </main>
-
-          <BottomTabBar onMoreOpen={openSidebar} hidden={tabBarHidden} />
         </div>
 
         <SearchDialog

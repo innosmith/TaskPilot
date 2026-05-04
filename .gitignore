@@ -62,6 +62,9 @@ src/backend/uploads/
 # Docker (optional lokale Overrides)
 docker-compose.override.yml
 
+# Vendor (private Packages, werden via docker/build.sh kopiert)
+src/backend/vendor/
+
 # OS
 .Spotlight-V100
 .Trashes

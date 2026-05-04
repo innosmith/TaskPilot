@@ -10,6 +10,11 @@
 
 model_list:
   # ── Lokale Modelle (Ollama) ────────────────────────────────
+  - model_name: ollama/qwen3.6:latest
+    litellm_params:
+      model: ollama/qwen3.6:latest
+      api_base: http://host.docker.internal:11434
+
   - model_name: ollama/qwen3.5:35b
     litellm_params:
       model: ollama/qwen3.5:35b

@@ -16,13 +16,16 @@ from app.routers import (
     bexio,
     calendar,
     chat,
+    code_execute,
     creditors,
     debtors,
     emails,
+    export,
     finance,
     intelligence,
     memory,
     models,
+    onedrive,
     pipedrive,
     pipeline,
     planner,
@@ -128,6 +131,9 @@ app.include_router(creditors.router)
 app.include_router(intelligence.router)
 app.include_router(signa.router)
 app.include_router(chat.router)
+app.include_router(code_execute.router)
+app.include_router(export.router)
+app.include_router(onedrive.router)
 app.include_router(teams.router)
 app.include_router(planner.router)
 app.include_router(web_search.router)

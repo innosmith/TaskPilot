@@ -1,0 +1,89 @@
+{
+  "version": "1.0",
+  "description": "Registry aller registrierten Scripts für TaskPilot Script-Orchestrierung (Schicht 1)",
+  "scripts": [
+    {
+      "id": "toggl-rapport",
+      "name": "Toggl Leistungsrapport",
+      "description": "Erstellt einen detaillierten Leistungsrapport aus Toggl-Zeiteinträgen für einen Monat",
+      "image": "taskpilot-scripts/toggl-rapport:latest",
+      "source_repo": "github.com/innosmith/toggl-tools",
+      "params": [
+        {"name": "month", "type": "int", "required": true, "description": "Monat (1-12)"},
+        {"name": "year", "type": "int", "required": true, "description": "Jahr (z.B. 2026)"},
+        {"name": "client", "type": "string", "required": false, "description": "Optional: nur für diesen Kunden"}
+      ],
+      "output_type": "file",
+      "output_description": "Excel/PDF-Rapport im /output Verzeichnis",
+      "security": {
+        "max_timeout_seconds": 900,
+        "memory_limit_mb": 2048,
+        "cpu_cores": 2,
+        "network_allow": ["api.track.toggl.com:443"],
+        "llm_endpoints_allow": [],
+        "llm_routing": "none",
+        "secrets_required": ["TOGGL_API_TOKEN", "TOGGL_WORKSPACE_ID"],
+        "data_class_max": "confidential",
+        "output_max_size_mb": 50,
+        "can_fork": false,
+        "can_exec": false
+      },
+      "autonomy": "L2"
+    },
+    {
+      "id": "md-to-word",
+      "name": "Markdown → Word Converter",
+      "description": "Konvertiert eine Markdown-Datei in ein formatiertes Word-Dokument mit CI/CD-Template",
+      "image": "taskpilot-scripts/md-converter:latest",
+      "source_repo": "github.com/innosmith/doc-pipeline",
+      "params": [
+        {"name": "input_file", "type": "path", "required": true, "description": "Pfad zur Markdown-Datei (relativ zu /input)"},
+        {"name": "template", "type": "string", "required": false, "description": "Template-Name (default: innosmith-standard)"},
+        {"name": "output_format", "type": "string", "required": false, "description": "docx oder pdf (default: docx)"}
+      ],
+      "output_type": "file",
+      "output_description": "Word/PDF-Dokument im /output Verzeichnis",
+      "security": {
+        "max_timeout_seconds": 300,
+        "memory_limit_mb": 2048,
+        "cpu_cores": 2,
+        "network_allow": [],
+        "llm_endpoints_allow": [],
+        "llm_routing": "none",
+        "secrets_required": [],
+        "data_class_max": "highly_confidential",
+        "output_max_size_mb": 100,
+        "can_fork": false,
+        "can_exec": true
+      },
+      "autonomy": "L2"
+    },
+    {
+      "id": "md-to-pptx",
+      "name": "Markdown → PowerPoint Converter",
+      "description": "Konvertiert eine strukturierte Markdown-Datei in eine PowerPoint-Präsentation",
+      "image": "taskpilot-scripts/md-converter:latest",
+      "source_repo": "github.com/innosmith/doc-pipeline",
+      "params": [
+        {"name": "input_file", "type": "path", "required": true, "description": "Pfad zur Markdown-Datei (relativ zu /input)"},
+        {"name": "template", "type": "string", "required": false, "description": "PPTX-Template-Name"}
+      ],
+      "output_type": "file",
+      "output_description": "PowerPoint-Datei im /output Verzeichnis",
+      "security": {
+        "max_timeout_seconds": 300,
+        "memory_limit_mb": 2048,
+        "cpu_cores": 2,
+        "network_allow": [],
+        "llm_endpoints_allow": [],
+        "llm_routing": "none",
+        "secrets_required": [],
+        "data_class_max": "highly_confidential",
+        "output_max_size_mb": 100,
+        "can_fork": false,
+        "can_exec": true
+      },
+      "autonomy": "L2"
+    }
+  ]
+}

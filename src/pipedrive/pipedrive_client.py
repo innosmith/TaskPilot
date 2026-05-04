@@ -269,6 +269,51 @@ class PipedriveClient:
         data = await self._post_v1("/notes", body)
         return data.get("data", {})
 
+    # ── Person Fields ───────────────────────────────────────
+
+    async def list_person_fields(self) -> list[dict]:
+        """Alle Person-Felder laden (inkl. Custom-Fields)."""
+        data = await self._get_v2("/personFields")
+        return data.get("data", []) or []
+
+    async def find_field_key(self, field_name: str) -> str | None:
+        """API-Key eines Person-Feldes anhand des Namens finden (case-insensitive)."""
+        fields = await self.list_person_fields()
+        target = field_name.lower()
+        for f in fields:
+            if (f.get("name") or "").lower() == target:
+                return f.get("key")
+        return None
+
+    # ── Person Picture ────────────────────────────────────────
+
+    async def upload_person_picture(
+        self, person_id: int, image_data: bytes, filename: str = "photo.jpg"
+    ) -> dict:
+        """Profilbild fuer Person hochladen (v1 multipart POST)."""
+        client = await self._ensure_client()
+        url = f"{self.config.base_url_v1}/persons/{person_id}/picture"
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = await client.post(
+                    url, files={"file": (filename, image_data, "image/jpeg")}
+                )
+                if resp.status_code == 429:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning("Pipedrive Rate-Limit (429), Retry in %.1fs", delay)
+                    await asyncio.sleep(delay)
+                    continue
+                resp.raise_for_status()
+                return resp.json().get("data", {})
+            except httpx.HTTPStatusError:
+                raise
+            except httpx.HTTPError as exc:
+                if attempt == MAX_RETRIES - 1:
+                    raise
+                logger.warning("Pipedrive picture upload Fehler: %s, Retry %d", exc, attempt + 1)
+                await asyncio.sleep(RETRY_BASE_DELAY)
+        return {}
+
     # ── Suche ────────────────────────────────────────────────
 
     async def search_items(self, term: str, item_types: str = "deal,person,organization", limit: int = 10) -> list[dict]:

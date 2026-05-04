@@ -48,6 +48,8 @@ alwaysApply: false
 | RichTextEditor | `components/RichTextEditor.tsx` | Wiederverwendbarer TipTap-Editor |
 | CrmBadge | `components/CrmBadge.tsx` | Pipedrive-Kontaktinfo neben Absender (Bild, Name, Link) |
 | SearchDialog | `components/SearchDialog.tsx` | Globale Suche (Tasks, Projekte, CRM via `/`) |
+| ExportDialog | `components/ExportDialog.tsx` | Download als MD/DOCX/PDF/PPTX mit Optionen |
+| OneDrivePicker | `components/OneDrivePicker.tsx` | OneDrive-Datei/Ordner-Browser (Multi-Select, Suche) |
 
 ## Dev-Server
 - Frontend MUSS immer auf **Port 5173** laufen (`npm run dev -- --port 5173 --strictPort`)

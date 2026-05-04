@@ -1308,8 +1308,9 @@ function LlmSettingsTab() {
   const [llmSettings, setLlmSettings] = useState<{
     llm_providers: Record<string, { enabled: boolean; models: string[] }> | null;
     llm_default_model: string | null;
+    llm_default_local_model: string | null;
     llm_default_temperature: number | null;
-  }>({ llm_providers: null, llm_default_model: null, llm_default_temperature: null });
+  }>({ llm_providers: null, llm_default_model: null, llm_default_local_model: null, llm_default_temperature: null });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -1469,6 +1470,31 @@ function LlmSettingsTab() {
                 const p = m.provider;
                 return llmSettings.llm_providers?.[p]?.enabled && llmSettings.llm_providers[p].models.includes(m.id);
               })
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Standard Lokal-Modell
+          </label>
+          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+            Wird systemweit als Default für Agent, Triage und Code-Execution verwendet.
+          </p>
+          <select
+            value={llmSettings.llm_default_local_model || ''}
+            onChange={(e) =>
+              setLlmSettings({ ...llmSettings, llm_default_local_model: e.target.value || null })
+            }
+            className="mt-1 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+          >
+            <option value="">Automatisch (erstes verfügbares)</option>
+            {models
+              .filter((m) => m.provider === 'ollama')
               .map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}

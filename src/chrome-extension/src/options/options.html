@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="options.css">
+  <title>TaskPilot LinkedIn Sync — Einstellungen</title>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>TaskPilot LinkedIn Sync</h1>
+      <p class="subtitle">Powered by <a href="https://innosmith.ch" target="_blank" rel="noopener">InnoSmith.ch</a> — AI-Agenten & Automation</p>
+    </header>
+
+    <section class="card">
+      <h2>Verbindung</h2>
+      <div class="field">
+        <label for="backend-url">TaskPilot Backend-URL</label>
+        <input type="url" id="backend-url" placeholder="http://localhost:8000">
+        <p class="hint">Die URL deines TaskPilot-Backends (ohne Trailing-Slash).</p>
+      </div>
+      <div class="field">
+        <label for="api-token">API-Token (JWT)</label>
+        <input type="password" id="api-token" placeholder="eyJhbGciOi…">
+        <p class="hint">Bearer-Token aus der TaskPilot-Session. Kopiere ihn aus dem Browser-LocalStorage (Schlüssel: <code>token</code>).</p>
+      </div>
+      <div class="actions">
+        <button id="btn-save" class="btn btn-primary">Speichern</button>
+        <button id="btn-test" class="btn btn-secondary">Verbindung testen</button>
+      </div>
+      <div id="status" class="status hidden"></div>
+    </section>
+
+    <footer class="footer">
+      <p>TaskPilot LinkedIn Sync v1.0.0 · <a href="https://innosmith.ch" target="_blank" rel="noopener">innosmith.ch</a></p>
+    </footer>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

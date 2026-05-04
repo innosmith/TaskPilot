@@ -6,8 +6,14 @@ import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/tokyo-night-dark.css';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkRehype from 'remark-rehype';
+import rehypeStringify from 'rehype-stringify';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { BackgroundPicker } from '../components/BackgroundPicker';
+import { ExportDialog } from '../components/ExportDialog';
+import { OneDrivePicker, type ContextSource } from '../components/OneDrivePicker';
 
 let mermaidReady: Promise<typeof import('mermaid')> | null = null;
 function getMermaid() {
@@ -22,12 +28,22 @@ function getMermaid() {
 
 function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return uuid();
+    return crypto.randomUUID();
   }
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = (Math.random() * 16) | 0;
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
+}
+
+async function markdownToHtml(markdown: string): Promise<string> {
+  const result = await unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(remarkRehype)
+    .use(rehypeStringify)
+    .process(markdown);
+  return String(result);
 }
 
 interface LlmModel {
@@ -75,11 +91,12 @@ interface ChatMessage {
   created_at: string;
 }
 
-type ChatMode = 'chat' | 'web_search' | 'deep_research' | 'agent';
+type ChatMode = 'chat' | 'web_search' | 'deep_research' | 'agent' | 'code_execute';
 
 const MODES: { id: ChatMode; label: string; tooltip: string }[] = [
   { id: 'agent', label: 'Agent', tooltip: 'InnoPilot führt Aktionen aus: Kalender, E-Mail, CRM, Aufgaben' },
   { id: 'chat', label: 'Chat', tooltip: 'Direkte Fragen an das LLM — antwortet aus Trainingswissen' },
+  { id: 'code_execute', label: 'Code', tooltip: 'Python-Code generieren und in isolierter Sandbox ausführen (Datenanalyse, Scripts)' },
   { id: 'web_search', label: 'Websuche', tooltip: 'Durchsucht das Web in Echtzeit via Tavily nach aktuellen Fakten' },
   { id: 'deep_research', label: 'Deep Research', tooltip: 'Mehrstufige Recherche mit vielen Quellen — dauert länger, geht tiefer' },
 ];
@@ -192,6 +209,11 @@ export function ChatPage() {
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copyMenuId, setCopyMenuId] = useState<string | null>(null);
+  const [exportMsgId, setExportMsgId] = useState<string | null>(null);
+  const [exportMsgContent, setExportMsgContent] = useState('');
+  const [onedriveOpen, setOnedriveOpen] = useState(false);
+  const [contextSources, setContextSources] = useState<ContextSource[]>([]);
 
   // Per-Konversation Agent-Stream-State
   interface AgentStreamState {
@@ -225,6 +247,7 @@ export function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const mcpPopoverRef = useRef<HTMLDivElement>(null);
+  const copyMenuRef = useRef<HTMLDivElement>(null);
   const skipNextFetchRef = useRef(false);
   const sendingRef = useRef(false);
 
@@ -236,14 +259,14 @@ export function ChatPage() {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => {
-    loadConversations();
+  const loadSettings = useCallback(() => {
     api.get<{ local: LlmModel[]; cloud: LlmModel[] }>('/api/models')
       .then(d => setModels([...d.local, ...d.cloud]))
       .catch(() => {});
-    api.get<{ llm_default_model: string | null; llm_default_temperature: number | null }>('/api/settings/llm')
+    api.get<{ llm_default_model: string | null; llm_default_local_model: string | null; llm_default_temperature: number | null }>('/api/settings/llm')
       .then(s => {
-        if (s.llm_default_model) setSelectedModel(s.llm_default_model);
+        const defaultModel = s.llm_default_model || s.llm_default_local_model;
+        if (defaultModel) setSelectedModel(defaultModel);
         if (s.llm_default_temperature !== null) setTemperature(s.llm_default_temperature);
       })
       .catch(() => {});
@@ -253,7 +276,18 @@ export function ChatPage() {
     api.get<{ chat_background_url: string | null }>('/api/settings')
       .then(s => setBgUrl(s.chat_background_url))
       .catch(() => {});
-  }, [loadConversations]);
+  }, []);
+
+  useEffect(() => {
+    loadConversations();
+    loadSettings();
+  }, [loadConversations, loadSettings]);
+
+  useEffect(() => {
+    const onFocus = () => loadSettings();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [loadSettings]);
 
   useEffect(() => {
     const convParam = searchParams.get('conv');
@@ -295,6 +329,7 @@ export function ChatPage() {
     const handler = (e: MouseEvent) => {
       if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) setModelOpen(false);
       if (mcpPopoverRef.current && !mcpPopoverRef.current.contains(e.target as Node)) setMcpOpen(false);
+      if (copyMenuRef.current && !copyMenuRef.current.contains(e.target as Node)) setCopyMenuId(null);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -402,6 +437,147 @@ export function ChatPage() {
       }]);
     } finally {
       updateAgentState(convId, { isStreaming: false, status: 'done' });
+    }
+  };
+
+  const handleCodeExecute = async (taskDescription: string) => {
+    let convId = activeId;
+
+    if (!convId) {
+      try {
+        const conv = await api.post<Conversation>('/api/chat/conversations', {
+          model: selectedModel, mode: 'code_execute',
+        });
+        setConversations(prev => [conv, ...prev]);
+        convId = conv.id;
+        skipNextFetchRef.current = true;
+        setActiveId(conv.id);
+      } catch (err) {
+        setMessages(prev => [...prev, {
+          id: uuid(), role: 'assistant',
+          content: `Konversation konnte nicht erstellt werden: ${(err as Error).message}`,
+          tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+        }]);
+        return;
+      }
+    }
+
+    updateAgentState(convId, { isStreaming: true, status: 'running', streamingContent: '*Verbinde mit LLM...*', thinkingContent: '' });
+    const userMsg: ChatMessage = {
+      id: uuid(), role: 'user', content: taskDescription,
+      tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+    };
+    setMessages(prev => [...prev, userMsg]);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 900_000);
+
+    try {
+      const token = getToken();
+      const url = `/api/code/conversations/${convId}/generate-and-execute`;
+      console.log('[code-execute] fetch start', { url, convId, model: selectedModel, hasToken: !!token });
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ content: taskDescription, model: selectedModel }),
+        signal: controller.signal,
+      });
+      console.log('[code-execute] fetch response', { status: resp.status, ok: resp.ok });
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => `HTTP ${resp.status}`);
+        throw new Error(errText);
+      }
+
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let generatedCode = '';
+      let thinkAcc = '';
+      let tokenAcc = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEvent = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) { currentEvent = line.slice(7).trim(); continue; }
+          if (!line.startsWith('data: ')) { if (line === '') currentEvent = ''; continue; }
+          const data = JSON.parse(line.slice(6));
+          const evt = currentEvent;
+          currentEvent = '';
+
+          if (evt === 'thinking' || (data.content !== undefined && evt === 'thinking')) {
+            thinkAcc += data.content || '';
+            updateAgentState(convId!, {
+              thinkingContent: thinkAcc,
+              streamingContent: tokenAcc ? `*Generiert...*\n\n\`\`\`python\n${tokenAcc}\n\`\`\`` : '*Modell überlegt...*',
+            });
+          } else if (evt === 'token' || (data.content !== undefined && evt === 'token')) {
+            tokenAcc += data.content || '';
+            updateAgentState(convId!, {
+              streamingContent: `*Generiert...*\n\n\`\`\`python\n${tokenAcc}\n\`\`\``,
+              thinkingContent: thinkAcc,
+            });
+          } else if (data.code) {
+            generatedCode = data.code;
+            updateAgentState(convId!, {
+              streamingContent: `**Generierter Code:**\n\`\`\`python\n${data.code}\n\`\`\`\n\n*Wird ausgeführt...*`,
+              thinkingContent: thinkAcc,
+            });
+          } else if (data.phase === 'generating') {
+            updateAgentState(convId!, { streamingContent: '*Code wird generiert...*' });
+          } else if (data.phase === 'executing') {
+            updateAgentState(convId!, {
+              streamingContent: `**Generierter Code:**\n\`\`\`python\n${generatedCode}\n\`\`\`\n\n*Sandbox-Ausführung läuft...*`,
+            });
+          } else if (data.success !== undefined) {
+            let content = `**Generierter Code:**\n\`\`\`python\n${generatedCode}\n\`\`\`\n\n`;
+            if (data.success) {
+              content += `**Ergebnis (${data.duration_seconds}s):**\n`;
+              if (data.stdout) content += `\`\`\`\n${data.stdout}\n\`\`\`\n`;
+              if (data.generated_files?.length > 0) {
+                content += `\n**Erzeugte Dateien:** ${data.generated_files.map((f: any) => f.name).join(', ')}`;
+              }
+            } else {
+              content += `**Fehler:**\n\`\`\`\n${data.stderr || data.error || 'Unbekannter Fehler'}\n\`\`\``;
+            }
+            const assistantMsg: ChatMessage = {
+              id: uuid(), role: 'assistant', content,
+              tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+              thinking: thinkAcc || null,
+            };
+            setMessages(prev => [...prev, assistantMsg]);
+            updateAgentState(convId!, { isStreaming: false, status: 'done', streamingContent: '', thinkingContent: '' });
+          } else if (data.error) {
+            setMessages(prev => [...prev, {
+              id: uuid(), role: 'assistant',
+              content: `**Fehler:** ${data.error}`,
+              tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+            }]);
+            updateAgentState(convId!, { isStreaming: false, status: 'done', streamingContent: '', thinkingContent: '' });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[code-execute] error', err);
+      const msg = (err as Error).name === 'AbortError'
+        ? 'Timeout: Keine Antwort innerhalb von 15 Minuten. Ist das LLM erreichbar bzw. blockiert ein Proxy den Stream (SSE)?'
+        : `Code-Execution Fehler: ${(err as Error).message}`;
+      setMessages(prev => [...prev, {
+        id: uuid(), role: 'assistant',
+        content: msg,
+        tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+      }]);
+    } finally {
+      clearTimeout(timeoutId);
+      updateAgentState(convId!, { isStreaming: false, status: 'done', streamingContent: '', thinkingContent: '' });
     }
   };
 
@@ -585,6 +761,8 @@ export function ChatPage() {
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
+    try {
+
     // Quick-Capture: /suche wechselt den Modus
     if (content.startsWith('/suche ')) {
       content = content.slice(7).trim();
@@ -593,7 +771,11 @@ export function ChatPage() {
 
     if (mode === 'web_search') {
       await handleWebSearch(content);
-      sendingRef.current = false;
+      return;
+    }
+
+    if (mode === 'code_execute') {
+      await handleCodeExecute(content);
       return;
     }
 
@@ -615,7 +797,6 @@ export function ChatPage() {
           content: `Konversation konnte nicht erstellt werden: ${(err as Error).message || 'Unbekannter Fehler'}`,
           tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
         }]);
-        sendingRef.current = false;
         return;
       }
     }
@@ -663,7 +844,7 @@ export function ChatPage() {
         }]);
         loadConversations();
       } finally {
-        sendingRef.current = false;
+        loadConversations();
       }
     } else {
       abortControllerRef.current?.abort();
@@ -693,8 +874,18 @@ export function ChatPage() {
       } finally {
         updateAgentState(convId, { isStreaming: false, streamingContent: '', thinkingContent: '', status: 'done' });
         loadConversations();
-        sendingRef.current = false;
       }
+    }
+
+    } catch (err) {
+      console.error('[handleSend] Unerwarteter Fehler:', err);
+      setMessages(prev => [...prev, {
+        id: uuid(), role: 'assistant',
+        content: `Unerwarteter Fehler: ${(err as Error).message}`,
+        tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+      }]);
+    } finally {
+      sendingRef.current = false;
     }
   };
 
@@ -741,19 +932,26 @@ export function ChatPage() {
     } catch { /* */ }
   };
 
-  const copyMsg = async (id: string, content: string) => {
+  const copyAsMarkdown = async (id: string, content: string) => {
     await navigator.clipboard.writeText(content);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const downloadMsg = (content: string) => {
-    const blob = new Blob([content], { type: 'text/markdown' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `chat-${new Date().toISOString().slice(0, 10)}.md`;
-    a.click();
+  const copyAsHtml = async (id: string, content: string) => {
+    const html = await markdownToHtml(content);
+    const htmlBlob = new Blob([html], { type: 'text/html' });
+    const textBlob = new Blob([content], { type: 'text/plain' });
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        'text/html': htmlBlob,
+        'text/plain': textBlob,
+      }),
+    ]);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
   };
+
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -793,6 +991,7 @@ export function ChatPage() {
 
   const modeIcon = (m: string) => {
     if (m === 'chat') return <ChatBubbleIcon className="h-4 w-4" />;
+    if (m === 'code_execute') return <CodeIcon className="h-4 w-4" />;
     if (m === 'web_search') return <SearchIcon className="h-4 w-4" />;
     if (m === 'deep_research') return <ResearchIcon className="h-4 w-4" />;
     if (m === 'agent') return <SparkleIcon className="h-4 w-4" />;
@@ -854,11 +1053,13 @@ export function ChatPage() {
                               ? 'Agent-Fehler'
                               : isAgentConversation(c)
                                 ? 'Modus: Agent (InnoPilot)'
-                                : c.mode === 'web_search'
-                                  ? 'Modus: Websuche'
-                                  : c.mode === 'deep_research'
-                                    ? 'Modus: Deep Research'
-                                    : 'Modus: Chat'
+                                : c.mode === 'code_execute'
+                                  ? 'Modus: Code Execute'
+                                  : c.mode === 'web_search'
+                                    ? 'Modus: Websuche'
+                                    : c.mode === 'deep_research'
+                                      ? 'Modus: Deep Research'
+                                      : 'Modus: Chat'
                         }
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                           agentStates[c.id]?.status === 'error'
@@ -867,11 +1068,13 @@ export function ChatPage() {
                               ? 'bg-violet-500 animate-pulse'
                               : isAgentConversation(c)
                                 ? 'bg-violet-500'
-                                : c.mode === 'web_search'
-                                  ? 'bg-emerald-500'
-                                  : c.mode === 'deep_research'
-                                    ? 'bg-amber-500'
-                                    : 'bg-indigo-500'
+                                : c.mode === 'code_execute'
+                                  ? 'bg-cyan-500'
+                                  : c.mode === 'web_search'
+                                    ? 'bg-emerald-500'
+                                    : c.mode === 'deep_research'
+                                      ? 'bg-amber-500'
+                                      : 'bg-indigo-500'
                         }`}
                       />
                       <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-400">{modelLabel(c.model)}</span>
@@ -952,6 +1155,7 @@ export function ChatPage() {
               </div>
               <p className="text-lg font-medium text-gray-600 dark:text-gray-300">
                 {mode === 'chat' && 'Was möchtest du wissen?'}
+                {mode === 'code_execute' && 'Welchen Code soll ich generieren und ausführen?'}
                 {mode === 'web_search' && 'Was soll gesucht werden?'}
                 {mode === 'deep_research' && 'Welches Thema vertiefen?'}
                 {mode === 'agent' && 'Was soll InnoPilot tun?'}
@@ -960,13 +1164,23 @@ export function ChatPage() {
 
             {/* Prominente Eingabekarte im Leerzustand */}
             <div className="w-full max-w-4xl px-4">
-              {attachments.length > 0 && (
+              {(attachments.length > 0 || contextSources.length > 0) && (
                 <div className="mb-2 flex flex-wrap gap-2">
                   {attachments.map((f, i) => (
                     <div key={i} className="flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-xs text-gray-700 shadow-sm dark:bg-gray-800 dark:text-gray-300">
                       <FileIcon className="h-3.5 w-3.5 text-gray-400" />
                       <span className="max-w-[120px] truncate">{f.name}</span>
                       <button onClick={() => removeAttachment(i)} className="ml-1 text-gray-400 hover:text-red-500"><XIcon className="h-3 w-3" /></button>
+                    </div>
+                  ))}
+                  {contextSources.map((cs, i) => (
+                    <div key={`ctx-${i}`} className="flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1.5 text-xs text-blue-700 shadow-sm dark:bg-blue-900/30 dark:text-blue-300">
+                      <OneDriveIcon className="h-3.5 w-3.5" />
+                      <span className="max-w-[160px] truncate">{cs.name}</span>
+                      {cs.type === 'onedrive_folder' && cs.fileCount && (
+                        <span className="text-[10px] opacity-70">({cs.fileCount})</span>
+                      )}
+                      <button onClick={() => setContextSources(prev => prev.filter((_, j) => j !== i))} className="ml-1 text-blue-400 hover:text-red-500"><XIcon className="h-3 w-3" /></button>
                     </div>
                   ))}
                 </div>
@@ -981,7 +1195,8 @@ export function ChatPage() {
                     mode === 'web_search' ? 'Suchbegriff eingeben...'
                       : mode === 'deep_research' ? 'Frage für Deep Research eingeben...'
                         : mode === 'agent' ? 'Aufgabe für InnoPilot eingeben...'
-                          : 'Nachricht eingeben... (/suche für Websuche)'
+                          : mode === 'code_execute' ? 'Beschreibe was der Code tun soll...'
+                            : 'Nachricht eingeben... (/suche für Websuche)'
                   }
                   rows={4}
                   className="max-h-48 min-h-[96px] w-full resize-none border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
@@ -1042,6 +1257,7 @@ export function ChatPage() {
                     {mode === 'web_search' && <span className="whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500" title="Tavily durchsucht das Web nach aktuellen Ergebnissen">via Tavily</span>}
                     <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
                     <button onClick={() => fileInputRef.current?.click()} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="Datei anhängen"><AttachIcon className="h-4 w-4" /></button>
+                    <button onClick={() => setOnedriveOpen(true)} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="OneDrive-Dateien anhängen"><OneDriveIcon className="h-4 w-4" /></button>
                     <button onClick={handleSend} disabled={!input.trim() || isStreaming} className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"><SendIcon className="h-3.5 w-3.5" /></button>
                   </div>
                 </div>
@@ -1147,10 +1363,29 @@ export function ChatPage() {
 
                     {msg.role === 'assistant' ? (
                       <div className="absolute -bottom-3 right-2 flex items-center gap-0.5 rounded-lg border border-gray-200 bg-white px-1 py-0.5 opacity-0 shadow-sm transition-opacity group-hover/msg:opacity-100 dark:border-gray-700 dark:bg-gray-800">
-                        <button onClick={() => copyMsg(msg.id, msg.content)} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Kopieren">
-                          {copiedId === msg.id ? <CheckIcon className="h-3.5 w-3.5 text-green-500" /> : <CopyIcon className="h-3.5 w-3.5" />}
-                        </button>
-                        <button onClick={() => downloadMsg(msg.content)} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Herunterladen">
+                        <div className="relative" ref={copyMenuId === msg.id ? copyMenuRef : undefined}>
+                          <div className="flex items-center">
+                            <button onClick={() => copyAsMarkdown(msg.id, msg.content)} className="rounded-l p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Als Markdown kopieren">
+                              {copiedId === msg.id ? <CheckIcon className="h-3.5 w-3.5 text-green-500" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                            </button>
+                            <button onClick={() => setCopyMenuId(copyMenuId === msg.id ? null : msg.id)} className="rounded-r p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Kopier-Optionen">
+                              <ChevronIcon className="h-2.5 w-2.5" />
+                            </button>
+                          </div>
+                          {copyMenuId === msg.id && (
+                            <div className="absolute bottom-full right-0 mb-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800 z-50">
+                              <button onClick={() => { copyAsMarkdown(msg.id, msg.content); setCopyMenuId(null); }} className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
+                                <CopyIcon className="h-3.5 w-3.5" />
+                                Als Markdown
+                              </button>
+                              <button onClick={() => { copyAsHtml(msg.id, msg.content); setCopyMenuId(null); }} className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
+                                <HtmlIcon className="h-3.5 w-3.5" />
+                                Als HTML
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <button onClick={() => { setExportMsgId(msg.id); setExportMsgContent(msg.content); }} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Herunterladen als...">
                           <DownloadIcon className="h-3.5 w-3.5" />
                         </button>
                         <button onClick={() => createTaskFromMessage(msg.id, msg.content)} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Aufgabe erstellen">
@@ -1159,7 +1394,7 @@ export function ChatPage() {
                       </div>
                     ) : (
                       <div className="absolute -bottom-3 left-2 flex items-center gap-0.5 rounded-lg border border-indigo-400/30 bg-indigo-700 px-1 py-0.5 opacity-0 shadow-sm transition-opacity group-hover/msg:opacity-100">
-                        <button onClick={() => copyMsg(msg.id, msg.content)} className="rounded p-1 text-indigo-200 hover:text-white" title="Prompt kopieren">
+                        <button onClick={() => copyAsMarkdown(msg.id, msg.content)} className="rounded p-1 text-indigo-200 hover:text-white" title="Prompt kopieren">
                           {copiedId === msg.id ? <CheckIcon className="h-3.5 w-3.5 text-green-300" /> : <CopyIcon className="h-3.5 w-3.5" />}
                         </button>
                         <button onClick={() => { setInput(msg.content); textareaRef.current?.focus(); }} className="rounded p-1 text-indigo-200 hover:text-white" title="Prompt erneut verwenden">
@@ -1227,7 +1462,7 @@ export function ChatPage() {
         )}
 
         {/* Anhänge + Eingabe nur wenn Chat aktiv (Leerzustand hat eigene Eingabe) */}
-        {(activeId || messages.length > 0) && attachments.length > 0 && (
+        {(activeId || messages.length > 0) && (attachments.length > 0 || contextSources.length > 0) && (
           <div className="border-t border-gray-200 bg-gray-50 px-4 py-2 dark:border-gray-800 dark:bg-gray-900/50">
             <div className="mx-auto flex max-w-4xl flex-wrap gap-2">
               {attachments.map((f, i) => (
@@ -1235,6 +1470,18 @@ export function ChatPage() {
                   <FileIcon className="h-3.5 w-3.5 text-gray-400" />
                   <span className="max-w-[120px] truncate">{f.name}</span>
                   <button onClick={() => removeAttachment(i)} className="ml-1 text-gray-400 hover:text-red-500">
+                    <XIcon className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              {contextSources.map((cs, i) => (
+                <div key={`ctx-${i}`} className="flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1.5 text-xs text-blue-700 shadow-sm dark:bg-blue-900/30 dark:text-blue-300">
+                  <OneDriveIcon className="h-3.5 w-3.5" />
+                  <span className="max-w-[160px] truncate">{cs.name}</span>
+                  {cs.type === 'onedrive_folder' && cs.fileCount && (
+                    <span className="text-[10px] opacity-70">({cs.fileCount})</span>
+                  )}
+                  <button onClick={() => setContextSources(prev => prev.filter((_, j) => j !== i))} className="ml-1 text-blue-400 hover:text-red-500">
                     <XIcon className="h-3 w-3" />
                   </button>
                 </div>
@@ -1256,7 +1503,8 @@ export function ChatPage() {
                   mode === 'web_search' ? 'Suchbegriff eingeben...'
                     : mode === 'deep_research' ? 'Frage für Deep Research eingeben...'
                       : mode === 'agent' ? 'Aufgabe für InnoPilot eingeben...'
-                        : 'Nachricht eingeben... (/suche für Websuche)'
+                        : mode === 'code_execute' ? 'Beschreibe was der Code tun soll...'
+                          : 'Nachricht eingeben... (/suche für Websuche)'
                 }
                 rows={1}
                 className="max-h-36 min-h-[44px] w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
@@ -1345,6 +1593,9 @@ export function ChatPage() {
                   <button onClick={() => fileInputRef.current?.click()} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="Datei anhängen">
                     <AttachIcon className="h-4 w-4" />
                   </button>
+                  <button onClick={() => setOnedriveOpen(true)} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="OneDrive-Dateien anhängen">
+                    <OneDriveIcon className="h-4 w-4" />
+                  </button>
                   <button onClick={handleSend} disabled={!input.trim() || isStreaming} className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:opacity-40">
                     <SendIcon className="h-3.5 w-3.5" />
                   </button>
@@ -1369,6 +1620,21 @@ export function ChatPage() {
         onClose={() => setBgPickerOpen(false)}
         currentUrl={bgUrl}
         onSelect={(url) => handleBgSelect(url)}
+      />
+
+      {exportMsgId && (
+        <ExportDialog
+          isOpen={true}
+          onClose={() => setExportMsgId(null)}
+          messageId={exportMsgId}
+          messageContent={exportMsgContent}
+        />
+      )}
+
+      <OneDrivePicker
+        isOpen={onedriveOpen}
+        onClose={() => setOnedriveOpen(false)}
+        onSelect={(sources) => setContextSources(prev => [...prev, ...sources])}
       />
     </div>
   );
@@ -1425,11 +1691,20 @@ function BrainIcon({ className }: { className?: string }) {
 function TaskIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>;
 }
+function HtmlIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5" /></svg>;
+}
+function OneDriveIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 0 0 4.5 4.5H18a3.75 3.75 0 0 0 1.332-7.257 3 3 0 0 0-3.758-3.848 5.25 5.25 0 0 0-10.233 2.33A4.502 4.502 0 0 0 2.25 15Z" /></svg>;
+}
 function RefreshIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" /></svg>;
 }
 function ChatBubbleIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" /></svg>;
+}
+function CodeIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>;
 }
 function SearchIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>;

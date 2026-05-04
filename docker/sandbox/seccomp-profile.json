@@ -1,0 +1,49 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    {"architecture": "SCMP_ARCH_X86_64", "subArchitectures": ["SCMP_ARCH_X86", "SCMP_ARCH_X32"]}
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "read", "write", "close", "fstat", "lseek", "mmap", "mprotect",
+        "munmap", "brk", "rt_sigaction", "rt_sigprocmask", "ioctl",
+        "access", "pipe", "select", "sched_yield", "mremap", "msync",
+        "mincore", "madvise", "dup", "dup2", "nanosleep", "getpid",
+        "sendfile", "socket", "connect", "accept", "sendto", "recvfrom",
+        "sendmsg", "recvmsg", "shutdown", "bind", "listen", "getsockname",
+        "getpeername", "setsockopt", "getsockopt",
+        "clone", "fork", "vfork", "execve",
+        "exit", "wait4", "kill", "uname",
+        "fcntl", "flock", "fsync", "fdatasync", "truncate", "ftruncate",
+        "getdents", "getcwd", "chdir", "rename", "mkdir", "rmdir",
+        "creat", "link", "unlink", "symlink", "readlink", "chmod",
+        "fchmod", "chown", "fchown", "lchown", "umask",
+        "gettimeofday", "getrlimit", "getrusage", "sysinfo", "times",
+        "getuid", "getgid", "geteuid", "getegid", "getppid", "getpgrp",
+        "setpgid", "getgroups",
+        "sigaltstack", "statfs", "fstatfs",
+        "arch_prctl", "set_tid_address", "set_robust_list",
+        "futex", "sched_getaffinity", "epoll_create", "epoll_ctl",
+        "epoll_wait", "clock_gettime", "clock_getres", "clock_nanosleep",
+        "exit_group", "tgkill", "openat", "mkdirat", "newfstatat",
+        "unlinkat", "renameat", "readlinkat", "fchmodat", "faccessat",
+        "pselect6", "ppoll", "epoll_create1", "eventfd2", "pipe2",
+        "dup3", "accept4", "epoll_pwait", "getrandom",
+        "memfd_create", "copy_file_range", "statx",
+        "pread64", "pwrite64", "writev", "readv",
+        "poll", "lstat", "stat", "open"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "names": ["ptrace", "mount", "umount2", "pivot_root", "swapon", "swapoff",
+               "reboot", "sethostname", "setdomainname", "init_module",
+               "delete_module", "kexec_load", "perf_event_open",
+               "unshare", "setns"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    }
+  ]
+}

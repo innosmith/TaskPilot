@@ -9,6 +9,15 @@ if ((navigator as any).standalone || window.matchMedia('(display-mode: standalon
   document.documentElement.classList.add('standalone');
 }
 
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(registrations => {
+    for (const reg of registrations) {
+      reg.unregister();
+      console.log('[SW] Deregistriert:', reg.scope);
+    }
+  });
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider>

@@ -114,8 +114,11 @@ async def create_conversation(
     db: AsyncSession = Depends(get_db),
 ):
     """Neue Konversation erstellen."""
+    from app.services.llm_defaults import get_default_local_model_from_settings
+
     settings = user.settings or {}
-    default_model = settings.get("llm_default_model", "ollama/qwen3.5:35b")
+    fallback = get_default_local_model_from_settings(settings)
+    default_model = settings.get("llm_default_model") or fallback
     default_temp = settings.get("llm_default_temperature", 0.7)
 
     conv = LlmConversation(

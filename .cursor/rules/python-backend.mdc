@@ -39,6 +39,24 @@ alwaysApply: false
 - Registrierung im Lifespan-Hook in `main.py`
 - Beispiele: `nanobot_bridge`, `recurring`, `triage`
 
+## Document Export (`routers/export.py`)
+- Private Packages `mdconverter` und `md2powerpoint` werden als editable installiert
+- Im Docker via `vendor/`-Ordner eingebunden (siehe `docker/build.sh`)
+- Pandoc: via `pypandoc_binary` (Python-Package), Symlink in venv/bin nötig
+- LibreOffice: via apt im Docker-Image (für PDF-Konvertierung)
+- Temporäre Dateien unter `/tmp/taskpilot-exports/`
+
+## OneDrive-Integration (`routers/onedrive.py`)
+- Nutzt `GraphClient` aus `src/email-graph/graph_client.py`
+- Nur Lese-Zugriff (List, Search, Metadata)
+- Schreibzugriff auf OneDrive: nur über Agent mit L1 (HITL-Freigabe)
+
+## Context Resolver (`services/context_resolver.py`)
+- Löst OneDrive-Dateien und lokale Uploads als LLM-Kontext auf
+- Limits: 100'000 Zeichen, max. 20 Dateien pro Request
+- Path-Traversal-Schutz: nur `uploads/`-Verzeichnis für lokale Dateien
+- Unterstützt PDF- und DOCX-Textextraktion
+
 ## Neue Tabellen/Spalten
 1. SQL in `db/schema.sql` ergänzen
 2. SQLAlchemy Model in `models/models.py` + Export in `__init__.py`
@@ -72,3 +90,17 @@ Tests liegen in `src/backend/tests/`. Aktuell existieren:
 - **Kein DB** in Tests -- kein `async_session()`, nur isolierte Funktionen
 - Tests nur für **neuralgische Punkte** (Kontextaufbereitung, Prompt-Qualität, API-Fallbacks)
 - `conftest.py` setzt `sys.path` für Imports aus `src/email-graph/` und `src/mcp-graph/`
+
+### Wann Tests schreiben
+- Neue Router mit Geschäftslogik (Markdown-Vorformatierung, Kontext-Auflösung)
+- Externe API-Integrationen (Graph, Pipedrive, Bexio) — immer gemockt
+- Sicherheitskritische Funktionen (Path-Traversal-Schutz, Allowlists)
+- **Nicht** für reine CRUD-Endpoints oder UI-Wrapper
+
+### Tests ausführen
+```bash
+cd /home/innosmith/dev/github/TaskPilot/src/backend
+python -m pytest tests/ -v                    # alle Tests
+python -m pytest tests/test_export.py -v      # einzelne Datei
+python -m pytest tests/ -k "graph" -v         # nach Keyword
+```

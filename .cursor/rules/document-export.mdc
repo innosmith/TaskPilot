@@ -1,0 +1,48 @@
+---
+description: Document-Export-Pipeline (Word, PDF, PowerPoint)
+globs: "**/export*.{py,tsx}"
+alwaysApply: false
+---
+
+# Document Export
+
+## Architektur
+
+```
+ChatPage → ExportDialog → POST /api/chat/messages/{id}/export
+                                    ↓
+                        ┌──────────────────────┐
+                        │  prepare_markdown_*   │  ← Markdown vorformatieren
+                        └──────────────────────┘
+                           ↓            ↓
+                      mdconverter    md2powerpoint
+                      (Word/PDF)      (PowerPoint)
+```
+
+## Backend: `routers/export.py`
+
+- `prepare_markdown_for_docx()` fügt YAML-Frontmatter und optionalen Titelblock hinzu
+- mdconverter erwartet: `# Titel`, `## Untertitel`, Metadaten-Tabelle, `---`, dann Content
+- Struktur-Referenz: `/home/innosmith/dev/github/mdConverter/examples/STRUKTUR.md`
+- Temporäre Dateien unter `/tmp/taskpilot-exports/`
+
+## mdconverter (privat)
+
+- Pfad: `/home/innosmith/dev/github/mdConverter`
+- API: `from mdconverter import convert, convert_to_pdf`
+- Benötigt: **Pandoc** (via `pypandoc_binary`), **LibreOffice** (für PDF)
+- Templates: `mdConverter/templates/`
+
+## md2powerpoint (privat)
+
+- Pfad: `/home/innosmith/dev/github/md2powerpoint`
+- API: `from md2powerpoint.parser import parse_markdown` + `classifier.classify_slides` + `builder.build_presentation`
+- Input: Slide-Script-Format (Slides durch `---` getrennt)
+- Benötigt: PPTX-Template-Datei
+
+## Frontend: `components/ExportDialog.tsx`
+
+- Format-Auswahl: Markdown, DOCX, PDF, PPTX
+- Dokumentoptionen: Titelseite, Inhaltsverzeichnis, Template, Titel, Autor
+- Dateiname konfigurierbar
+- PPTX: Zeigt Slide-Count-Preview und Hinweis auf Slide-Script-Format

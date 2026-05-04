@@ -1,0 +1,52 @@
+---
+description: Docker-Deployment, Dependencies und Build-Prozess
+alwaysApply: false
+---
+
+# Deployment & Dependencies
+
+## Dependency-Dateien
+
+| Datei | Inhalt |
+|-------|--------|
+| `src/backend/requirements.txt` | Alle Python-Dependencies (gepinnt mit Mindestversionen) |
+| `src/frontend/package.json` | Alle Node-Dependencies |
+| `docker/Dockerfile.backend` | Backend-Image (Python 3.12-slim + System-Deps) |
+| `docker/Dockerfile.frontend` | Frontend-Image (Node 20 → Nginx) |
+| `docker/docker-compose.dev.yml` | Dev: nur PostgreSQL + LiteLLM |
+| `docker/docker-compose.prod.yml` | Prod: PostgreSQL + Backend + Frontend |
+
+## Neue Dependencies hinzufügen
+
+1. **Python-Package:** In `requirements.txt` eintragen UND im venv installieren
+2. **System-Package (apt):** In `Dockerfile.backend` im `RUN apt-get` Block ergänzen
+3. **npm-Package:** `cd src/frontend && npm install <package>`
+4. **Pandoc:** Kommt via `pypandoc_binary` (Python-Package), nicht via apt. Symlink in venv nötig.
+
+## Private Packages (mdconverter, md2powerpoint)
+
+Diese Repos sind privat und dürfen nicht in öffentliche Images/Registries:
+
+- Lokal installieren: `pip install -e /home/innosmith/dev/github/mdConverter`
+- Docker-Build: `docker/build.sh` kopiert sie nach `src/backend/vendor/` (ohne `.git`)
+- `vendor/` ist in `.gitignore` — nie committen
+
+```bash
+# Build vorbereiten + Image bauen
+./docker/build.sh
+docker compose -f docker/docker-compose.prod.yml build
+```
+
+## System-Dependencies im Docker-Image
+
+| Package | Zweck |
+|---------|-------|
+| `libpq-dev` + `gcc` | PostgreSQL-Client (asyncpg/psycopg) |
+| `libreoffice-writer` | DOCX→PDF-Konvertierung |
+| `fonts-liberation` | Standard-Fonts für LibreOffice |
+
+## Wichtig
+
+- **Keine `sudo apt install` als Lösung** — alles muss über requirements.txt oder Dockerfile reproduzierbar sein
+- Bei neuen System-Dependencies immer requirements.txt + Dockerfile gleichzeitig aktualisieren
+- Vor Merge prüfen: `pip install -r requirements.txt` in frischem venv muss funktionieren

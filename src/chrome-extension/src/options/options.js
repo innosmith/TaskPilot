@@ -1,0 +1,55 @@
+/**
+ * TaskPilot LinkedIn Sync – Options Page
+ */
+
+const backendUrlInput = document.getElementById('backend-url');
+const apiTokenInput = document.getElementById('api-token');
+const statusEl = document.getElementById('status');
+
+function showStatus(message, type) {
+  statusEl.textContent = message;
+  statusEl.className = `status ${type}`;
+  statusEl.classList.remove('hidden');
+  setTimeout(() => statusEl.classList.add('hidden'), 5000);
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  const stored = await chrome.storage.sync.get(['backendUrl', 'apiToken']);
+  backendUrlInput.value = stored.backendUrl || 'http://localhost:8000';
+  apiTokenInput.value = stored.apiToken || '';
+});
+
+document.getElementById('btn-save').addEventListener('click', async () => {
+  const backendUrl = backendUrlInput.value.trim().replace(/\/+$/, '');
+  const apiToken = apiTokenInput.value.trim();
+
+  if (!backendUrl) {
+    showStatus('Backend-URL darf nicht leer sein.', 'error');
+    return;
+  }
+  if (!apiToken) {
+    showStatus('API-Token darf nicht leer sein.', 'error');
+    return;
+  }
+
+  await chrome.storage.sync.set({ backendUrl, apiToken });
+  showStatus('Einstellungen gespeichert.', 'success');
+});
+
+document.getElementById('btn-test').addEventListener('click', async () => {
+  statusEl.textContent = 'Teste Verbindung…';
+  statusEl.className = 'status';
+  statusEl.classList.remove('hidden');
+
+  const result = await new Promise((resolve) => {
+    chrome.runtime.sendMessage({ action: 'testConnection' }, resolve);
+  });
+
+  if (result.error) {
+    showStatus(`Fehler: ${result.error}`, 'error');
+  } else if (result.data && result.data.ok) {
+    showStatus(`Verbunden als ${result.data.name} (${result.data.company})`, 'success');
+  } else {
+    showStatus('Verbindung fehlgeschlagen.', 'error');
+  }
+});

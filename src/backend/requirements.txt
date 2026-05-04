@@ -1,33 +1,68 @@
-# FastAPI + ASGI
-fastapi>=0.115
-uvicorn[standard]>=0.34
+# ── FastAPI + ASGI ──
+fastapi>=0.136
+uvicorn[standard]>=0.46
+sse-starlette>=3.3
 
-# Database
+# ── Database ──
 sqlalchemy[asyncio]>=2.0
-asyncpg>=0.30
-psycopg[binary]>=3.2
-alembic>=1.14
+asyncpg>=0.31
+psycopg[binary]>=3.3
+alembic>=1.18
 
-# Auth
-python-jose[cryptography]>=3.3
-bcrypt>=4.0
-python-multipart>=0.0.18
+# ── Auth ──
+python-jose[cryptography]>=3.5
+bcrypt>=5.0
+python-multipart>=0.0.26
 
-# Validation & Settings
-pydantic>=2.10
-pydantic-settings>=2.7
+# ── Validation & Settings ──
+pydantic>=2.12
+pydantic-settings>=2.14
 
-# Utilities
+# ── HTTP & Networking ──
 httpx>=0.28
-sse-starlette>=2.1
-websockets>=14.0
-croniter>=5.0
+websockets>=16.0
 cachetools>=7.0
 
-# PDF-Extraktion (MCP download_file)
+# ── LLM & Agent ──
+litellm>=1.83
+openai>=2.24
+anthropic>=0.97
+tiktoken>=0.12
+
+# ── MCP (Model Context Protocol) ──
+mcp>=1.27
+
+# ── Markdown & Content ──
+Markdown>=3.10
+
+# ── Document Export ──
+# mdconverter: privates Package, lokal installieren via
+#   pip install -e /path/to/mdConverter
+# md2powerpoint: privates Package, lokal installieren via
+#   pip install -e /path/to/md2powerpoint
+# Deren transitive Dependencies:
+python-docx>=1.2
+python-pptx>=1.0
+pyyaml>=6.0
+
+# Pandoc (als Python-Package mit gebündeltem Binary — kein apt nötig)
+pypandoc_binary>=1.17
+
+# System-Dependencies für Document Export (siehe Dockerfile):
+#   - libreoffice   (apt: libreoffice-writer) → PDF-Konvertierung via docx→pdf
+#   - pandoc wird via pypandoc_binary mitgeliefert, Symlink in venv/bin nötig
+
+# ── PDF-Extraktion (OneDrive-Downloads) ──
 pymupdf>=1.27
 
-# Testing
-pytest>=8.0
-pytest-asyncio>=0.24
-respx>=0.22
+# ── Web Search ──
+ddgs>=9.14
+
+# ── Scheduling ──
+croniter>=6.2
+APScheduler>=3.11
+
+# ── Testing ──
+pytest>=9.0
+pytest-asyncio>=1.3
+respx>=0.23

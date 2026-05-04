@@ -92,10 +92,15 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
     onUpdated();
   }, [task, taskId, onUpdated]);
 
+  const [defaultLocalModel, setDefaultLocalModel] = useState('');
+
   useEffect(() => {
     api.get<ModelsData>('/api/models').then(setModels).catch(() => {});
     api.get<Project[]>('/api/projects').then(setAllProjects).catch(() => {});
     api.get<PipelineData>('/api/pipeline').then((d) => setPipelineCols(d.columns)).catch(() => {});
+    api.get<{ llm_default_local_model: string | null }>('/api/settings/llm')
+      .then(s => { if (s.llm_default_local_model) setDefaultLocalModel(s.llm_default_local_model); })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -593,7 +598,7 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                     <h4 className="text-[11px] font-semibold uppercase tracking-wider text-violet-600 dark:text-violet-400">Agent-Konfiguration</h4>
                     <AttrRow icon={AgentSmallIcon} label="LLM-Modell">
                       <select value={task.llm_override || ''} onChange={(e) => updateTask({ llm_override: e.target.value || undefined } as TaskUpdatePayload)} className={ATTR_SELECT}>
-                        <option value="">Standard (lokal)</option>
+                        <option value="">{defaultLocalModel ? `Standard (${defaultLocalModel.replace('ollama/', '')})` : 'Standard (lokal)'}</option>
                         {models && (
                           <>
                             <optgroup label="Lokal (Datenschutz)">

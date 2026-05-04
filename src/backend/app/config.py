@@ -59,7 +59,7 @@ class Settings(BaseSettings):
 
     # LiteLLM Gateway
     litellm_base_url: str = "http://localhost:4000"
-    triage_model: str = "ollama/qwen3.5:35b"
+    triage_model: str = "ollama/qwen3.6:latest"  # Legacy — wird durch llm_default_local_model ersetzt
 
     # Pipedrive CRM
     pipedrive_api_token: str = ""
@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     # Triage
     triage_interval_seconds: int = 120
     chat_triage_interval_seconds: int = 300
+
+    # Document Export (mdConverter + md2powerpoint)
+    mdconverter_path: str = "/home/innosmith/dev/github/mdConverter"
+    md2powerpoint_path: str = "/home/innosmith/dev/github/md2powerpoint"
+    pptx_template_dir: str = "/home/innosmith/dev/github/md2powerpoint/templates"
 
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env.dev"),

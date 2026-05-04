@@ -186,10 +186,11 @@ class LlmProviderConfig(BaseModel):
 class LlmSettingsPayload(BaseModel):
     llm_providers: dict[str, LlmProviderConfig] | None = None
     llm_default_model: str | None = None
+    llm_default_local_model: str | None = None
     llm_default_temperature: float | None = None
 
 
-LLM_FIELDS = ["llm_providers", "llm_default_model", "llm_default_temperature"]
+LLM_FIELDS = ["llm_providers", "llm_default_model", "llm_default_local_model", "llm_default_temperature"]
 
 
 @router.get("/llm", response_model=LlmSettingsPayload)
@@ -207,6 +208,7 @@ async def get_llm_settings(
     return LlmSettingsPayload(
         llm_providers=providers,
         llm_default_model=s.get("llm_default_model"),
+        llm_default_local_model=s.get("llm_default_local_model"),
         llm_default_temperature=s.get("llm_default_temperature"),
     )
 
@@ -245,5 +247,6 @@ async def update_llm_settings(
     return LlmSettingsPayload(
         llm_providers=providers,
         llm_default_model=current.get("llm_default_model"),
+        llm_default_local_model=current.get("llm_default_local_model"),
         llm_default_temperature=current.get("llm_default_temperature"),
     )

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=400">
+  <link rel="stylesheet" href="popup.css">
+  <title>TaskPilot LinkedIn Sync</title>
+</head>
+<body>
+  <div class="popup">
+    <!-- Header mit InnoSmith Branding -->
+    <header class="header">
+      <div class="header-brand">
+        <div class="header-icon">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+        </div>
+        <div>
+          <div class="header-title">LinkedIn Sync</div>
+          <div class="header-subtitle">Powered by <a href="https://innosmith.ch" target="_blank" rel="noopener">InnoSmith.ch</a></div>
+        </div>
+      </div>
+      <button class="btn-icon" id="btn-settings" title="Einstellungen">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </header>
+
+    <!-- Zustand 0: Nicht auf LinkedIn -->
+    <div id="state-not-linkedin" class="state hidden">
+      <div class="message info">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>Bitte eine LinkedIn-Profilseite öffnen.</span>
+      </div>
+    </div>
+
+    <!-- Zustand: Laden -->
+    <div id="state-loading" class="state hidden">
+      <div class="loading-container">
+        <div class="spinner"></div>
+        <span>Suche in Pipedrive…</span>
+      </div>
+    </div>
+
+    <!-- Zustand 1: Neuer Kontakt -->
+    <div id="state-new" class="state hidden">
+      <div class="profile-card">
+        <img id="new-avatar" class="avatar" src="" alt="">
+        <div class="profile-info">
+          <input id="new-name" class="input-inline input-name" placeholder="Name">
+          <input id="new-job-title" class="input-inline" placeholder="Rolle / Titel">
+          <select id="new-org" class="select-org"></select>
+          <input id="new-location" class="input-inline input-small" placeholder="Ort">
+        </div>
+      </div>
+      <button id="btn-create" class="btn btn-primary">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+        Kontakt erstellen
+      </button>
+    </div>
+
+    <!-- Zustand 2: Kontakt existiert, keine Aenderungen -->
+    <div id="state-exists" class="state hidden">
+      <div class="message success">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <span>Kontakt in Pipedrive vorhanden</span>
+      </div>
+      <div class="existing-card">
+        <img id="exists-avatar" class="avatar-small" src="" alt="">
+        <div>
+          <div id="exists-name" class="text-bold"></div>
+          <div id="exists-org" class="text-muted"></div>
+        </div>
+      </div>
+      <a id="exists-link" href="#" target="_blank" class="btn btn-secondary">In Pipedrive öffnen</a>
+    </div>
+
+    <!-- Zustand 3: Kontakt existiert, Aenderungen erkannt -->
+    <div id="state-update" class="state hidden">
+      <div class="message warning">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Änderungen erkannt</span>
+      </div>
+      <div class="existing-card">
+        <img id="update-avatar" class="avatar-small" src="" alt="">
+        <div>
+          <div id="update-name" class="text-bold"></div>
+          <div id="update-org" class="text-muted"></div>
+        </div>
+      </div>
+      <div id="diff-list" class="diff-list"></div>
+      <button id="btn-update" class="btn btn-primary">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+        Ausgewählte Felder aktualisieren
+      </button>
+      <a id="update-link" href="#" target="_blank" class="btn btn-secondary btn-sm">In Pipedrive öffnen</a>
+    </div>
+
+    <!-- Zustand: Mehrere Treffer -->
+    <div id="state-multiple" class="state hidden">
+      <div class="message warning">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>Mehrere mögliche Treffer</span>
+      </div>
+      <div id="multiple-list" class="multiple-list"></div>
+      <button id="btn-create-anyway" class="btn btn-outline">Trotzdem als neuen Kontakt erstellen</button>
+    </div>
+
+    <!-- Zustand: Erfolg -->
+    <div id="state-success" class="state hidden">
+      <div class="message success">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <span id="success-text"></span>
+      </div>
+      <a id="success-link" href="#" target="_blank" class="btn btn-primary">In Pipedrive öffnen</a>
+    </div>
+
+    <!-- Zustand: Fehler -->
+    <div id="state-error" class="state hidden">
+      <div class="message error">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        <span id="error-text"></span>
+      </div>
+      <button id="btn-retry" class="btn btn-secondary">Erneut versuchen</button>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span class="footer-text">TaskPilot · <a href="https://innosmith.ch" target="_blank" rel="noopener">innosmith.ch</a></span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

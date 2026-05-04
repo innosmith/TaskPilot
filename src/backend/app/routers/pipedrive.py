@@ -6,8 +6,10 @@ Zweistufiges In-Memory-Caching reduziert API-Token-Verbrauch massiv.
 """
 
 import logging
+import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -525,6 +527,318 @@ async def batch_lookup_emails(
                 pass
 
     return results
+
+
+# ── LinkedIn Sync ─────────────────────────────────────
+
+# Field-Key-Cache (LinkedIn-Feld-Key aendert sich nie)
+_field_key_cache: TTLCache = TTLCache(maxsize=20, ttl=86400)
+
+
+def _normalize_linkedin_url(url: str) -> str:
+    """LinkedIn-URL normalisieren fuer zuverlaessigen Vergleich."""
+    url = url.split("?")[0].rstrip("/")
+    url = re.sub(r"^https?://(www\.)?", "", url)
+    return url.lower()
+
+
+async def _resolve_linkedin_field_key(client) -> str | None:
+    """LinkedIn-Feld-Key dynamisch aus Pipedrive personFields ermitteln."""
+    cached = _field_key_cache.get("linkedin_key")
+    if cached:
+        return cached
+    try:
+        fields = await client.list_person_fields()
+        for f in fields:
+            name = (f.get("name") or "").lower().strip()
+            if name in ("linkedin", "linkedin url", "linkedin-url", "linkedin profil"):
+                key = f.get("key")
+                if key:
+                    _field_key_cache["linkedin_key"] = key
+                    return key
+    except Exception as exc:
+        logger.warning("Konnte LinkedIn-Field-Key nicht ermitteln: %s", exc)
+    return None
+
+
+async def _resolve_role_field_key(client) -> str | None:
+    """Rolle-Feld-Key dynamisch aus Pipedrive personFields ermitteln."""
+    cached = _field_key_cache.get("role_key")
+    if cached:
+        return cached
+    try:
+        fields = await client.list_person_fields()
+        for f in fields:
+            name = (f.get("name") or "").lower().strip()
+            if name in ("rolle", "role", "job title", "titel"):
+                key = f.get("key")
+                if key:
+                    _field_key_cache["role_key"] = key
+                    return key
+    except Exception as exc:
+        logger.warning("Konnte Rolle-Field-Key nicht ermitteln: %s", exc)
+    return None
+
+
+class FieldDiff(BaseModel):
+    field: str
+    field_label: str
+    old_value: str | None = None
+    new_value: str | None = None
+
+
+class MatchedPerson(BaseModel):
+    person_id: int
+    name: str
+    org_name: str | None = None
+    job_title: str | None = None
+    linkedin_url: str | None = None
+    pic_url: str | None = None
+    pipedrive_url: str
+    changes: list[FieldDiff] = []
+
+
+class LinkedInLookupRequest(BaseModel):
+    name: str
+    linkedin_url: str | None = None
+    org_name: str | None = None
+    job_title: str | None = None
+    profile_image_url: str | None = None
+
+
+class LinkedInLookupResponse(BaseModel):
+    match_type: str  # "linkedin_url" | "name" | "none"
+    matches: list[MatchedPerson] = []
+
+
+@router.post("/linkedin-lookup", response_model=LinkedInLookupResponse)
+async def linkedin_lookup(
+    body: LinkedInLookupRequest,
+    user: User = Depends(get_current_user),
+):
+    """LinkedIn-Profil in Pipedrive suchen: zuerst per LinkedIn-URL, dann per Name."""
+    client = _get_pipedrive_client(user)
+    domain = (user.settings or {}).get("pipedrive_domain", "innosmith")
+    linkedin_key = await _resolve_linkedin_field_key(client)
+    role_key = await _resolve_role_field_key(client)
+
+    def _build_pipedrive_url(pid: int) -> str:
+        return f"https://{domain}.pipedrive.com/person/{pid}"
+
+    def _get_field_value(person: dict, key: str | None) -> str | None:
+        if not key:
+            return None
+        val = person.get(key)
+        return str(val).strip() if val else None
+
+    def _compute_diff(person: dict) -> list[FieldDiff]:
+        diffs: list[FieldDiff] = []
+        old_li = _get_field_value(person, linkedin_key) or ""
+        new_li = body.linkedin_url or ""
+        if new_li and _normalize_linkedin_url(old_li) != _normalize_linkedin_url(new_li):
+            diffs.append(FieldDiff(field="linkedin_url", field_label="LinkedIn",
+                                   old_value=old_li or None, new_value=new_li))
+
+        old_role = _get_field_value(person, role_key) or ""
+        new_role = body.job_title or ""
+        if new_role and old_role.lower().strip() != new_role.lower().strip():
+            diffs.append(FieldDiff(field="job_title", field_label="Rolle",
+                                   old_value=old_role or None, new_value=new_role))
+
+        old_org = ""
+        org_data = person.get("org_id") or person.get("org_name")
+        if isinstance(org_data, dict):
+            old_org = org_data.get("name", "")
+        elif isinstance(org_data, str):
+            old_org = org_data
+        new_org = body.org_name or ""
+        if new_org and old_org.lower().strip() != new_org.lower().strip():
+            diffs.append(FieldDiff(field="org_name", field_label="Organisation",
+                                   old_value=old_org or None, new_value=new_org))
+
+        old_pic = _extract_pic_url(person)
+        if body.profile_image_url and not old_pic:
+            diffs.append(FieldDiff(field="picture", field_label="Profilbild",
+                                   old_value=None, new_value="vorhanden"))
+        return diffs
+
+    def _person_to_match(person: dict) -> MatchedPerson:
+        org = person.get("org_id") or {}
+        org_name = org.get("name") if isinstance(org, dict) else person.get("org_name", "")
+        return MatchedPerson(
+            person_id=person.get("id", 0),
+            name=person.get("name", ""),
+            org_name=org_name,
+            job_title=_get_field_value(person, role_key),
+            linkedin_url=_get_field_value(person, linkedin_key),
+            pic_url=_extract_pic_url(person),
+            pipedrive_url=_build_pipedrive_url(person.get("id", 0)),
+            changes=_compute_diff(person),
+        )
+
+    # Phase 1: Suche per LinkedIn-URL (eindeutigster Match)
+    if body.linkedin_url and linkedin_key:
+        slug = urlparse(body.linkedin_url).path.rstrip("/").split("/")[-1]
+        if slug:
+            try:
+                results = await client.search_items(slug, "person", 10)
+                for item in results:
+                    item_data = item.get("item", item)
+                    pid = item_data.get("id")
+                    if pid:
+                        person = await client.get_person_v1(pid)
+                        stored_url = _get_field_value(person, linkedin_key) or ""
+                        if _normalize_linkedin_url(stored_url) == _normalize_linkedin_url(body.linkedin_url):
+                            return LinkedInLookupResponse(
+                                match_type="linkedin_url",
+                                matches=[_person_to_match(person)],
+                            )
+            except Exception as exc:
+                logger.debug("LinkedIn-URL-Suche fehlgeschlagen: %s", exc)
+
+    # Phase 2: Suche per Name
+    try:
+        results = await client.search_items(body.name, "person", 10)
+        matches = []
+        for item in results:
+            item_data = item.get("item", item)
+            pid = item_data.get("id")
+            if pid:
+                person = await client.get_person_v1(pid)
+                matches.append(_person_to_match(person))
+        if matches:
+            return LinkedInLookupResponse(match_type="name", matches=matches)
+    except Exception as exc:
+        logger.debug("Name-Suche fehlgeschlagen: %s", exc)
+
+    return LinkedInLookupResponse(match_type="none", matches=[])
+
+
+class LinkedInSyncRequest(BaseModel):
+    action: str  # "create" | "update"
+    person_id: int | None = None
+    name: str
+    org_name: str | None = None
+    job_title: str | None = None
+    linkedin_url: str | None = None
+    profile_image_url: str | None = None
+    update_fields: list[str] | None = None
+
+
+class LinkedInSyncResponse(BaseModel):
+    person_id: int
+    name: str
+    action: str  # "created" | "updated"
+    pipedrive_url: str
+    fields_updated: list[str] = []
+
+
+@router.post("/linkedin-sync", response_model=LinkedInSyncResponse)
+async def linkedin_sync(
+    body: LinkedInSyncRequest,
+    user: User = Depends(get_current_user),
+):
+    """LinkedIn-Kontakt in Pipedrive erstellen oder aktualisieren."""
+    client = _get_pipedrive_client(user)
+    domain = (user.settings or {}).get("pipedrive_domain", "innosmith")
+    linkedin_key = await _resolve_linkedin_field_key(client)
+    role_key = await _resolve_role_field_key(client)
+
+    import httpx as _httpx
+
+    async def _download_image(url: str) -> bytes | None:
+        try:
+            async with _httpx.AsyncClient(timeout=15.0, follow_redirects=True) as http:
+                resp = await http.get(url)
+                if resp.status_code == 200 and len(resp.content) > 500:
+                    return resp.content
+        except Exception as exc:
+            logger.warning("Bild-Download fehlgeschlagen (%s): %s", url[:80], exc)
+        return None
+
+    async def _resolve_org_id(org_name: str) -> int | None:
+        try:
+            orgs = await client.search_items(org_name, "organization", 1)
+            if orgs:
+                return orgs[0].get("item", orgs[0]).get("id")
+        except Exception:
+            pass
+        return None
+
+    if body.action == "create":
+        kwargs: dict = {}
+
+        if body.org_name:
+            org_id = await _resolve_org_id(body.org_name)
+            if org_id:
+                kwargs["org_id"] = org_id
+
+        if linkedin_key and body.linkedin_url:
+            kwargs[linkedin_key] = body.linkedin_url
+        if role_key and body.job_title:
+            kwargs[role_key] = body.job_title
+
+        person = await client.create_person(body.name, **kwargs)
+        person_id = person.get("id", 0)
+
+        if body.profile_image_url and person_id:
+            image_data = await _download_image(body.profile_image_url)
+            if image_data:
+                try:
+                    await client.upload_person_picture(person_id, image_data)
+                except Exception as exc:
+                    logger.warning("Profilbild-Upload fehlgeschlagen: %s", exc)
+
+        _person_cache.clear()
+        return LinkedInSyncResponse(
+            person_id=person_id,
+            name=person.get("name", body.name),
+            action="created",
+            pipedrive_url=f"https://{domain}.pipedrive.com/person/{person_id}",
+            fields_updated=["name", "org", "linkedin_url", "job_title", "picture"],
+        )
+
+    elif body.action == "update" and body.person_id:
+        update_fields = set(body.update_fields or [])
+        kwargs = {}
+        updated: list[str] = []
+
+        if "org_name" in update_fields and body.org_name:
+            org_id = await _resolve_org_id(body.org_name)
+            if org_id:
+                kwargs["org_id"] = org_id
+                updated.append("org_name")
+
+        if "linkedin_url" in update_fields and linkedin_key and body.linkedin_url:
+            kwargs[linkedin_key] = body.linkedin_url
+            updated.append("linkedin_url")
+
+        if "job_title" in update_fields and role_key and body.job_title:
+            kwargs[role_key] = body.job_title
+            updated.append("job_title")
+
+        if kwargs:
+            await client.update_person(body.person_id, **kwargs)
+
+        if "picture" in update_fields and body.profile_image_url:
+            image_data = await _download_image(body.profile_image_url)
+            if image_data:
+                try:
+                    await client.upload_person_picture(body.person_id, image_data)
+                    updated.append("picture")
+                except Exception as exc:
+                    logger.warning("Profilbild-Upload fehlgeschlagen: %s", exc)
+
+        _person_cache.clear()
+        return LinkedInSyncResponse(
+            person_id=body.person_id,
+            name=body.name,
+            action="updated",
+            pipedrive_url=f"https://{domain}.pipedrive.com/person/{body.person_id}",
+            fields_updated=updated,
+        )
+
+    raise HTTPException(status_code=400, detail="Ungueltige Aktion oder fehlende person_id")
 
 
 # ── Cache-Verwaltung ──────────────────────────────────

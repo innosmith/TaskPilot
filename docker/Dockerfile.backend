@@ -2,13 +2,37 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# System-Dependencies:
+#   libpq-dev/gcc   → PostgreSQL-Client für asyncpg/psycopg
+#   libreoffice     → DOCX→PDF-Konvertierung (mdconverter)
+#   fonts-liberation→ Standard-Fonts für LibreOffice-Rendering
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc \
+    libreoffice-writer libreoffice-common fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
+# Python-Dependencies (inkl. pypandoc_binary → bringt Pandoc als Python-Package mit)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pandoc-Symlink: mdconverter ruft `pandoc` als Subprocess auf,
+# pypandoc_binary bündelt das Binary aber nur intern
+RUN PANDOC_PATH=$(python -c "import pypandoc; print(pypandoc.get_pandoc_path())") \
+    && ln -sf "$PANDOC_PATH" /usr/local/bin/pandoc \
+    && pandoc --version | head -1
+
+# Private Converter-Packages (via docker/build.sh nach vendor/ kopiert)
+COPY vendor/mdconverter /opt/mdconverter
+COPY vendor/md2powerpoint /opt/md2powerpoint
+RUN pip install --no-cache-dir -e /opt/mdconverter \
+    && pip install --no-cache-dir -e /opt/md2powerpoint
+
+# Backend-Quellcode
 COPY app/ app/
 
+# Template-Pfade als Defaults (überschreibbar via env)
+ENV TP_PPTX_TEMPLATE_DIR=/opt/md2powerpoint/templates
+ENV TP_MDCONVERTER_PATH=/opt/mdconverter
+
+EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

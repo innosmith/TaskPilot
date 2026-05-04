@@ -248,7 +248,7 @@ CREATE TABLE llm_conversations (
     title           TEXT,
     task_id         UUID REFERENCES tasks(id) ON DELETE SET NULL,
     model           TEXT NOT NULL,
-    mode            TEXT DEFAULT 'chat' CHECK (mode IN ('chat', 'deep_research', 'web_search', 'agent')),
+    mode            TEXT DEFAULT 'chat' CHECK (mode IN ('chat', 'deep_research', 'web_search', 'agent', 'code_execute')),
     temperature     REAL DEFAULT 0.7,
     total_tokens    INT DEFAULT 0,
     total_cost_usd  NUMERIC(10,4) DEFAULT 0,

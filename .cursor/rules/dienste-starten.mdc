@@ -10,6 +10,9 @@ alwaysApply: false
 - Python-venv: `/home/innosmith/dev/github/TaskPilot/.venv/`
 - Docker Compose Config: `docker/docker-compose.dev.yml`
 - Nanobot Config: `~/.nanobot/config.json`
+- Dependencies: `pip install -r src/backend/requirements.txt`
+- Private Packages: `pip install -e ~/dev/github/mdConverter -e ~/dev/github/md2powerpoint`
+- Pandoc-Symlink: muss in `.venv/bin/pandoc` zeigen (via pypandoc_binary)
 
 ## WICHTIG: Snap-Docker und Volume-Pfade
 
@@ -137,3 +140,18 @@ npm run dev &
 | Frontend-Dateien (TSX/TS/CSS) | Nein -- Vite HMR |
 | Neue npm-Pakete installiert | **Ja** -- Frontend neu starten |
 | Docker-Compose geändert | **Ja** -- `docker compose down && up -d` |
+
+## Docker-Deployment (Produktion)
+
+```bash
+# 1. Private Packages in vendor/ kopieren
+./docker/build.sh
+
+# 2. Images bauen
+docker compose -f docker/docker-compose.prod.yml build
+
+# 3. Starten
+docker compose -f docker/docker-compose.prod.yml up -d
+```
+
+Siehe `.cursor/rules/deployment-docker.mdc` für Details.

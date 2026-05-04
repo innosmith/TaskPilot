@@ -10,7 +10,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
-      devOptions: { enabled: true },
+      devOptions: { enabled: false },
       manifest: {
         name: 'TaskPilot Cockpit',
         short_name: 'TaskPilot',
@@ -31,7 +31,11 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         runtimeCaching: [
           {
-            urlPattern: /^\/api\//,
+            // Kein Cache für Streams (SSE) — kann sonst Abort / «network error» verursachen
+            urlPattern: ({ url }) =>
+              /^\/api\//.test(url.pathname) &&
+              !/^\/api\/code\//.test(url.pathname) &&
+              !/^\/api\/sse\//.test(url.pathname),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',
@@ -45,6 +49,26 @@ export default defineConfig({
   server: {
     allowedHosts: ['tp.innosmith.ai'],
     proxy: {
+      '/api/code': {
+        target: 'http://localhost:8000',
+        timeout: 0,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['cache-control'] = 'no-cache';
+            proxyRes.headers['x-accel-buffering'] = 'no';
+          });
+        },
+      },
+      '/api/sse': {
+        target: 'http://localhost:8000',
+        timeout: 0,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['cache-control'] = 'no-cache';
+            proxyRes.headers['x-accel-buffering'] = 'no';
+          });
+        },
+      },
       '/api': 'http://localhost:8000',
       '/uploads': 'http://localhost:8000',
     },

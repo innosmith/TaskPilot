@@ -66,6 +66,8 @@ async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
 
     Keine Vorab-Klassifikation -- nanobot uebernimmt alles via LLM.
     """
+    from app.services.llm_defaults import get_default_local_model
+
     from_info = email_data.get("from", {}).get("emailAddress", {})
     from_addr = from_info.get("address", "")
     subject = email_data.get("subject", "")
@@ -85,11 +87,13 @@ async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
     )
     db.add(triage_record)
 
+    local_model = await get_default_local_model(db)
+
     agent_job = AgentJob(
         task_id=None,
         job_type="email_triage",
         status="queued",
-        llm_model="ollama/qwen3.5:35b",
+        llm_model=local_model,
         metadata_json={
             "email_message_id": email_data["id"],
             "subject": subject,
@@ -203,6 +207,8 @@ async def _create_chat_triage_job(
     db: AsyncSession, chat_id: str, msg: dict, chat_type: str | None = None,
 ) -> None:
     """Erstellt einen ChatTriage-Record und einen AgentJob für eine neue Chat-Nachricht."""
+    from app.services.llm_defaults import get_default_local_model
+
     sender = (msg.get("from") or {}).get("user", {})
     from_name = sender.get("displayName", "")
     from_id = sender.get("id", "")
@@ -223,11 +229,13 @@ async def _create_chat_triage_job(
     )
     db.add(triage_record)
 
+    local_model = await get_default_local_model(db)
+
     agent_job = AgentJob(
         task_id=None,
         job_type="chat_triage",
         status="queued",
-        llm_model="ollama/qwen3.5:35b",
+        llm_model=local_model,
         metadata_json={
             "chat_id": chat_id,
             "chat_message_id": msg["id"],

@@ -428,4 +428,5 @@ class LlmProviderConfig(BaseModel):
 class LlmSettings(BaseModel):
     llm_providers: dict[str, LlmProviderConfig] | None = None
     llm_default_model: str | None = None
+    llm_default_local_model: str | None = None
     llm_default_temperature: float | None = None

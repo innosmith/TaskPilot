@@ -297,7 +297,7 @@ async def list_models(user: User = Depends(get_current_user)) -> dict:
                 enabled_model_ids.add(m["id"])
 
     return {
-        "local": [m for m in all_models.get("local", []) if m["id"] in enabled_model_ids],
+        "local": all_models.get("local", []),
         "cloud": [m for m in all_models.get("cloud", []) if m["id"] in enabled_model_ids],
     }
 

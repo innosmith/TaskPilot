@@ -10,14 +10,14 @@ alwaysApply: false
 
 - Config-Datei: `~/.nanobot/config.json`
 - Workspace: `~/.nanobot/workspace/`
-- Skills: `~/.nanobot/workspace/skills/*.md` (mail-triage, quick-response, calendar-management, crm-assistant)
+- Skills: `~/.nanobot/workspace/skills/*.md` (mail-triage, quick-response, calendar-management, crm-assistant, script-execution, code-sandbox, claude-code)
 - Agents-Definition: `~/.nanobot/workspace/AGENTS.md`
 - Tools-Definition: `~/.nanobot/workspace/TOOLS.md`
 
 ### Wichtige Einstellungen
 | Setting | Wert | Bedeutung |
 |---------|------|-----------|
-| `model` | `qwen3.5:35b` | Default-LLM via Ollama |
+| `model` | `qwen3.6:latest` | Default-LLM via Ollama |
 | `provider` | `ollama` | Lokal, kein Cloud-Call |
 | `maxToolIterations` | `200` | Kann bei langen Mails ausgeschöpft werden |
 | `unifiedSession` | `false` | Jeder Job bekommt eigene Session |
@@ -34,7 +34,7 @@ Beispiel: `email_triage:550e8400-e29b-41d4-a716-446655440000:1714300000`
 
 ## MCP-Server
 
-Sieben MCP-Server sind in `config.json → tools.mcpServers` registriert:
+Neun MCP-Server sind in `config.json → tools.mcpServers` registriert:
 
 | Name | Quellcode | Zweck | Env-Vars | Tool-Prefix |
 |------|-----------|-------|----------|-------------|
@@ -45,6 +45,8 @@ Sieben MCP-Server sind in `config.json → tools.mcpServers` registriert:
 | `toggl` | `src/mcp-toggl/server.py` | Zeiterfassung (Projekte, Kunden, Zeiteinträge) | `TP_TOGGL_*` | `mcp_toggl_*` |
 | `signa` | `src/mcp-signa/server.py` | SIGNA Strategic Intelligence (Signale, Briefings, Deep-Dives) | `TP_ISI_*` | `mcp_signa_*` |
 | `invoiceinsight` | `src/mcp-invoiceinsight/server.py` | Kreditoren-Analyse (KPIs, Zahlungen, Anomalien, Cashflow) | `TP_INVOICEINSIGHT_*` | `mcp_invoiceinsight_*` |
+| `scripts` | `src/mcp-scripts/server.py` | Script-Orchestrierung (Docker-basiert, registrierte Scripts) | `TP_SECRETS_DIR`, `TP_SCRIPTS_OUTPUT_DIR` | `mcp_scripts_*` |
+| `sandbox` | `src/mcp-sandbox/server.py` | Code-Sandbox (isoliert, netzwerklos, generierter Code) | `TP_SANDBOX_IMAGE`, `TP_SANDBOX_OUTPUT_DIR` | `mcp_sandbox_*` |
 
 Alle Server werden als Subprocess vom Nanobot gestartet (stdio-Transport). Tokens werden aus der DB (User-Settings) oder `.env.dev` propagiert via `_populate_env_from_db()` im Worker.
 
