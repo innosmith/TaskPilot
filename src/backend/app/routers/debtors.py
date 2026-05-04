@@ -117,6 +117,12 @@ class TogglProjectRow(BaseModel):
     budget_pct: float | None = None
 
 
+class DailyHours(BaseModel):
+    date: str
+    billable: float = 0
+    non_billable: float = 0
+
+
 class TogglMonthSummary(BaseModel):
     total_hours: float = 0
     billable_hours: float = 0
@@ -128,6 +134,7 @@ class TogglMonthSummary(BaseModel):
     working_days_total: int = 0
     working_days_elapsed: int = 0
     projects: list[TogglProjectRow] = []
+    daily_hours: list[DailyHours] = []
 
 
 class DebtorSummary(BaseModel):
@@ -326,6 +333,43 @@ async def get_debtors(
         rate_avg = total_amount / total_billable if total_billable > 0 else 0
         forecast_amount = billable_daily * wd_total * rate_avg if wd_elapsed > 0 else 0
 
+        daily_map: dict[str, dict[str, float]] = {}
+        try:
+            entries = await toggl.search_time_entries(
+                workspace_id=None,
+                start_date=month_start,
+                end_date=month_end,
+            )
+            for row in entries:
+                is_b = row.get("billable", False)
+                sub_entries = row.get("time_entries") or []
+                if sub_entries:
+                    for te in sub_entries:
+                        start = te.get("start") or te.get("at") or ""
+                        secs = te.get("seconds", 0) or 0
+                        if not start:
+                            continue
+                        day = start[:10]
+                        h = abs(secs) / 3600
+                        daily_map.setdefault(day, {"billable": 0.0, "non_billable": 0.0})
+                        daily_map[day]["billable" if is_b else "non_billable"] += h
+                else:
+                    start = row.get("start") or row.get("at") or ""
+                    secs = row.get("seconds", 0) or row.get("dur", 0) or 0
+                    if not start:
+                        continue
+                    day = start[:10]
+                    h = abs(secs) / 3600
+                    daily_map.setdefault(day, {"billable": 0.0, "non_billable": 0.0})
+                    daily_map[day]["billable" if is_b else "non_billable"] += h
+        except Exception as exc:
+            logger.debug("daily_hours konnte nicht geladen werden: %s", exc)
+
+        daily_hours_list = [
+            DailyHours(date=d, billable=round(v["billable"], 2), non_billable=round(v["non_billable"], 2))
+            for d, v in sorted(daily_map.items())
+        ]
+
         toggl_month = TogglMonthSummary(
             total_hours=round(total_hours, 1),
             billable_hours=round(total_billable, 1),
@@ -337,6 +381,7 @@ async def get_debtors(
             working_days_total=wd_total,
             working_days_elapsed=wd_elapsed,
             projects=rows,
+            daily_hours=daily_hours_list,
         )
     except Exception as e:
         logger.warning("Toggl-Daten nicht verfuegbar: %s", e)

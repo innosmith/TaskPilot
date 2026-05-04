@@ -426,12 +426,11 @@ export function CockpitPage() {
         <div className="mx-auto max-w-6xl space-y-6">
 
           {/* ── Zone 1: KPI-Übersicht ── */}
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <KpiCard label="Entscheidungen" value={pendingDecisions} accent="rose" hasBg={hasBg} />
             <KpiCard label="Aktive Agenten" value={activeJobs.length} accent="indigo" hasBg={hasBg} />
             <KpiCard label="Fokus-Aufgaben" value={focusTasks.length} accent="amber" hasBg={hasBg} />
             <KpiCard label="Markierte E-Mails" value={flaggedEmails.length} accent="sky" hasBg={hasBg} />
-            <KpiCard label="E-Mails in Triage" value={triageStats?.total_pending ?? 0} accent="emerald" hasBg={hasBg} />
           </div>
 
           {/* ── Zone 2: Fokus | Kalender | Markierte E-Mails ── */}
@@ -1034,91 +1033,6 @@ export function CockpitPage() {
             </section>
           )}
 
-          {/* ── Zone 5: Aktive Agenten + Letzte Aktivitäten ── */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {/* Aktive Agenten */}
-            <section className={`rounded-xl border p-4 ${cardClass}`}>
-              <h2 className={`mb-3 text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-                Aktive Agenten
-              </h2>
-              {activeJobs.length === 0 ? (
-                <div className={`flex h-16 items-center justify-center rounded-lg text-sm ${textMuted}`}>
-                  Keine aktiven Agenten
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {activeJobs.map(job => {
-                    const meta = (job.metadata_json || {}) as Record<string, string>;
-                    const jobLabel = JOB_TYPE_LABELS[job.job_type || ''] || job.job_type || 'Agent-Job';
-                    const subject = meta.subject || job.task_title;
-                    return (
-                      <div
-                        key={job.id}
-                        className={`flex items-center gap-3 rounded-lg p-2.5 cursor-pointer transition-colors ${
-                          hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                        }`}
-                        onClick={() => navigate('/agenten')}
-                      >
-                        <div className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                          job.status === 'running' ? 'bg-blue-500 animate-pulse' : 'bg-amber-500'
-                        }`} />
-                        <div className="min-w-0 flex-1">
-                          <div className={`text-sm font-medium truncate ${textPrimary}`}>
-                            {jobLabel}{subject ? `: ${subject}` : ''}
-                          </div>
-                          <div className={`text-[11px] ${textMuted}`}>
-                            {job.status === 'running' ? 'Läuft' : 'Wartend'}
-                            {job.started_at && ` — seit ${new Date(job.started_at).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })}`}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-
-            {/* Letzte Aktivitäten */}
-            <section className={`rounded-xl border p-4 ${cardClass}`}>
-              <h2 className={`mb-3 text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-                Letzte Aktivitäten
-              </h2>
-              {recentJobs.length === 0 ? (
-                <div className={`flex h-16 items-center justify-center rounded-lg text-sm ${textMuted}`}>
-                  Noch keine Aktivitäten
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {recentJobs.map(job => {
-                    const jobLabel = JOB_TYPE_LABELS[job.job_type || ''] || job.job_type || 'Agent';
-                    const meta = (job.metadata_json || {}) as Record<string, string>;
-                    const detail = meta.subject || job.task_title || '';
-                    return (
-                      <div
-                        key={job.id}
-                        className={`flex items-center gap-2.5 rounded-lg p-2 ${
-                          hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                        }`}
-                      >
-                        <div className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-                          job.status === 'completed' ? 'bg-emerald-500' : 'bg-red-500'
-                        }`} />
-                        <div className="min-w-0 flex-1">
-                          <div className={`text-xs truncate ${textPrimary}`}>
-                            <span className="font-medium">{jobLabel}</span>
-                            {detail && <span className={` ${textMuted}`}> — {detail}</span>}
-                          </div>
-                        </div>
-                        <span className={`shrink-0 text-[10px] ${textMuted}`}>
-                          {relativeDate(job.completed_at || job.created_at)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-          </div>
 
           {/* Alles erledigt */}
           {pendingDecisions === 0 && activeJobs.length === 0 && focusTasks.length === 0 && flaggedEmails.length === 0 && calendarEvents.length === 0 && (

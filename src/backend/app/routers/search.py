@@ -74,14 +74,6 @@ class BexioHit(BaseModel):
     email: str | None = None
 
 
-class FileHit(BaseModel):
-    id: str
-    name: str
-    web_url: str | None = None
-    size: int | None = None
-    last_modified: str | None = None
-
-
 class SearchResults(BaseModel):
     tasks: list[SearchTaskHit]
     projects: list[SearchProjectHit]
@@ -90,7 +82,7 @@ class SearchResults(BaseModel):
     toggl: list[TogglHit]
     bexio: list[BexioHit]
     signa: list["SignaHit"]
-    files: list[FileHit]
+    files: list["FileHit"]
 
 
 class SignaHit(BaseModel):
@@ -109,6 +101,9 @@ class FileHit(BaseModel):
     web_url: str | None = None
     is_folder: bool = False
     path: str | None = None
+
+
+SearchResults.model_rebuild()
 
 
 async def _search_pipedrive(user: User, term: str) -> list[CrmSearchHit]:
@@ -340,6 +335,7 @@ async def search(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SearchResults:
+    logger.info("Search-Request: q=%r, user=%s", q, user.email)
     pattern = f"%{q}%"
 
     db_task = db.execute(

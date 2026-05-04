@@ -170,8 +170,11 @@ export function SearchDialog({
             setActiveIndex(0);
           }
         })
-        .catch(() => {
-          if (!controller.signal.aborted) setResults(null);
+        .catch((err) => {
+          if (!controller.signal.aborted) {
+            console.error('[SearchDialog] API-Fehler:', err);
+            setResults(null);
+          }
         })
         .finally(() => {
           if (!controller.signal.aborted) setLoading(false);

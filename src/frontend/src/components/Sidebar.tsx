@@ -223,9 +223,7 @@ export function Sidebar({
               <NavLink to="/debitoren" className={collapsedLinkClasses} onClick={onClose} title="Debitoren">
                 <DebtorsIcon className="h-5 w-5" />
               </NavLink>
-              <NavLink to="/kreditoren" className={collapsedLinkClasses} onClick={onClose} title="Kreditoren">
-                <CreditorsIcon className="h-5 w-5" />
-              </NavLink>
+              {/* Kreditoren: deaktiviert (nicht demo-reif) */}
             </>
           ) : (
             <>
@@ -323,10 +321,7 @@ export function Sidebar({
                 <span className="flex-1">Debitoren</span>
               </NavLink>
 
-              <NavLink to="/kreditoren" className={linkClasses} onClick={onClose}>
-                <CreditorsIcon className="h-5 w-5" />
-                <span className="flex-1">Kreditoren</span>
-              </NavLink>
+              {/* Kreditoren: deaktiviert (nicht demo-reif) */}
             </>
           )}
         </nav>
