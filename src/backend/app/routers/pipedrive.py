@@ -657,9 +657,14 @@ async def linkedin_lookup(
                                    old_value=old_org or None, new_value=new_org))
 
         old_pic = _extract_pic_url(person)
-        if body.profile_image_url and not old_pic:
-            diffs.append(FieldDiff(field="picture", field_label="Profilbild",
-                                   old_value=None, new_value="vorhanden"))
+        if body.profile_image_url:
+            label = "Profilbild aktualisieren" if old_pic else "Profilbild hinzufügen"
+            if old_pic:
+                diffs.append(FieldDiff(field="picture", field_label=label,
+                                       old_value="vorhanden", new_value="neues Bild"))
+            else:
+                diffs.append(FieldDiff(field="picture", field_label=label,
+                                       old_value=None, new_value="vorhanden"))
         return diffs
 
     def _person_to_match(person: dict) -> MatchedPerson:

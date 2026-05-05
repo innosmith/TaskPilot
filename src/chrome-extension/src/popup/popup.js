@@ -69,27 +69,11 @@ async function extractProfileFromTab() {
       if (!heuristicData.company && llm.companies && llm.companies.length > 0) {
         heuristicData.company = llm.companies[0];
       }
-      const { jobTitle: parsedTitle, company: parsedCompany } = parseHeadlineLocal(heuristicData.headline);
-      if (!heuristicData.jobTitle && parsedTitle) heuristicData.jobTitle = parsedTitle;
-      if (!heuristicData.company && parsedCompany) heuristicData.company = parsedCompany;
     }
   } catch (_) { /* LLM-Fallback optional, weiter mit Heuristik-Daten */ }
 
   delete heuristicData.fallbackHtml;
   return heuristicData;
-}
-
-function parseHeadlineLocal(headline) {
-  if (!headline) return { jobTitle: '', company: '' };
-  const atPatterns = [
-    /^(.+?)\s+(?:bei|at|@|chez|à)\s+(.+)$/i,
-    /^(.+?)\s*[|–—-]\s*(.+)$/,
-  ];
-  for (const pattern of atPatterns) {
-    const match = headline.match(pattern);
-    if (match) return { jobTitle: match[1].trim(), company: match[2].trim() };
-  }
-  return { jobTitle: headline, company: '' };
 }
 
 function populateNewState(data) {
@@ -312,6 +296,43 @@ async function doUpdate() {
   showState('state-success');
 }
 
+function populateDebugPreview(data) {
+  const preview = document.getElementById('debug-preview');
+  const tbody = document.querySelector('#debug-table tbody');
+  if (!preview || !tbody || !data) return;
+
+  tbody.innerHTML = '';
+
+  const fields = [
+    { label: 'Name', value: data.name },
+    { label: 'Headline', value: data.headline },
+    { label: 'Akt. Rolle', value: data.currentPosition?.title || data.jobTitle, source: data.currentPosition?.title ? 'Experience' : 'Fallback' },
+    { label: 'Akt. Firma', value: data.currentPosition?.company || data.company, source: data.currentPosition?.company ? 'Experience' : 'Fallback' },
+    { label: 'Zeitraum', value: data.currentPosition?.timeRange },
+    { label: 'Ort', value: data.location },
+    { label: 'Firmen', value: data.experienceCompanies?.join(', ') },
+    { label: 'Bild', value: data.profileImageUrl ? 'vorhanden' : 'nicht gefunden' },
+    { label: 'URL', value: data.linkedinUrl },
+  ];
+
+  if (data.allPositions && data.allPositions.length > 1) {
+    const others = data.allPositions.slice(1).map(
+      p => `${p.title || '?'} @ ${p.company || '?'}`
+    ).join('; ');
+    fields.push({ label: 'Weitere Pos.', value: others });
+  }
+
+  for (const field of fields) {
+    if (!field.value) continue;
+    const tr = document.createElement('tr');
+    const sourceTag = field.source ? ` <span class="debug-source">(${field.source})</span>` : '';
+    tr.innerHTML = `<td>${field.label}</td><td>${field.value}${sourceTag}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  preview.classList.remove('hidden');
+}
+
 // Event Listeners
 document.addEventListener('DOMContentLoaded', async () => {
   profileData = await extractProfileFromTab();
@@ -319,6 +340,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     showState('state-not-linkedin');
     return;
   }
+  populateDebugPreview(profileData);
   await doLookup();
 });
 

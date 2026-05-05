@@ -200,72 +200,123 @@
     return window.location.href.split('?')[0].replace(/\/+$/, '');
   }
 
-  function parseHeadline(headline) {
-    if (!headline) return { jobTitle: '', company: '' };
-    const atPatterns = [
-      /^(.+?)\s+(?:bei|at|@|chez|à)\s+(.+)$/i,
-      /^(.+?)\s*[|–—-]\s*(.+)$/,
-    ];
-    for (const pattern of atPatterns) {
-      const match = headline.match(pattern);
-      if (match) {
-        return { jobTitle: match[1].trim(), company: match[2].trim() };
+  /**
+   * Extrahiert die aktuelle(n) Position(en) aus der Experience-Section.
+   * Gibt ein Array von { title, company, timeRange } zurück.
+   * Der erste Eintrag ist die aktuellste Position.
+   */
+  function extractExperiencePositions() {
+    const positions = [];
+    try {
+      const experienceAnchor = document.querySelector('[id="experience"]');
+      if (!experienceAnchor) return positions;
+
+      const section = experienceAnchor.closest('section') || experienceAnchor.parentElement;
+      if (!section) return positions;
+
+      const list = section.querySelector('ul');
+      if (!list) return positions;
+
+      const items = list.querySelectorAll(':scope > li');
+      for (const item of items) {
+        try {
+          const pos = _parseExperienceItem(item);
+          if (pos && (pos.title || pos.company)) {
+            positions.push(pos);
+          }
+        } catch (_) { /* Eintrag überspringen */ }
+      }
+    } catch (_) { /* Experience-Section nicht verfügbar */ }
+    return positions;
+  }
+
+  function _parseExperienceItem(item) {
+    let company = '';
+    let title = '';
+    let timeRange = '';
+
+    const companyLink = item.querySelector('a[href*="/company/"], a[href*="/school/"]');
+    if (companyLink) {
+      const linkText = companyLink.querySelector('span') || companyLink;
+      company = linkText.innerText.trim();
+    }
+
+    const leafSpans = [];
+    for (const span of item.querySelectorAll('span')) {
+      if (span.children.length === 0 && span.offsetParent !== null) {
+        const text = span.innerText.trim();
+        if (text) leafSpans.push(text);
       }
     }
-    return { jobTitle: headline, company: '' };
+
+    for (const text of leafSpans) {
+      if (_isTimeRange(text)) {
+        if (!timeRange) timeRange = text;
+        continue;
+      }
+      if (text === company) continue;
+      if (text.includes('·')) {
+        const parts = text.split('·').map(p => p.trim());
+        if (!company) company = parts[0];
+        continue;
+      }
+      if (!title && text.length > 2 && text.length < 120 &&
+          !_isTimeRange(text) && !_isDuration(text) && !_isMetaText(text)) {
+        title = text;
+      }
+    }
+
+    if (!title) {
+      const visibleText = item.innerText || '';
+      const lines = visibleText.split('\n').map(l => l.trim()).filter(l =>
+        l.length > 2 && l.length < 120 &&
+        l !== company && !_isTimeRange(l) && !_isDuration(l) && !_isMetaText(l)
+      );
+      if (lines.length > 0) title = lines[0];
+    }
+
+    return { title, company, timeRange };
+  }
+
+  function _isTimeRange(text) {
+    return /\b(jan|feb|mär|apr|mai|jun|jul|aug|sep|okt|nov|dez|heute|present|current|bis|–|–)/i.test(text) &&
+           /\d{4}/.test(text);
+  }
+
+  function _isDuration(text) {
+    return /^\d+\s*(Jahr|Monat|Mon\.|yr|mo)/i.test(text);
+  }
+
+  function _isMetaText(text) {
+    return /^(Vollzeit|Teilzeit|Full-time|Part-time|Contract|Freelance|Selbstständig|Self-employed)/i.test(text) ||
+           /^\d+\s*(Mitarbeiter|employees)/i.test(text);
   }
 
   /**
-   * Extrahiert Firmennamen aus der Topcard-Rechtspalte.
-   * LinkedIn zeigt dort die aktuellen Positionen als kompakte Links.
+   * Extrahiert Firmennamen aus vorberechneten Positionen,
+   * mit Topcard-Links als Fallback.
    */
-  function extractExperienceCompanies() {
+  function extractCompaniesFromPositions(positions) {
     const companies = [];
-    const topcard = findTopcardSection();
 
-    const companyLinks = topcard.querySelectorAll(
-      'a[href*="/company/"], a[href*="/school/"]'
-    );
-    for (const link of companyLinks) {
-      const textEl = link.querySelector('p') || link.querySelector('span') || link;
-      const text = textEl.innerText.trim();
-      if (text && text.length > 1 && text.length < 100 && !companies.includes(text)) {
-        companies.push(text);
+    for (const pos of positions) {
+      if (pos.company && !companies.includes(pos.company)) {
+        companies.push(pos.company);
       }
     }
 
     if (companies.length === 0) {
-      try {
-        const experienceSection = document.querySelector('[id="experience"]');
-        if (experienceSection) {
-          const list =
-            experienceSection.parentElement?.querySelector('ul') ||
-            experienceSection.closest('section')?.querySelector('ul');
-          if (list) {
-            const items = list.querySelectorAll(':scope > li');
-            items.forEach((item) => {
-              try {
-                const link = item.querySelector('a[href*="/company/"], a[href*="/school/"]');
-                if (link) {
-                  const name = (link.querySelector('span') || link).innerText.trim();
-                  if (name && !companies.includes(name)) companies.push(name);
-                  return;
-                }
-                const spans = item.querySelectorAll('span');
-                for (const span of spans) {
-                  if (span.children.length > 0) continue;
-                  const text = span.innerText.trim();
-                  if (text.includes('·')) {
-                    const name = text.split('·')[0].trim();
-                    if (name && !companies.includes(name)) companies.push(name);
-                    break;
-                  }
-                }
-              } catch (_) { /* Eintrag überspringen */ }
-            });
-          }
+      const topcard = findTopcardSection();
+      const companyLinks = topcard.querySelectorAll(
+        'a[href*="/company/"], a[href*="/school/"]'
+      );
+      for (const link of companyLinks) {
+        const textEl = link.querySelector('p') || link.querySelector('span') || link;
+        const text = textEl.innerText.trim();
+        if (text && text.length > 1 && text.length < 100 && !companies.includes(text)) {
+          companies.push(text);
         }
-      } catch (_) { /* Experience-Section nicht verfügbar */ }
+      }
     }
 
     return companies;
@@ -274,22 +325,21 @@
   function extractProfileData() {
     const name = extractName();
     const headline = extractHeadline();
-    const { jobTitle, company } = parseHeadline(headline);
-    const experienceCompanies = extractExperienceCompanies();
-
-    if (company && !experienceCompanies.includes(company)) {
-      experienceCompanies.unshift(company);
-    }
+    const positions = extractExperiencePositions();
+    const currentPosition = positions.length > 0 ? positions[0] : null;
+    const experienceCompanies = extractCompaniesFromPositions(positions);
 
     const result = {
       name,
       headline,
-      jobTitle,
-      company,
+      jobTitle: currentPosition ? currentPosition.title : '',
+      company: currentPosition ? currentPosition.company : '',
       location: extractLocation(),
       profileImageUrl: extractProfileImage(),
       linkedinUrl: extractLinkedInUrl(),
       experienceCompanies,
+      currentPosition: currentPosition || { title: '', company: '', timeRange: '' },
+      allPositions: positions,
     };
 
     const heuristicComplete = !!(name && name.length > 1 && headline && headline.length > 3);
