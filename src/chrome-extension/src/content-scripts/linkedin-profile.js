@@ -14,7 +14,9 @@
     const mainEl = document.querySelector('main') || document.body;
     const pageText = (mainEl.innerText || '').substring(0, 50000);
 
-    const img = document.querySelector('img[src*="profile-displayphoto"]');
+    // Profilbild im main-Bereich suchen (nicht im nav, wo das eigene Avatar ist)
+    const img = mainEl.querySelector('img[src*="profile-displayphoto"]')
+      || document.querySelector('main img[src*="profile-displayphoto"]');
     const profileImageUrl = (img && img.src && img.src.startsWith('https://') && !img.src.includes('ghost'))
       ? img.src : '';
 
