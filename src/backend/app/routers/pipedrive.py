@@ -550,9 +550,9 @@ async def _resolve_linkedin_field_key(client) -> str | None:
     try:
         fields = await client.list_person_fields()
         for f in fields:
-            name = (f.get("name") or "").lower().strip()
+            name = (f.get("field_name") or f.get("name") or "").lower().strip()
             if name in ("linkedin", "linkedin url", "linkedin-url", "linkedin profil"):
-                key = f.get("key")
+                key = f.get("field_code") or f.get("key")
                 if key:
                     _field_key_cache["linkedin_key"] = key
                     return key
@@ -569,9 +569,9 @@ async def _resolve_role_field_key(client) -> str | None:
     try:
         fields = await client.list_person_fields()
         for f in fields:
-            name = (f.get("name") or "").lower().strip()
+            name = (f.get("field_name") or f.get("name") or "").lower().strip()
             if name in ("rolle", "role", "job title", "titel"):
-                key = f.get("key")
+                key = f.get("field_code") or f.get("key")
                 if key:
                     _field_key_cache["role_key"] = key
                     return key
