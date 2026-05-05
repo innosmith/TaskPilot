@@ -202,8 +202,8 @@
 
   /**
    * Extrahiert die aktuelle(n) Position(en) aus der Experience-Section.
-   * Gibt ein Array von { title, company, timeRange } zurück.
-   * Der erste Eintrag ist die aktuellste Position.
+   * Nutzt innerText statt span-Traversal, da LinkedIn offsetParent
+   * bei sichtbaren Elementen unzuverlässig macht.
    */
   function extractExperiencePositions() {
     const positions = [];
@@ -237,59 +237,48 @@
 
     const companyLink = item.querySelector('a[href*="/company/"], a[href*="/school/"]');
     if (companyLink) {
-      const linkText = companyLink.querySelector('span') || companyLink;
-      company = linkText.innerText.trim();
+      company = companyLink.innerText.trim();
     }
 
-    const leafSpans = [];
-    for (const span of item.querySelectorAll('span')) {
-      if (span.children.length === 0 && span.offsetParent !== null) {
-        const text = span.innerText.trim();
-        if (text) leafSpans.push(text);
-      }
-    }
+    const visibleText = item.innerText || '';
+    const lines = visibleText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-    for (const text of leafSpans) {
-      if (_isTimeRange(text)) {
-        if (!timeRange) timeRange = text;
+    for (const line of lines) {
+      if (_isTimeRange(line)) {
+        if (!timeRange) timeRange = line;
         continue;
       }
-      if (text === company) continue;
-      if (text.includes('·')) {
-        const parts = text.split('·').map(p => p.trim());
-        if (!company) company = parts[0];
+      if (_isDuration(line)) continue;
+      if (_isMetaText(line)) continue;
+      if (line === company) continue;
+
+      if (line.includes('·')) {
+        const parts = line.split('·').map(p => p.trim());
+        if (!company && parts[0]) company = parts[0];
         continue;
       }
-      if (!title && text.length > 2 && text.length < 120 &&
-          !_isTimeRange(text) && !_isDuration(text) && !_isMetaText(text)) {
-        title = text;
-      }
-    }
 
-    if (!title) {
-      const visibleText = item.innerText || '';
-      const lines = visibleText.split('\n').map(l => l.trim()).filter(l =>
-        l.length > 2 && l.length < 120 &&
-        l !== company && !_isTimeRange(l) && !_isDuration(l) && !_isMetaText(l)
-      );
-      if (lines.length > 0) title = lines[0];
+      if (!title && line.length > 2 && line.length < 150) {
+        title = line;
+      }
     }
 
     return { title, company, timeRange };
   }
 
   function _isTimeRange(text) {
-    return /\b(jan|feb|mär|apr|mai|jun|jul|aug|sep|okt|nov|dez|heute|present|current|bis|–|–)/i.test(text) &&
+    return /\b(jan|feb|m[aä]r|apr|ma[iy]|jun|jul|aug|sep|okt|oct|nov|dez|dec|heute|present|current|actualité)/i.test(text) &&
            /\d{4}/.test(text);
   }
 
   function _isDuration(text) {
-    return /^\d+\s*(Jahr|Monat|Mon\.|yr|mo)/i.test(text);
+    return /^\d+\s*(Jahr|Monat|Mon\.|yr|mo|year|month|an|mois)/i.test(text);
   }
 
   function _isMetaText(text) {
-    return /^(Vollzeit|Teilzeit|Full-time|Part-time|Contract|Freelance|Selbstständig|Self-employed)/i.test(text) ||
-           /^\d+\s*(Mitarbeiter|employees)/i.test(text);
+    return /^(Vollzeit|Teilzeit|Full-time|Part-time|Contract|Freelance|Selbstständig|Self-employed|Befristete|Saisonal|Internship|Apprentice|Praktik)/i.test(text) ||
+           /^\d+[\s.]*(Mitarbeiter|employees|Beschäftigte)/i.test(text) ||
+           /^(Kompetenzen|Skills|Fähigkeiten):/i.test(text);
   }
 
   /**
@@ -329,6 +318,25 @@
     const currentPosition = positions.length > 0 ? positions[0] : null;
     const experienceCompanies = extractCompaniesFromPositions(positions);
 
+    const expAnchor = document.querySelector('[id="experience"]');
+    const _debug = {
+      experienceAnchorFound: !!expAnchor,
+      experienceSectionFound: false,
+      experienceListFound: false,
+      experienceItemCount: 0,
+    };
+    if (expAnchor) {
+      const sec = expAnchor.closest('section') || expAnchor.parentElement;
+      _debug.experienceSectionFound = !!sec;
+      if (sec) {
+        const ul = sec.querySelector('ul');
+        _debug.experienceListFound = !!ul;
+        if (ul) {
+          _debug.experienceItemCount = ul.querySelectorAll(':scope > li').length;
+        }
+      }
+    }
+
     const result = {
       name,
       headline,
@@ -340,6 +348,7 @@
       experienceCompanies,
       currentPosition: currentPosition || { title: '', company: '', timeRange: '' },
       allPositions: positions,
+      _debug,
     };
 
     const heuristicComplete = !!(name && name.length > 1 && headline && headline.length > 3);

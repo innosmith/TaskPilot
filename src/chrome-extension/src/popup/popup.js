@@ -322,6 +322,18 @@ function populateDebugPreview(data) {
     fields.push({ label: 'Weitere Pos.', value: others });
   }
 
+  if (data._debug) {
+    const d = data._debug;
+    const parts = [];
+    parts.push(`#experience: ${d.experienceAnchorFound ? 'ja' : 'NEIN'}`);
+    if (d.experienceAnchorFound) {
+      parts.push(`section: ${d.experienceSectionFound ? 'ja' : 'NEIN'}`);
+      parts.push(`ul: ${d.experienceListFound ? 'ja' : 'NEIN'}`);
+      parts.push(`li: ${d.experienceItemCount}`);
+    }
+    fields.push({ label: 'DOM-Diagnose', value: parts.join(' · ') });
+  }
+
   for (const field of fields) {
     if (!field.value) continue;
     const tr = document.createElement('tr');
