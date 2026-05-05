@@ -298,10 +298,17 @@ async function doUpdate() {
     return;
   }
 
-  document.getElementById('success-text').textContent =
-    `${result.data.name} aktualisiert (${result.data.fields_updated.length} Felder)`;
-  document.getElementById('success-link').href = result.data.pipedrive_url;
-  showState('state-success');
+  const count = result.data.fields_updated.length;
+  if (count > 0) {
+    document.getElementById('success-text').textContent =
+      `${result.data.name} aktualisiert (${count} ${count === 1 ? 'Feld' : 'Felder'})`;
+    document.getElementById('success-link').href = result.data.pipedrive_url;
+    showState('state-success');
+  } else {
+    document.getElementById('error-text').textContent =
+      `Keine Felder konnten aktualisiert werden. Möglicherweise fehlen Berechtigungen oder das Profilbild ist zu klein.`;
+    showState('state-error');
+  }
 }
 
 function populateDebugPreview(data) {
