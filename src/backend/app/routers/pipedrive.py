@@ -736,8 +736,8 @@ def _decode_base64_image(raw: str) -> bytes | None:
         return None
 
 
-def _ensure_min_size(image_data: bytes, min_px: int = 128) -> bytes:
-    """Bild auf mindestens min_px × min_px hochskalieren (Pillow). Gibt JPEG zurück."""
+def _ensure_min_size(image_data: bytes, min_px: int = 128, max_px: int = 512) -> bytes:
+    """Bild auf min_px hochskalieren bzw. auf max_px herunterskalieren. Gibt JPEG zurück."""
     img = Image.open(io.BytesIO(image_data))
     img = img.convert("RGB")
     w, h = img.size
@@ -745,6 +745,10 @@ def _ensure_min_size(image_data: bytes, min_px: int = 128) -> bytes:
         scale = max(min_px / w, min_px / h)
         img = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
         logger.info("Profilbild hochskaliert: %dx%d → %dx%d", w, h, img.width, img.height)
+    elif w > max_px or h > max_px:
+        scale = min(max_px / w, max_px / h)
+        img = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
+        logger.info("Profilbild herunterskaliert: %dx%d → %dx%d", w, h, img.width, img.height)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     return buf.getvalue()
