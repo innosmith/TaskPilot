@@ -1,3 +1,7 @@
+import secrets
+from datetime import datetime, timezone
+
+import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -250,3 +254,77 @@ async def update_llm_settings(
         llm_default_local_model=current.get("llm_default_local_model"),
         llm_default_temperature=current.get("llm_default_temperature"),
     )
+
+
+# --- Extension API-Key ---
+
+API_KEY_PREFIX = "tpk_"
+
+
+class ApiKeyResponse(BaseModel):
+    api_key: str
+    created_at: str
+
+
+class ApiKeyStatus(BaseModel):
+    has_key: bool
+    created_at: str | None = None
+
+
+@router.get("/extension-api-key", response_model=ApiKeyStatus)
+async def get_api_key_status(
+    user: User = Depends(get_current_user),
+) -> ApiKeyStatus:
+    """Pruefen ob ein Extension-API-Key existiert."""
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Nur Owner")
+    s = user.settings or {}
+    has_key = bool(s.get("extension_api_key_hash"))
+    return ApiKeyStatus(
+        has_key=has_key,
+        created_at=s.get("extension_api_key_created_at"),
+    )
+
+
+@router.post("/extension-api-key", response_model=ApiKeyResponse)
+async def generate_api_key(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyResponse:
+    """Neuen Extension-API-Key generieren (invalidiert vorherigen)."""
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Nur Owner")
+
+    raw_key = secrets.token_hex(32)
+    api_key = f"{API_KEY_PREFIX}{raw_key}"
+
+    key_hash = bcrypt.hashpw(api_key.encode(), bcrypt.gensalt()).decode()
+    now = datetime.now(timezone.utc).isoformat()
+
+    current = dict(user.settings or {})
+    current["extension_api_key_hash"] = key_hash
+    current["extension_api_key_created_at"] = now
+    user.settings = current
+    flag_modified(user, "settings")
+    await db.flush()
+
+    return ApiKeyResponse(api_key=api_key, created_at=now)
+
+
+@router.delete("/extension-api-key")
+async def revoke_api_key(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Extension-API-Key widerrufen."""
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Nur Owner")
+
+    current = dict(user.settings or {})
+    current.pop("extension_api_key_hash", None)
+    current.pop("extension_api_key_created_at", None)
+    user.settings = current
+    flag_modified(user, "settings")
+    await db.flush()
+
+    return {"ok": True, "message": "API-Key widerrufen"}

@@ -28,7 +28,11 @@ document.getElementById('btn-save').addEventListener('click', async () => {
     return;
   }
   if (!apiToken) {
-    showStatus('API-Token darf nicht leer sein.', 'error');
+    showStatus('API-Key darf nicht leer sein.', 'error');
+    return;
+  }
+  if (!apiToken.startsWith('tpk_')) {
+    showStatus('API-Key muss mit "tpk_" beginnen. Generiere ihn in TaskPilot unter Einstellungen → Integrationen.', 'error');
     return;
   }
 

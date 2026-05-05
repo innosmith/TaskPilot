@@ -143,6 +143,13 @@ export function SettingsPage() {
   const [bexioMsg, setBexioMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [bexioTesting, setBexioTesting] = useState(false);
 
+  const [extApiKey, setExtApiKey] = useState('');
+  const [extKeyCreatedAt, setExtKeyCreatedAt] = useState<string | null>(null);
+  const [extHasKey, setExtHasKey] = useState(false);
+  const [extLoading, setExtLoading] = useState(false);
+  const [extMsg, setExtMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [extCopied, setExtCopied] = useState(false);
+
   const fetchData = useCallback(async () => {
     try {
       const [p, s] = await Promise.all([
@@ -198,6 +205,12 @@ export function SettingsPage() {
         setTogglToken(data.toggl_api_token || '');
         setTogglWsId(data.toggl_workspace_id ? String(data.toggl_workspace_id) : '');
         setBexioToken(data.bexio_api_token || '');
+      })
+      .catch(() => {});
+    api.get<{ has_key: boolean; created_at: string | null }>('/api/settings/extension-api-key')
+      .then((data) => {
+        setExtHasKey(data.has_key);
+        setExtKeyCreatedAt(data.created_at);
       })
       .catch(() => {});
   }, [tab]);
@@ -388,6 +401,49 @@ export function SettingsPage() {
     } finally {
       setBexioTesting(false);
     }
+  };
+
+  const generateExtApiKey = async () => {
+    setExtLoading(true);
+    setExtMsg(null);
+    setExtApiKey('');
+    setExtCopied(false);
+    try {
+      const data = await api.post<{ api_key: string; created_at: string }>('/api/settings/extension-api-key', {});
+      setExtApiKey(data.api_key);
+      setExtHasKey(true);
+      setExtKeyCreatedAt(data.created_at);
+      setExtMsg({ type: 'ok', text: 'API-Key generiert — jetzt kopieren und in der Extension einfuegen!' });
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setExtMsg({ type: 'err', text: `Fehler: ${detail}` });
+    } finally {
+      setExtLoading(false);
+    }
+  };
+
+  const revokeExtApiKey = async () => {
+    setExtLoading(true);
+    setExtMsg(null);
+    try {
+      await api.delete('/api/settings/extension-api-key');
+      setExtHasKey(false);
+      setExtKeyCreatedAt(null);
+      setExtApiKey('');
+      setExtMsg({ type: 'ok', text: 'API-Key widerrufen' });
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setExtMsg({ type: 'err', text: `Fehler: ${detail}` });
+    } finally {
+      setExtLoading(false);
+    }
+  };
+
+  const copyExtApiKey = () => {
+    if (!extApiKey) return;
+    navigator.clipboard.writeText(extApiKey);
+    setExtCopied(true);
+    setTimeout(() => setExtCopied(false), 3000);
   };
 
   if (loading) {
@@ -893,6 +949,88 @@ export function SettingsPage() {
                       <span className={`text-sm ${bexioMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{bexioMsg.text}</span>
                     )}
                   </div>
+                </div>
+              </div>
+
+              {/* ── Browser Extension (LinkedIn Sync) ── */}
+              <div className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50/50 p-5 dark:border-emerald-900 dark:bg-emerald-950/30">
+                <div className="mb-3 flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-900/30">
+                    <svg className="h-5 w-5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Browser-Extension (LinkedIn Sync)</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      API-Key fuer die Chrome-Extension zur LinkedIn-Pipedrive-Synchronisation
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {extHasKey && !extApiKey && (
+                    <div className="flex items-center gap-2 rounded-lg bg-emerald-100 p-3 dark:bg-emerald-900/40">
+                      <svg className="h-4 w-4 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span className="text-sm text-emerald-700 dark:text-emerald-300">
+                        API-Key aktiv{extKeyCreatedAt ? ` (erstellt: ${new Date(extKeyCreatedAt).toLocaleDateString('de-CH')})` : ''}
+                      </span>
+                    </div>
+                  )}
+
+                  {extApiKey && (
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Dein API-Key (nur jetzt sichtbar!)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 break-all rounded-lg border border-gray-300 bg-gray-50 p-2.5 font-mono text-xs text-gray-800 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200">
+                          {extApiKey}
+                        </code>
+                        <button
+                          onClick={copyExtApiKey}
+                          className="shrink-0 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-700"
+                        >
+                          {extCopied ? 'Kopiert!' : 'Kopieren'}
+                        </button>
+                      </div>
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        Dieser Key wird nur einmal angezeigt. Kopiere ihn jetzt in die Extension-Einstellungen.
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    <button
+                      onClick={generateExtApiKey}
+                      disabled={extLoading}
+                      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      {extLoading ? 'Generiere...' : extHasKey ? 'Neuen Key generieren' : 'API-Key generieren'}
+                    </button>
+                    {extHasKey && (
+                      <button
+                        onClick={revokeExtApiKey}
+                        disabled={extLoading}
+                        className="rounded-lg bg-red-100 px-4 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-200 disabled:opacity-50 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50"
+                      >
+                        Key widerrufen
+                      </button>
+                    )}
+                  </div>
+
+                  {extMsg && (
+                    <p className={`text-sm ${extMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>
+                      {extMsg.text}
+                    </p>
+                  )}
+
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                    Der Key beginnt mit <code className="rounded bg-gray-100 px-1 dark:bg-gray-800">tpk_</code> und laeuft nicht ab.
+                    Beim Generieren eines neuen Keys wird der vorherige automatisch ungueltig.
+                  </p>
                 </div>
               </div>
 

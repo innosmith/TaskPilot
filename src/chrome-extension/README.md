@@ -28,11 +28,12 @@ Powered by [InnoSmith.ch](https://innosmith.ch) — AI-Agenten & Automation.
 ## Konfiguration
 
 1. Auf das Extension-Icon klicken → Zahnrad-Icon (oder Rechtsklick → "Optionen")
-2. **Backend-URL** eingeben (z.B. `http://localhost:8000`)
-3. **API-Token** eingeben:
-   - TaskPilot im Browser oeffnen
-   - Browser DevTools oeffnen (F12) → Console
-   - `localStorage.getItem('token')` eingeben → Token kopieren
+2. **Backend-URL** eingeben (z.B. `https://tp.innosmith.ai` oder `http://localhost:8000`)
+3. **API-Key** generieren und eingeben:
+   - TaskPilot im Browser oeffnen → **Einstellungen → Integrationen**
+   - Im Abschnitt **Browser-Extension** auf **"API-Key generieren"** klicken
+   - Den angezeigten Key (beginnt mit `tpk_`) kopieren
+   - In der Extension einfuegen
 4. **Speichern** klicken
 5. Optional: **Verbindung testen** klicken
 

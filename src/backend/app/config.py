@@ -42,7 +42,11 @@ class Settings(BaseSettings):
     owner_display_name: str = "InnoSmith"
 
     # CORS
-    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://tp.innosmith.ai",
+    ]
 
     # nanobot WebSocket Bridge
     nanobot_ws_url: str = "ws://127.0.0.1:8765"
