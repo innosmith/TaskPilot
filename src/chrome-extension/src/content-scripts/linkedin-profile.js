@@ -4,7 +4,7 @@
  *
  * Bewusst minimal gehalten: Strukturierte Datenextraktion (Name, Rolle,
  * Firma, Ort) übernimmt das LLM im Backend. Das Content Script liefert
- * nur den Seitentext, die URL und die Profilbild-URL (CDN-Muster).
+ * nur den Seitentext, die URL und das Profilbild (via Canvas-to-Base64).
  */
 
 (() => {
@@ -14,18 +14,30 @@
     const mainEl = document.querySelector('main') || document.body;
     const pageText = (mainEl.innerText || '').substring(0, 50000);
 
-    // Profilbild im main-Bereich suchen (nicht im nav, wo das eigene Avatar ist)
-    // LinkedIn CDN: URL auf _400_400 hochskalieren damit Pipedrive (min 128px) akzeptiert
     const img = mainEl.querySelector('img[src*="profile-displayphoto"]')
       || document.querySelector('main img[src*="profile-displayphoto"]');
+
     let profileImageUrl = '';
+    let profileImageBase64 = '';
+
     if (img && img.src && img.src.startsWith('https://') && !img.src.includes('ghost')) {
-      profileImageUrl = img.src.replace(/shrink_\d+_\d+/, 'shrink_400_400');
+      profileImageUrl = img.src;
+
+      if (img.complete && img.naturalWidth > 0) {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          canvas.getContext('2d').drawImage(img, 0, 0);
+          profileImageBase64 = canvas.toDataURL('image/jpeg', 0.9);
+        } catch (_) { /* CORS-tainted canvas, Base64 nicht verfügbar */ }
+      }
     }
 
     return {
       linkedinUrl: window.location.href.split('?')[0].replace(/\/+$/, ''),
       profileImageUrl,
+      profileImageBase64,
       pageText,
     };
   }

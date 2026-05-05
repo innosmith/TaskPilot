@@ -23,6 +23,9 @@ httpx>=0.28
 websockets>=16.0
 cachetools>=7.0
 
+# ── Image Processing ──
+Pillow>=11.0
+
 # ── LLM & Agent ──
 litellm>=1.83
 openai>=2.24

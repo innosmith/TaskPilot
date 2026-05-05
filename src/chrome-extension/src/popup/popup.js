@@ -49,6 +49,7 @@ async function extractProfileFromTab() {
   const result = {
     linkedinUrl: rawData.linkedinUrl || '',
     profileImageUrl: rawData.profileImageUrl || '',
+    profileImageBase64: rawData.profileImageBase64 || '',
     name: '',
     headline: '',
     jobTitle: '',
@@ -252,6 +253,7 @@ async function doCreate() {
     job_title: document.getElementById('new-job-title').value || null,
     linkedin_url: profileData.linkedinUrl,
     profile_image_url: profileData.profileImageUrl || null,
+    profile_image_base64: profileData.profileImageBase64 || null,
   });
 
   if (result.error) {
@@ -289,6 +291,7 @@ async function doUpdate() {
     job_title: profileData.jobTitle || null,
     linkedin_url: profileData.linkedinUrl,
     profile_image_url: profileData.profileImageUrl || null,
+    profile_image_base64: profileData.profileImageBase64 || null,
     update_fields: updateFields,
   });
 

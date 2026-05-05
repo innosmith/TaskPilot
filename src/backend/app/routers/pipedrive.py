@@ -5,6 +5,8 @@ ohne dass das Frontend direkt mit der Pipedrive-API kommunizieren muss.
 Zweistufiges In-Memory-Caching reduziert API-Token-Verbrauch massiv.
 """
 
+import base64
+import io
 import logging
 import re
 import sys
@@ -13,6 +15,7 @@ from urllib.parse import urlparse
 
 from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
+from PIL import Image
 from pydantic import BaseModel
 
 from app.auth.deps import get_current_user
@@ -719,6 +722,34 @@ async def linkedin_lookup(
     return LinkedInLookupResponse(match_type="none", matches=[])
 
 
+def _decode_base64_image(raw: str) -> bytes | None:
+    """Base64-String (optional mit data:…;base64, Prefix) in Bytes umwandeln."""
+    if not raw:
+        return None
+    if raw.startswith("data:"):
+        _, _, raw = raw.partition(",")
+    try:
+        data = base64.b64decode(raw)
+        return data if len(data) > 500 else None
+    except Exception as exc:
+        logger.warning("Base64-Decode fehlgeschlagen: %s", exc)
+        return None
+
+
+def _ensure_min_size(image_data: bytes, min_px: int = 128) -> bytes:
+    """Bild auf mindestens min_px × min_px hochskalieren (Pillow). Gibt JPEG zurück."""
+    img = Image.open(io.BytesIO(image_data))
+    img = img.convert("RGB")
+    w, h = img.size
+    if w < min_px or h < min_px:
+        scale = max(min_px / w, min_px / h)
+        img = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
+        logger.info("Profilbild hochskaliert: %dx%d → %dx%d", w, h, img.width, img.height)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
 class LinkedInSyncRequest(BaseModel):
     action: str  # "create" | "update"
     person_id: int | None = None
@@ -787,19 +818,23 @@ async def linkedin_sync(
         person = await client.create_person(body.name, **kwargs)
         person_id = person.get("id", 0)
 
+        fields_created = ["name"]
+        if body.org_name:
+            fields_created.append("org")
+        if linkedin_key and body.linkedin_url:
+            fields_created.append("linkedin_url")
+        if role_key and body.job_title:
+            fields_created.append("job_title")
+
         if (body.profile_image_base64 or body.profile_image_url) and person_id:
-            image_data = None
-            if body.profile_image_base64:
-                import base64
-                try:
-                    image_data = base64.b64decode(body.profile_image_base64)
-                except Exception:
-                    pass
+            image_data = _decode_base64_image(body.profile_image_base64)
             if not image_data and body.profile_image_url:
                 image_data = await _download_image(body.profile_image_url)
-            if image_data and len(image_data) > 500:
+            if image_data:
                 try:
+                    image_data = _ensure_min_size(image_data)
                     await client.upload_person_picture(person_id, image_data)
+                    fields_created.append("picture")
                 except Exception as exc:
                     logger.warning("Profilbild-Upload fehlgeschlagen: %s", exc)
 
@@ -809,7 +844,7 @@ async def linkedin_sync(
             name=person.get("name", body.name),
             action="created",
             pipedrive_url=f"https://{domain}.pipedrive.com/person/{person_id}",
-            fields_updated=["name", "org", "linkedin_url", "job_title", "picture"],
+            fields_updated=fields_created,
         )
 
     elif body.action == "update" and body.person_id:
@@ -847,23 +882,19 @@ async def linkedin_sync(
             await client.update_person(body.person_id, **kwargs)
 
         if "picture" in update_fields and (body.profile_image_base64 or body.profile_image_url):
-            image_data = None
-            if body.profile_image_base64:
-                import base64
-                try:
-                    image_data = base64.b64decode(body.profile_image_base64)
-                    logger.info("Profilbild aus Base64: %d bytes", len(image_data))
-                except Exception as exc:
-                    logger.warning("Base64-Decode fehlgeschlagen: %s", exc)
+            image_data = _decode_base64_image(body.profile_image_base64)
+            if image_data:
+                logger.info("Profilbild aus Base64: %d bytes", len(image_data))
             if not image_data and body.profile_image_url:
                 logger.info("Profilbild-Download von: %s", body.profile_image_url[:80])
                 image_data = await _download_image(body.profile_image_url)
 
-            if image_data and len(image_data) > 500:
+            if image_data:
                 try:
+                    image_data = _ensure_min_size(image_data)
                     await client.upload_person_picture(body.person_id, image_data)
                     updated.append("picture")
-                    logger.info("Profilbild erfolgreich hochgeladen")
+                    logger.info("Profilbild erfolgreich hochgeladen (%d bytes)", len(image_data))
                 except Exception as exc:
                     logger.warning("Profilbild-Upload fehlgeschlagen: %s", exc)
             else:
