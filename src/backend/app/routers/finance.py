@@ -736,7 +736,7 @@ async def get_overview(user: User = Depends(get_current_user)):
         open_invoices_total=round(open_total, 2),
         open_invoices_count=open_count,
         current_month_revenue=round(current_revenue, 2),
-        current_month_hours=round(current_hours, 1),
+        current_month_hours=round(current_hours, 2),
         forecast_year_revenue=round(forecast_year_revenue, 2),
         forecast_year_end_cashflow=round(forecast_year_end_cashflow, 2),
         burn_rate=round(burn_rate, 2),
@@ -1115,7 +1115,7 @@ async def get_toggl_month_summary(
             result.append(TogglProjectSummary(
                 project_name=proj.get("name") or f"Projekt {pid}",
                 client_name=client_map.get(cid, "") if cid else "",
-                hours=round(group_hours, 1),
+                hours=round(group_hours, 2),
                 rate_per_hour=round(group_rate, 2),
                 amount=round(group_amount, 2),
                 currency=group_currency,

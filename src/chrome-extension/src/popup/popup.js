@@ -42,14 +42,6 @@ async function extractProfileFromTab() {
 
   if (!heuristicData) return null;
 
-  const nameOk = heuristicData.name && heuristicData.name.length > 1;
-  const headlineOk = heuristicData.headline && heuristicData.headline.length > 3;
-
-  if (nameOk && headlineOk) {
-    delete heuristicData.fallbackHtml;
-    return heuristicData;
-  }
-
   if (!heuristicData.fallbackHtml) return heuristicData;
 
   try {
@@ -59,16 +51,24 @@ async function extractProfileFromTab() {
 
     if (llmResult.data && !llmResult.error) {
       const llm = llmResult.data;
-      if (!nameOk && llm.name) heuristicData.name = llm.name;
-      if (!headlineOk && llm.headline) heuristicData.headline = llm.headline;
+      if (!heuristicData.name && llm.name) heuristicData.name = llm.name;
+      if (!heuristicData.headline && llm.headline) heuristicData.headline = llm.headline;
       if (!heuristicData.location && llm.location) heuristicData.location = llm.location;
       if (!heuristicData.jobTitle && llm.job_title) heuristicData.jobTitle = llm.job_title;
-      if ((!heuristicData.experienceCompanies || heuristicData.experienceCompanies.length === 0) && llm.companies) {
-        heuristicData.experienceCompanies = llm.companies;
-      }
       if (!heuristicData.company && llm.companies && llm.companies.length > 0) {
         heuristicData.company = llm.companies[0];
       }
+      if ((!heuristicData.experienceCompanies || heuristicData.experienceCompanies.length === 0) && llm.companies) {
+        heuristicData.experienceCompanies = llm.companies;
+      }
+      if (heuristicData.currentPosition && !heuristicData.currentPosition.title && llm.job_title) {
+        heuristicData.currentPosition.title = llm.job_title;
+      }
+      if (heuristicData.currentPosition && !heuristicData.currentPosition.company && llm.companies && llm.companies.length > 0) {
+        heuristicData.currentPosition.company = llm.companies[0];
+      }
+      heuristicData._debug = heuristicData._debug || {};
+      heuristicData._debug.llmUsed = true;
     }
   } catch (_) { /* LLM-Fallback optional, weiter mit Heuristik-Daten */ }
 
@@ -325,12 +325,11 @@ function populateDebugPreview(data) {
   if (data._debug) {
     const d = data._debug;
     const parts = [];
-    parts.push(`#experience: ${d.experienceAnchorFound ? 'ja' : 'NEIN'}`);
-    if (d.experienceAnchorFound) {
-      parts.push(`section: ${d.experienceSectionFound ? 'ja' : 'NEIN'}`);
-      parts.push(`ul: ${d.experienceListFound ? 'ja' : 'NEIN'}`);
-      parts.push(`li: ${d.experienceItemCount}`);
-    }
+    parts.push(`Exp: ${d.experienceSectionFound ? 'ja' : 'NEIN'}`);
+    if (d.sectionSearchMethod) parts.push(`via: ${d.sectionSearchMethod}`);
+    parts.push(`Pos: ${d.experiencePositionCount || 0}`);
+    if (d.fallbackHtmlLength) parts.push(`HTML: ${d.fallbackHtmlLength}`);
+    if (d.llmUsed) parts.push('LLM: ja');
     fields.push({ label: 'DOM-Diagnose', value: parts.join(' · ') });
   }
 

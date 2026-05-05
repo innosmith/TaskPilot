@@ -54,12 +54,16 @@ RESPONSE_FORMAT = {
 }
 
 SYSTEM_PROMPT = (
-    "Du extrahierst strukturierte Profildaten aus LinkedIn-HTML. "
+    "Du extrahierst strukturierte Profildaten aus LinkedIn-Profiltext. "
+    "Der Input kann HTML oder Plaintext sein. "
     "Antworte NUR mit validem JSON, kein anderer Text. Felder: "
     "name (Vorname + Nachname), headline (Berufsbezeichnung/Tagline), "
-    "location (Standort/Ort), job_title (aktuelle Rolle ohne Firma), "
-    "companies (Liste aktueller Firmen). "
-    "Falls ein Feld nicht im HTML vorhanden ist, gib einen leeren String "
+    "location (Standort/Ort, z.B. 'Bern, Schweiz'), "
+    "job_title (aktuelle Berufsbezeichnung aus dem Experience/Berufserfahrung-Bereich, NICHT die Headline), "
+    "companies (Liste der aktuellen Firmen/Organisationen aus dem Experience-Bereich). "
+    "WICHTIG: job_title soll die konkrete Rolle aus der Berufserfahrung sein "
+    "(z.B. 'Leiterin Internal Services'), nicht die Headline. "
+    "Falls ein Feld nicht vorhanden ist, gib einen leeren String "
     "bzw. ein leeres Array zurück. Erfinde keine Daten."
 )
 
@@ -73,29 +77,26 @@ def _setup_api_keys():
         os.environ["GEMINI_API_KEY"] = s.gemini_api_key
 
 
-def _strip_html_noise(html: str) -> str:
-    """Entfernt Scripts, Styles und übermässige Whitespaces aus HTML."""
-    try:
-        import lxml.html as LH
-        from lxml.html.clean import Cleaner
+def _clean_input(text: str) -> str:
+    """Bereinigt Input — funktioniert sowohl mit HTML als auch Plaintext."""
+    if "<" in text and ">" in text:
+        try:
+            import lxml.html as LH
+            from lxml.html.clean import Cleaner
 
-        cleaner = Cleaner(
-            scripts=True,
-            javascript=True,
-            style=True,
-            inline_style=True,
-            safe_attrs_only=False,
-        )
-        doc = LH.fromstring(html)
-        cleaned = cleaner.clean_html(doc)
-        return LH.tostring(cleaned, encoding="unicode")
-    except ImportError:
-        cleaned = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r"<style[^>]*>.*?</style>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r"\s+", " ", cleaned)
-        return cleaned
-    except Exception:
-        return html
+            cleaner = Cleaner(
+                scripts=True, javascript=True, style=True,
+                inline_style=True, safe_attrs_only=False,
+            )
+            doc = LH.fromstring(text)
+            cleaned = cleaner.clean_html(doc)
+            return LH.tostring(cleaned, encoding="unicode")
+        except Exception:
+            cleaned = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
+            cleaned = re.sub(r"<style[^>]*>.*?</style>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+            cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+            return re.sub(r"\s+", " ", cleaned).strip()
+    return re.sub(r"\s{3,}", "\n", text).strip()
 
 
 def _extract_json(text: str) -> dict:
@@ -110,7 +111,7 @@ def _extract_json(text: str) -> dict:
 
 
 class ExtractProfileRequest(BaseModel):
-    html: str = Field(..., min_length=50, max_length=500_000, description="Rohes HTML der LinkedIn-Topcard-Section")
+    html: str = Field(..., min_length=50, max_length=500_000, description="LinkedIn-Profilinhalt (HTML oder Plaintext)")
 
 
 class ExtractedProfile(BaseModel):
@@ -130,7 +131,7 @@ async def extract_profile_from_html(
     """Extrahiert LinkedIn-Profildaten aus rohem HTML via Cloud-LLM."""
     _setup_api_keys()
 
-    clean_html = _strip_html_noise(body.html)
+    clean_html = _clean_input(body.html)
     if len(clean_html) > 100_000:
         clean_html = clean_html[:100_000]
 

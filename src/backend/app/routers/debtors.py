@@ -309,8 +309,8 @@ async def get_debtors(
                 project_name=proj.get("name") or f"Projekt {pid}",
                 client_id=cid,
                 client_name=client_name,
-                hours=round(group_hours, 1),
-                billable_hours=round(b_hours, 1),
+                hours=round(group_hours, 2),
+                billable_hours=round(b_hours, 2),
                 is_billable=is_billable,
                 rate_per_hour=round(b_rate, 2),
                 amount=round(b_amount, 2),
@@ -371,12 +371,12 @@ async def get_debtors(
         ]
 
         toggl_month = TogglMonthSummary(
-            total_hours=round(total_hours, 1),
-            billable_hours=round(total_billable, 1),
-            non_billable_hours=round(total_hours - total_billable, 1),
+            total_hours=round(total_hours, 2),
+            billable_hours=round(total_billable, 2),
+            non_billable_hours=round(total_hours - total_billable, 2),
             billable_ratio=round(total_billable / total_hours * 100, 1) if total_hours > 0 else 0,
             total_amount=round(total_amount, 2),
-            avg_daily_hours=round(avg_daily, 1),
+            avg_daily_hours=round(avg_daily, 2),
             forecast_month_amount=round(forecast_amount, 2),
             working_days_total=wd_total,
             working_days_elapsed=wd_elapsed,

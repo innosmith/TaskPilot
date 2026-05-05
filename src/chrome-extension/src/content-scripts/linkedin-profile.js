@@ -10,11 +10,8 @@
 (() => {
   'use strict';
 
-  /**
-   * Findet die Topcard-Section – das Hauptprofil-Element oben auf der Seite.
-   * Sucht nach section[data-member-id], section mit "Topcard" im componentkey,
-   * oder fällt auf die erste grosse Section zurück.
-   */
+  // ── Topcard ──────────────────────────────────────────────
+
   function findTopcardSection() {
     const byMemberId = document.querySelector('section[data-member-id]');
     if (byMemberId) return byMemberId;
@@ -32,6 +29,8 @@
     return document.body;
   }
 
+  // ── Name ─────────────────────────────────────────────────
+
   function extractName() {
     const titleTag = document.querySelector('title');
     if (titleTag) {
@@ -43,7 +42,6 @@
     }
 
     const topcard = findTopcardSection();
-
     const h2 = topcard.querySelector('h2');
     if (h2) {
       const text = h2.innerText.trim();
@@ -62,6 +60,8 @@
     return '';
   }
 
+  // ── Headline ─────────────────────────────────────────────
+
   function extractHeadline() {
     const topcard = findTopcardSection();
     const name = extractName();
@@ -75,7 +75,7 @@
           const p = sibling.matches('p') ? sibling : sibling.querySelector('p');
           if (p) {
             const text = p.innerText.trim();
-            if (text && text.length > 5 && text !== name && !isLocationLike(text)) {
+            if (text && text.length > 5 && text !== name && !_isLocationLike(text)) {
               return text;
             }
           }
@@ -88,13 +88,8 @@
     const allParagraphs = topcard.querySelectorAll('p');
     for (const p of allParagraphs) {
       const text = p.innerText.trim();
-      if (
-        text &&
-        text.length > 15 &&
-        text !== name &&
-        !isLocationLike(text) &&
-        !isConnectionCount(text)
-      ) {
+      if (text && text.length > 15 && text !== name &&
+          !_isLocationLike(text) && !_isConnectionCount(text)) {
         return text;
       }
     }
@@ -109,15 +104,21 @@
     return '';
   }
 
-  function isLocationLike(text) {
+  // ── Location ─────────────────────────────────────────────
+
+  const LOCATION_BLACKLIST = /^(herr|frau|mr\.?|mrs?\.?|dr\.?|prof\.?|kontaktinformation|contact\s*info|mehr\s*anzeigen|show\s*more|verbindungen|connections)/i;
+
+  function _isLocationLike(text) {
+    if (LOCATION_BLACKLIST.test(text)) return false;
     return (
-      text.length < 40 &&
-      (/^[A-ZÄÖÜ][a-zäöüß]+(?:,\s*[A-ZÄÖÜ].*)?$/.test(text) ||
-        /^Schweiz|Deutschland|Österreich|France|Italy|United|Germany|Austria/i.test(text))
+      text.length < 50 &&
+      text.length > 2 &&
+      (/^[A-ZÄÖÜ][a-zäöüéèê]+(?:[,\s]+[A-ZÄÖÜ].*)?$/.test(text) ||
+        /\b(Schweiz|Deutschland|Österreich|France|Italy|United|Germany|Austria|Suisse|Svizzera)\b/i.test(text))
     );
   }
 
-  function isConnectionCount(text) {
+  function _isConnectionCount(text) {
     return /\d+[\s+]*(?:Kontakte|Follower|connections|followers)/i.test(text);
   }
 
@@ -133,7 +134,7 @@
           const p = sibling.matches('p') ? sibling : sibling.querySelector('p');
           if (p) {
             const text = p.innerText.trim();
-            if (text && text.length < 60 && isLocationLike(text)) return text;
+            if (text && text.length < 60 && _isLocationLike(text)) return text;
           }
         }
       }
@@ -142,57 +143,49 @@
     const paragraphs = topcard.querySelectorAll('p');
     for (const p of paragraphs) {
       const text = p.innerText.trim();
-      if (text && isLocationLike(text)) return text;
+      if (text && _isLocationLike(text)) return text;
     }
 
     const spans = topcard.querySelectorAll('span');
     for (const span of spans) {
       if (span.children.length > 0) continue;
       const text = span.innerText.trim();
-      if (text && isLocationLike(text)) return text;
+      if (text && _isLocationLike(text)) return text;
     }
 
     return '';
   }
+
+  // ── Profilbild ───────────────────────────────────────────
 
   function extractProfileImage() {
     const highPriority = document.querySelector(
       'img[src*="profile-displayphoto"][fetchpriority="high"]'
     );
-    if (highPriority && isValidImageSrc(highPriority.src)) return highPriority.src;
+    if (highPriority && _isValidImageSrc(highPriority.src)) return highPriority.src;
 
     const displayPhoto = document.querySelector('img[src*="profile-displayphoto"]');
-    if (displayPhoto && isValidImageSrc(displayPhoto.src)) return displayPhoto.src;
+    if (displayPhoto && _isValidImageSrc(displayPhoto.src)) return displayPhoto.src;
 
     const topcard = findTopcardSection();
     const topcardImg = topcard.querySelector('img[src*="profile-displayphoto"]');
-    if (topcardImg && isValidImageSrc(topcardImg.src)) return topcardImg.src;
+    if (topcardImg && _isValidImageSrc(topcardImg.src)) return topcardImg.src;
 
     const figureImg = topcard.querySelector('figure img[src^="https://"]');
-    if (figureImg && isValidImageSrc(figureImg.src)) return figureImg.src;
+    if (figureImg && _isValidImageSrc(figureImg.src)) return figureImg.src;
 
     const allImages = document.querySelectorAll('img[src*="profile-displayphoto"]');
     for (const img of allImages) {
-      if (isValidImageSrc(img.src) && img.src.includes('_400_400')) return img.src;
+      if (_isValidImageSrc(img.src) && img.src.includes('_400_400')) return img.src;
     }
     for (const img of allImages) {
-      if (isValidImageSrc(img.src)) return img.src;
-    }
-
-    const legacySelectors = [
-      'img.pv-top-card-profile-picture__image--show',
-      'img.pv-top-card-profile-picture__image',
-      '.pv-top-card__photo img',
-    ];
-    for (const sel of legacySelectors) {
-      const img = document.querySelector(sel);
-      if (img && isValidImageSrc(img.src)) return img.src;
+      if (_isValidImageSrc(img.src)) return img.src;
     }
 
     return '';
   }
 
-  function isValidImageSrc(src) {
+  function _isValidImageSrc(src) {
     return src && src.startsWith('https://') && !src.includes('ghost');
   }
 
@@ -200,18 +193,54 @@
     return window.location.href.split('?')[0].replace(/\/+$/, '');
   }
 
-  /**
-   * Extrahiert die aktuelle(n) Position(en) aus der Experience-Section.
-   * Nutzt innerText statt span-Traversal, da LinkedIn offsetParent
-   * bei sichtbaren Elementen unzuverlässig macht.
-   */
+  // ── Experience-Section finden (multi-strategy) ───────────
+
+  function _findExperienceSection() {
+    const strategies = [
+      () => document.querySelector('[id="experience"]'),
+      () => document.querySelector('#experience'),
+      () => document.querySelector('section[id*="experience" i]'),
+      () => document.querySelector('[data-section="experience"]'),
+    ];
+
+    for (const strategy of strategies) {
+      try {
+        const el = strategy();
+        if (el) {
+          return el.closest('section') || el.parentElement;
+        }
+      } catch (_) { /* weiter */ }
+    }
+
+    const headingTerms = ['experience', 'berufserfahrung', 'expérience', 'esperienza'];
+    const headings = document.querySelectorAll('h2, h3, [role="heading"]');
+    for (const h of headings) {
+      const text = (h.innerText || h.textContent || '').trim().toLowerCase();
+      if (headingTerms.some(term => text.includes(term))) {
+        return h.closest('section') || h.parentElement?.parentElement;
+      }
+    }
+
+    const sections = document.querySelectorAll('main section');
+    for (const sec of sections) {
+      const links = sec.querySelectorAll('a[href*="/company/"]');
+      if (links.length >= 1) {
+        const text = sec.innerText || '';
+        if (/\d{4}/.test(text) && /(–|—|-|bis|present|heute|current)/i.test(text)) {
+          return sec;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  // ── Experience-Positionen extrahieren ────────────────────
+
   function extractExperiencePositions() {
     const positions = [];
     try {
-      const experienceAnchor = document.querySelector('[id="experience"]');
-      if (!experienceAnchor) return positions;
-
-      const section = experienceAnchor.closest('section') || experienceAnchor.parentElement;
+      const section = _findExperienceSection();
       if (!section) return positions;
 
       const list = section.querySelector('ul');
@@ -267,7 +296,7 @@
   }
 
   function _isTimeRange(text) {
-    return /\b(jan|feb|m[aä]r|apr|ma[iy]|jun|jul|aug|sep|okt|oct|nov|dez|dec|heute|present|current|actualité)/i.test(text) &&
+    return /\b(jan|feb|m[aä]r|apr|ma[iy]|jun[ei]?|jul[iy]?|aug|sep|okt|oct|nov|dez|dec|heute|present|current|actualité)/i.test(text) &&
            /\d{4}/.test(text);
   }
 
@@ -281,10 +310,8 @@
            /^(Kompetenzen|Skills|Fähigkeiten):/i.test(text);
   }
 
-  /**
-   * Extrahiert Firmennamen aus vorberechneten Positionen,
-   * mit Topcard-Links als Fallback.
-   */
+  // ── Firmen aus Positionen + Topcard-Fallback ─────────────
+
   function extractCompaniesFromPositions(positions) {
     const companies = [];
 
@@ -300,8 +327,7 @@
         'a[href*="/company/"], a[href*="/school/"]'
       );
       for (const link of companyLinks) {
-        const textEl = link.querySelector('p') || link.querySelector('span') || link;
-        const text = textEl.innerText.trim();
+        const text = link.innerText.trim();
         if (text && text.length > 1 && text.length < 100 && !companies.includes(text)) {
           companies.push(text);
         }
@@ -311,6 +337,8 @@
     return companies;
   }
 
+  // ── Haupt-Extraktion ────────────────────────────────────
+
   function extractProfileData() {
     const name = extractName();
     const headline = extractHeadline();
@@ -318,24 +346,12 @@
     const currentPosition = positions.length > 0 ? positions[0] : null;
     const experienceCompanies = extractCompaniesFromPositions(positions);
 
-    const expAnchor = document.querySelector('[id="experience"]');
+    const expSection = _findExperienceSection();
     const _debug = {
-      experienceAnchorFound: !!expAnchor,
-      experienceSectionFound: false,
-      experienceListFound: false,
-      experienceItemCount: 0,
+      experienceSectionFound: !!expSection,
+      experiencePositionCount: positions.length,
+      sectionSearchMethod: _debugSectionMethod(),
     };
-    if (expAnchor) {
-      const sec = expAnchor.closest('section') || expAnchor.parentElement;
-      _debug.experienceSectionFound = !!sec;
-      if (sec) {
-        const ul = sec.querySelector('ul');
-        _debug.experienceListFound = !!ul;
-        if (ul) {
-          _debug.experienceItemCount = ul.querySelectorAll(':scope > li').length;
-        }
-      }
-    }
 
     const result = {
       name,
@@ -351,19 +367,47 @@
       _debug,
     };
 
-    const heuristicComplete = !!(name && name.length > 1 && headline && headline.length > 3);
-    if (!heuristicComplete) {
+    const needsLlmFallback = !currentPosition || !currentPosition.title || !currentPosition.company;
+    if (needsLlmFallback) {
       try {
-        const topcard = findTopcardSection();
-        const html = topcard ? topcard.outerHTML : '';
-        if (html && html.length > 100) {
-          result.fallbackHtml = html.substring(0, 200000);
+        const mainEl = document.querySelector('main') || document.body;
+        const html = mainEl.innerText || '';
+        if (html.length > 200) {
+          result.fallbackHtml = html.substring(0, 50000);
+          result._debug.fallbackHtmlLength = result.fallbackHtml.length;
         }
       } catch (_) { /* HTML-Extraktion optional */ }
     }
 
     return result;
   }
+
+  function _debugSectionMethod() {
+    if (document.querySelector('[id="experience"]')) return 'id=experience';
+    if (document.querySelector('#experience')) return '#experience';
+    if (document.querySelector('section[id*="experience" i]')) return 'section[id*=experience]';
+    if (document.querySelector('[data-section="experience"]')) return 'data-section';
+    const headings = document.querySelectorAll('h2, h3, [role="heading"]');
+    for (const h of headings) {
+      const text = (h.innerText || '').trim().toLowerCase();
+      if (text.includes('experience') || text.includes('berufserfahrung')) {
+        return `heading: "${h.innerText.trim()}"`;
+      }
+    }
+    const sections = document.querySelectorAll('main section');
+    for (const sec of sections) {
+      const links = sec.querySelectorAll('a[href*="/company/"]');
+      if (links.length >= 1) {
+        const text = sec.innerText || '';
+        if (/\d{4}/.test(text) && /(–|—|-|bis|present|heute|current)/i.test(text)) {
+          return 'company-links-heuristic';
+        }
+      }
+    }
+    return 'NICHT GEFUNDEN';
+  }
+
+  // ── Message Handler ──────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     if (request.action === 'extractProfile') {

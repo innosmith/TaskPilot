@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.routers.linkedin import _strip_html_noise, _extract_json, ExtractProfileRequest
+from app.routers.linkedin import _clean_input, _extract_json, ExtractProfileRequest
 
 SAMPLE_LINKEDIN_HTML = """
 <section data-member-id="123456">
@@ -45,29 +45,36 @@ SAMPLE_NOISY_HTML = """
 """
 
 
-class TestHtmlCleaning:
+class TestInputCleaning:
 
     def test_removes_script_tags(self):
-        cleaned = _strip_html_noise(SAMPLE_NOISY_HTML)
+        cleaned = _clean_input(SAMPLE_NOISY_HTML)
         assert "tracking" not in cleaned
         assert "analytics.track" not in cleaned
 
     def test_removes_style_tags(self):
-        cleaned = _strip_html_noise(SAMPLE_NOISY_HTML)
+        cleaned = _clean_input(SAMPLE_NOISY_HTML)
         assert ".hidden" not in cleaned
         assert "display: none" not in cleaned
 
     def test_preserves_content(self):
-        cleaned = _strip_html_noise(SAMPLE_NOISY_HTML)
+        cleaned = _clean_input(SAMPLE_NOISY_HTML)
         assert "Anna Beispiel" in cleaned
         assert "CTO at TechCorp" in cleaned
 
     def test_handles_empty_input(self):
-        assert _strip_html_noise("") == ""
+        assert _clean_input("") == ""
 
     def test_handles_plain_text(self):
-        result = _strip_html_noise("Einfacher Text ohne HTML")
+        result = _clean_input("Einfacher Text ohne HTML")
         assert "Einfacher Text" in result
+
+    def test_handles_linkedin_plaintext(self):
+        text = "Lars Kaiser\nUrbanist @ Urban Equipe\nBern, Schweiz\n\nBerufserfahrung\nUrbanist\nUrban Equipe\nOkt 2018 – Heute"
+        result = _clean_input(text)
+        assert "Lars Kaiser" in result
+        assert "Urban Equipe" in result
+        assert "Berufserfahrung" in result
 
 
 class TestJsonExtraction:

@@ -84,8 +84,9 @@ function formatHours(h: number): string {
 }
 
 function formatHoursHM(h: number): string {
-  const hours = Math.floor(h);
-  const mins = Math.round((h - hours) * 60);
+  const totalMinutes = Math.round(h * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
   return `${hours}:${String(mins).padStart(2, '0')}:00`;
 }
 
