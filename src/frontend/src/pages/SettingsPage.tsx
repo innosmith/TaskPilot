@@ -413,7 +413,7 @@ export function SettingsPage() {
       setExtApiKey(data.api_key);
       setExtHasKey(true);
       setExtKeyCreatedAt(data.created_at);
-      setExtMsg({ type: 'ok', text: 'API-Key generiert — jetzt kopieren und in der Extension einfuegen!' });
+      setExtMsg({ type: 'ok', text: 'API-Key generiert — jetzt kopieren und in der Extension einfügen!' });
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       setExtMsg({ type: 'err', text: `Fehler: ${detail}` });
@@ -963,7 +963,7 @@ export function SettingsPage() {
                   <div>
                     <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Browser-Extension (LinkedIn Sync)</h3>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      API-Key fuer die Chrome-Extension zur LinkedIn-Pipedrive-Synchronisation
+                      API-Key für die Chrome-Extension zur LinkedIn-Pipedrive-Synchronisation
                     </p>
                   </div>
                 </div>
@@ -1028,8 +1028,8 @@ export function SettingsPage() {
                   )}
 
                   <p className="text-[10px] text-gray-400 dark:text-gray-500">
-                    Der Key beginnt mit <code className="rounded bg-gray-100 px-1 dark:bg-gray-800">tpk_</code> und laeuft nicht ab.
-                    Beim Generieren eines neuen Keys wird der vorherige automatisch ungueltig.
+                    Der Key beginnt mit <code className="rounded bg-gray-100 px-1 dark:bg-gray-800">tpk_</code> und läuft nicht ab.
+                    Beim Generieren eines neuen Keys wird der vorherige automatisch ungültig.
                   </p>
                 </div>
               </div>

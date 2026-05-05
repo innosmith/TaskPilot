@@ -17,14 +17,32 @@
       <h2>Verbindung</h2>
       <div class="field">
         <label for="backend-url">TaskPilot Backend-URL</label>
-        <input type="url" id="backend-url" placeholder="http://localhost:8000">
+        <input type="url" id="backend-url" placeholder="https://tp.innosmith.ai">
         <p class="hint">Die URL deines TaskPilot-Backends (ohne Trailing-Slash), z.B. <code>https://tp.innosmith.ai</code> oder <code>http://localhost:8000</code>.</p>
       </div>
       <div class="field">
         <label for="api-token">API-Key</label>
         <input type="password" id="api-token" placeholder="tpk_…">
-        <p class="hint">Generiere den Key in TaskPilot unter <strong>Einstellungen → Integrationen → Browser-Extension</strong>. Er beginnt mit <code>tpk_</code> und laeuft nicht ab.</p>
+        <p class="hint">Generiere den Key in TaskPilot unter <strong>Einstellungen → Integrationen → Browser-Extension</strong>. Er beginnt mit <code>tpk_</code> und läuft nicht ab.</p>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Cloudflare Access <span class="badge">Optional</span></h2>
+      <p class="card-description">Falls dein Backend hinter Cloudflare Access geschützt ist (z.B. <code>tp.innosmith.ai</code>), benötigt die Extension einen Service Token, um sich zu authentifizieren.</p>
+      <div class="field">
+        <label for="cf-client-id">Client-ID</label>
+        <input type="text" id="cf-client-id" placeholder="xxxxxxxx.access">
+        <p class="hint">Zu finden unter: Cloudflare Zero Trust → Access → Service Auth → Service Tokens.</p>
+      </div>
+      <div class="field">
+        <label for="cf-client-secret">Client Secret</label>
+        <input type="password" id="cf-client-secret" placeholder="••••••••">
+        <p class="hint">Wird nur bei der Erstellung angezeigt — sicher aufbewahren.</p>
+      </div>
+    </section>
+
+    <section class="card actions-card">
       <div class="actions">
         <button id="btn-save" class="btn btn-primary">Speichern</button>
         <button id="btn-test" class="btn btn-secondary">Verbindung testen</button>
