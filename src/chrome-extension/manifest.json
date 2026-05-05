@@ -6,7 +6,9 @@
   "permissions": ["activeTab", "storage"],
   "host_permissions": [
     "*://www.linkedin.com/*",
-    "*://linkedin.com/*"
+    "*://linkedin.com/*",
+    "*://*.innosmith.ai/*",
+    "http://localhost/*"
   ],
   "content_scripts": [
     {
