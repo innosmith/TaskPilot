@@ -74,6 +74,12 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'extractProfileLLM') {
+    apiRequest('POST', '/api/linkedin/extract-profile', { html: request.payload.html })
+      .then(sendResponse);
+    return true;
+  }
+
   if (request.action === 'testConnection') {
     apiRequest('GET', '/api/pipedrive/test-connection')
       .then(sendResponse);

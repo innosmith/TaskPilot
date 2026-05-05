@@ -23,6 +23,7 @@ from app.routers import (
     export,
     finance,
     intelligence,
+    linkedin,
     memory,
     models,
     onedrive,
@@ -123,6 +124,7 @@ app.include_router(calendar.router)
 app.include_router(triage.router)
 app.include_router(models.router)
 app.include_router(pipedrive.router)
+app.include_router(linkedin.router)
 app.include_router(toggl.router)
 app.include_router(bexio.router)
 app.include_router(finance.router)

@@ -29,7 +29,8 @@ async function extractProfileFromTab() {
   if (!tab || !tab.url || !tab.url.includes('linkedin.com/in/')) {
     return null;
   }
-  return new Promise((resolve) => {
+
+  const heuristicData = await new Promise((resolve) => {
     chrome.tabs.sendMessage(tab.id, { action: 'extractProfile' }, (response) => {
       if (chrome.runtime.lastError || !response || !response.success) {
         resolve(null);
@@ -38,6 +39,57 @@ async function extractProfileFromTab() {
       }
     });
   });
+
+  if (!heuristicData) return null;
+
+  const nameOk = heuristicData.name && heuristicData.name.length > 1;
+  const headlineOk = heuristicData.headline && heuristicData.headline.length > 3;
+
+  if (nameOk && headlineOk) {
+    delete heuristicData.fallbackHtml;
+    return heuristicData;
+  }
+
+  if (!heuristicData.fallbackHtml) return heuristicData;
+
+  try {
+    const llmResult = await sendToBackground('extractProfileLLM', {
+      html: heuristicData.fallbackHtml,
+    });
+
+    if (llmResult.data && !llmResult.error) {
+      const llm = llmResult.data;
+      if (!nameOk && llm.name) heuristicData.name = llm.name;
+      if (!headlineOk && llm.headline) heuristicData.headline = llm.headline;
+      if (!heuristicData.location && llm.location) heuristicData.location = llm.location;
+      if (!heuristicData.jobTitle && llm.job_title) heuristicData.jobTitle = llm.job_title;
+      if ((!heuristicData.experienceCompanies || heuristicData.experienceCompanies.length === 0) && llm.companies) {
+        heuristicData.experienceCompanies = llm.companies;
+      }
+      if (!heuristicData.company && llm.companies && llm.companies.length > 0) {
+        heuristicData.company = llm.companies[0];
+      }
+      const { jobTitle: parsedTitle, company: parsedCompany } = parseHeadlineLocal(heuristicData.headline);
+      if (!heuristicData.jobTitle && parsedTitle) heuristicData.jobTitle = parsedTitle;
+      if (!heuristicData.company && parsedCompany) heuristicData.company = parsedCompany;
+    }
+  } catch (_) { /* LLM-Fallback optional, weiter mit Heuristik-Daten */ }
+
+  delete heuristicData.fallbackHtml;
+  return heuristicData;
+}
+
+function parseHeadlineLocal(headline) {
+  if (!headline) return { jobTitle: '', company: '' };
+  const atPatterns = [
+    /^(.+?)\s+(?:bei|at|@|chez|à)\s+(.+)$/i,
+    /^(.+?)\s*[|–—-]\s*(.+)$/,
+  ];
+  for (const pattern of atPatterns) {
+    const match = headline.match(pattern);
+    if (match) return { jobTitle: match[1].trim(), company: match[2].trim() };
+  }
+  return { jobTitle: headline, company: '' };
 }
 
 function populateNewState(data) {

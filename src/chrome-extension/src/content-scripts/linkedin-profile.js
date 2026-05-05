@@ -1,60 +1,199 @@
 /**
  * TaskPilot LinkedIn Sync – Content Script
  * Extrahiert Profildaten aus LinkedIn /in/*-Seiten.
+ *
+ * LinkedIn nutzt obfuskierte CSS-Klassen, die sich häufig ändern.
+ * Deshalb setzen wir auf strukturelle Selektoren, data-Attribute,
+ * aria-Labels und bekannte URL-Muster statt fragiler Klassennamen.
  */
 
 (() => {
   'use strict';
 
-  function extractText(selectors) {
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) {
-        const text = el.innerText.trim();
-        if (text) return text;
+  /**
+   * Findet die Topcard-Section – das Hauptprofil-Element oben auf der Seite.
+   * Sucht nach section[data-member-id], section mit "Topcard" im componentkey,
+   * oder fällt auf die erste grosse Section zurück.
+   */
+  function findTopcardSection() {
+    const byMemberId = document.querySelector('section[data-member-id]');
+    if (byMemberId) return byMemberId;
+
+    const byComponentKey = document.querySelector('section[componentkey*="Topcard" i]');
+    if (byComponentKey) return byComponentKey;
+
+    const byTestId = document.querySelector('[data-testid="profile-topcard"]');
+    if (byTestId) return byTestId;
+
+    const mainContent = document.querySelector('main') || document.body;
+    const firstSection = mainContent.querySelector('section');
+    if (firstSection) return firstSection;
+
+    return document.body;
+  }
+
+  function extractName() {
+    const titleTag = document.querySelector('title');
+    if (titleTag) {
+      const titleText = titleTag.textContent.trim();
+      const match = titleText.match(/^(.+?)\s*[|\u2013\u2014–—]\s*LinkedIn/);
+      if (match && match[1].trim().length > 1) {
+        return match[1].trim();
       }
     }
+
+    const topcard = findTopcardSection();
+
+    const h2 = topcard.querySelector('h2');
+    if (h2) {
+      const text = h2.innerText.trim();
+      if (text && text.length > 1 && !text.toLowerCase().includes('linkedin')) return text;
+    }
+
+    const h1 = topcard.querySelector('h1');
+    if (h1) {
+      const text = h1.innerText.trim();
+      if (text && text.length > 1) return text;
+    }
+
+    const h1Global = document.querySelector('h1');
+    if (h1Global) return h1Global.innerText.trim();
+
+    return '';
+  }
+
+  function extractHeadline() {
+    const topcard = findTopcardSection();
+    const name = extractName();
+
+    const nameHeading = topcard.querySelector('h1') || topcard.querySelector('h2');
+    if (nameHeading) {
+      let cursor = nameHeading.parentElement;
+      while (cursor && cursor !== topcard) {
+        let sibling = cursor.nextElementSibling;
+        while (sibling) {
+          const p = sibling.matches('p') ? sibling : sibling.querySelector('p');
+          if (p) {
+            const text = p.innerText.trim();
+            if (text && text.length > 5 && text !== name && !isLocationLike(text)) {
+              return text;
+            }
+          }
+          sibling = sibling.nextElementSibling;
+        }
+        cursor = cursor.parentElement;
+      }
+    }
+
+    const allParagraphs = topcard.querySelectorAll('p');
+    for (const p of allParagraphs) {
+      const text = p.innerText.trim();
+      if (
+        text &&
+        text.length > 15 &&
+        text !== name &&
+        !isLocationLike(text) &&
+        !isConnectionCount(text)
+      ) {
+        return text;
+      }
+    }
+
+    const metaDesc = document.querySelector('meta[name="description"]');
+    if (metaDesc) {
+      const content = metaDesc.getAttribute('content') || '';
+      const cleaned = content.replace(/^.*?[–—-]\s*/, '').trim();
+      if (cleaned && cleaned.length > 10) return cleaned;
+    }
+
+    return '';
+  }
+
+  function isLocationLike(text) {
+    return (
+      text.length < 40 &&
+      (/^[A-ZÄÖÜ][a-zäöüß]+(?:,\s*[A-ZÄÖÜ].*)?$/.test(text) ||
+        /^Schweiz|Deutschland|Österreich|France|Italy|United|Germany|Austria/i.test(text))
+    );
+  }
+
+  function isConnectionCount(text) {
+    return /\d+[\s+]*(?:Kontakte|Follower|connections|followers)/i.test(text);
+  }
+
+  function extractLocation() {
+    const topcard = findTopcardSection();
+
+    const contactLink = topcard.querySelector('a[href*="contact-info"], a[href*="overlay/contact"]');
+    if (contactLink) {
+      let container = contactLink.closest('div') || contactLink.parentElement;
+      if (container) {
+        const sibling = container.previousElementSibling;
+        if (sibling) {
+          const p = sibling.matches('p') ? sibling : sibling.querySelector('p');
+          if (p) {
+            const text = p.innerText.trim();
+            if (text && text.length < 60 && isLocationLike(text)) return text;
+          }
+        }
+      }
+    }
+
+    const paragraphs = topcard.querySelectorAll('p');
+    for (const p of paragraphs) {
+      const text = p.innerText.trim();
+      if (text && isLocationLike(text)) return text;
+    }
+
+    const spans = topcard.querySelectorAll('span');
+    for (const span of spans) {
+      if (span.children.length > 0) continue;
+      const text = span.innerText.trim();
+      if (text && isLocationLike(text)) return text;
+    }
+
     return '';
   }
 
   function extractProfileImage() {
-    const selectors = [
+    const highPriority = document.querySelector(
+      'img[src*="profile-displayphoto"][fetchpriority="high"]'
+    );
+    if (highPriority && isValidImageSrc(highPriority.src)) return highPriority.src;
+
+    const displayPhoto = document.querySelector('img[src*="profile-displayphoto"]');
+    if (displayPhoto && isValidImageSrc(displayPhoto.src)) return displayPhoto.src;
+
+    const topcard = findTopcardSection();
+    const topcardImg = topcard.querySelector('img[src*="profile-displayphoto"]');
+    if (topcardImg && isValidImageSrc(topcardImg.src)) return topcardImg.src;
+
+    const figureImg = topcard.querySelector('figure img[src^="https://"]');
+    if (figureImg && isValidImageSrc(figureImg.src)) return figureImg.src;
+
+    const allImages = document.querySelectorAll('img[src*="profile-displayphoto"]');
+    for (const img of allImages) {
+      if (isValidImageSrc(img.src) && img.src.includes('_400_400')) return img.src;
+    }
+    for (const img of allImages) {
+      if (isValidImageSrc(img.src)) return img.src;
+    }
+
+    const legacySelectors = [
       'img.pv-top-card-profile-picture__image--show',
       'img.pv-top-card-profile-picture__image',
       '.pv-top-card__photo img',
-      'img.profile-photo-edit__preview',
-      'img.presence-entity__image',
     ];
-    for (const sel of selectors) {
+    for (const sel of legacySelectors) {
       const img = document.querySelector(sel);
-      if (img && img.src && img.src.startsWith('http') && !img.src.includes('ghost')) {
-        return img.src;
-      }
+      if (img && isValidImageSrc(img.src)) return img.src;
     }
-    const headerImg = document.querySelector('.pv-top-card img[src*="profile-displayphoto"]');
-    if (headerImg) return headerImg.src;
+
     return '';
   }
 
-  function extractName() {
-    const h1 = document.querySelector('h1');
-    return h1 ? h1.innerText.trim() : '';
-  }
-
-  function extractHeadline() {
-    return extractText([
-      '.text-body-medium.break-words',
-      '.pv-top-card--list .text-body-medium',
-      '[data-generated-suggestion-target] .text-body-medium',
-    ]);
-  }
-
-  function extractLocation() {
-    return extractText([
-      '.pv-top-card--list .text-body-small.inline.t-black--light.break-words',
-      '.pv-top-card--list-bullet .text-body-small',
-      'span.text-body-small.inline.t-black--light.break-words',
-    ]);
+  function isValidImageSrc(src) {
+    return src && src.startsWith('https://') && !src.includes('ghost');
   }
 
   function extractLinkedInUrl() {
@@ -76,44 +215,59 @@
     return { jobTitle: headline, company: '' };
   }
 
+  /**
+   * Extrahiert Firmennamen aus der Topcard-Rechtspalte.
+   * LinkedIn zeigt dort die aktuellen Positionen als kompakte Links.
+   */
   function extractExperienceCompanies() {
     const companies = [];
-    try {
-      const experienceSection = document.querySelector('[id="experience"]');
-      if (!experienceSection) return companies;
-      const container = experienceSection.nextElementSibling?.nextElementSibling;
-      if (!container) return companies;
-      const entries = container.querySelector('ul')?.querySelectorAll(':scope > li');
-      if (!entries) return companies;
+    const topcard = findTopcardSection();
 
-      entries.forEach((entry) => {
-        try {
-          const topDiv = entry.querySelector('div');
-          if (!topDiv) return;
-          const dataContainer = topDiv.querySelectorAll(':scope > div')[1];
-          if (!dataContainer) return;
+    const companyLinks = topcard.querySelectorAll(
+      'a[href*="/company/"], a[href*="/school/"]'
+    );
+    for (const link of companyLinks) {
+      const textEl = link.querySelector('p') || link.querySelector('span') || link;
+      const text = textEl.innerText.trim();
+      if (text && text.length > 1 && text.length < 100 && !companies.includes(text)) {
+        companies.push(text);
+      }
+    }
 
-          const rolesList = dataContainer.querySelector(':scope > div > ul');
-          const roleItems = rolesList?.querySelectorAll(':scope > li');
-          const isMultiRole = !!roleItems && [...roleItems].some(li => li.querySelector('.t-bold span'));
-
-          if (isMultiRole) {
-            const companyEl = dataContainer.querySelector('a div span');
-            if (companyEl) {
-              const name = companyEl.innerText.trim();
-              if (name && !companies.includes(name)) companies.push(name);
-            }
-          } else {
-            const companyAndType = dataContainer.querySelector('span.t-14.t-normal span');
-            if (companyAndType) {
-              const parts = companyAndType.innerText.trim().split('·').map(p => p.trim());
-              const name = parts[0];
-              if (name && !companies.includes(name)) companies.push(name);
-            }
+    if (companies.length === 0) {
+      try {
+        const experienceSection = document.querySelector('[id="experience"]');
+        if (experienceSection) {
+          const list =
+            experienceSection.parentElement?.querySelector('ul') ||
+            experienceSection.closest('section')?.querySelector('ul');
+          if (list) {
+            const items = list.querySelectorAll(':scope > li');
+            items.forEach((item) => {
+              try {
+                const link = item.querySelector('a[href*="/company/"], a[href*="/school/"]');
+                if (link) {
+                  const name = (link.querySelector('span') || link).innerText.trim();
+                  if (name && !companies.includes(name)) companies.push(name);
+                  return;
+                }
+                const spans = item.querySelectorAll('span');
+                for (const span of spans) {
+                  if (span.children.length > 0) continue;
+                  const text = span.innerText.trim();
+                  if (text.includes('·')) {
+                    const name = text.split('·')[0].trim();
+                    if (name && !companies.includes(name)) companies.push(name);
+                    break;
+                  }
+                }
+              } catch (_) { /* Eintrag überspringen */ }
+            });
           }
-        } catch (_) { /* entry parsing error – skip */ }
-      });
-    } catch (_) { /* experience section error – skip */ }
+        }
+      } catch (_) { /* Experience-Section nicht verfügbar */ }
+    }
+
     return companies;
   }
 
@@ -127,7 +281,7 @@
       experienceCompanies.unshift(company);
     }
 
-    return {
+    const result = {
       name,
       headline,
       jobTitle,
@@ -137,6 +291,19 @@
       linkedinUrl: extractLinkedInUrl(),
       experienceCompanies,
     };
+
+    const heuristicComplete = !!(name && name.length > 1 && headline && headline.length > 3);
+    if (!heuristicComplete) {
+      try {
+        const topcard = findTopcardSection();
+        const html = topcard ? topcard.outerHTML : '';
+        if (html && html.length > 100) {
+          result.fallbackHtml = html.substring(0, 200000);
+        }
+      } catch (_) { /* HTML-Extraktion optional */ }
+    }
+
+    return result;
   }
 
   chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
