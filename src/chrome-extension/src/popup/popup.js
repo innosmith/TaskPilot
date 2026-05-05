@@ -343,6 +343,7 @@ function populateDebugPreview(data) {
 
 // Event Listeners
 document.addEventListener('DOMContentLoaded', async () => {
+  showState('state-loading');
   profileData = await extractProfileFromTab();
   if (!profileData) {
     showState('state-not-linkedin');

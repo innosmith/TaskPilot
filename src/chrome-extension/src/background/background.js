@@ -61,6 +61,36 @@ async function apiRequest(method, path, body) {
   }
 }
 
+async function downloadImageAsBase64(imageUrl) {
+  if (!imageUrl) return null;
+  try {
+    const response = await fetch(imageUrl);
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    if (blob.size < 500) return null;
+    const buffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  } catch (e) {
+    console.warn('Profilbild-Download fehlgeschlagen:', e.message);
+    return null;
+  }
+}
+
+async function handleLinkedInSync(payload) {
+  if (payload.profile_image_url) {
+    const base64 = await downloadImageAsBase64(payload.profile_image_url);
+    if (base64) {
+      payload.profile_image_base64 = base64;
+    }
+  }
+  return apiRequest('POST', '/api/pipedrive/linkedin-sync', payload);
+}
+
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.action === 'linkedinLookup') {
     apiRequest('POST', '/api/pipedrive/linkedin-lookup', request.payload)
@@ -69,7 +99,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   }
 
   if (request.action === 'linkedinSync') {
-    apiRequest('POST', '/api/pipedrive/linkedin-sync', request.payload)
+    handleLinkedInSync(request.payload)
       .then(sendResponse);
     return true;
   }

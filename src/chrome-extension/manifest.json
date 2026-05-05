@@ -7,6 +7,8 @@
   "host_permissions": [
     "*://www.linkedin.com/*",
     "*://linkedin.com/*",
+    "*://media.licdn.com/*",
+    "*://*.licdn.com/*",
     "*://*.innosmith.ai/*",
     "http://localhost/*"
   ],

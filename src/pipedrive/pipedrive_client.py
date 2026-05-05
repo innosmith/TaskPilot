@@ -188,7 +188,7 @@ class PipedriveClient:
         return data.get("data", {})
 
     async def update_person(self, person_id: int, **kwargs) -> dict:
-        data = await self._patch_v2(f"/persons/{person_id}", kwargs)
+        data = await self._put_v1(f"/persons/{person_id}", kwargs)
         return data.get("data", {})
 
     # ── Organizations ────────────────────────────────────────

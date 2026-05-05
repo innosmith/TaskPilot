@@ -727,6 +727,7 @@ class LinkedInSyncRequest(BaseModel):
     job_title: str | None = None
     linkedin_url: str | None = None
     profile_image_url: str | None = None
+    profile_image_base64: str | None = None
     update_fields: list[str] | None = None
 
 
@@ -786,9 +787,17 @@ async def linkedin_sync(
         person = await client.create_person(body.name, **kwargs)
         person_id = person.get("id", 0)
 
-        if body.profile_image_url and person_id:
-            image_data = await _download_image(body.profile_image_url)
-            if image_data:
+        if (body.profile_image_base64 or body.profile_image_url) and person_id:
+            image_data = None
+            if body.profile_image_base64:
+                import base64
+                try:
+                    image_data = base64.b64decode(body.profile_image_base64)
+                except Exception:
+                    pass
+            if not image_data and body.profile_image_url:
+                image_data = await _download_image(body.profile_image_url)
+            if image_data and len(image_data) > 500:
                 try:
                     await client.upload_person_picture(person_id, image_data)
                 except Exception as exc:
@@ -808,31 +817,57 @@ async def linkedin_sync(
         kwargs = {}
         updated: list[str] = []
 
+        logger.info(
+            "LinkedIn-Sync Update: person_id=%s, update_fields=%s, linkedin_key=%s, role_key=%s",
+            body.person_id, update_fields, linkedin_key, role_key,
+        )
+
         if "org_name" in update_fields and body.org_name:
             org_id = await _resolve_org_id(body.org_name)
             if org_id:
                 kwargs["org_id"] = org_id
                 updated.append("org_name")
 
-        if "linkedin_url" in update_fields and linkedin_key and body.linkedin_url:
-            kwargs[linkedin_key] = body.linkedin_url
-            updated.append("linkedin_url")
+        if "linkedin_url" in update_fields and body.linkedin_url:
+            if linkedin_key:
+                kwargs[linkedin_key] = body.linkedin_url
+                updated.append("linkedin_url")
+            else:
+                logger.warning("linkedin_key ist None — LinkedIn-URL kann nicht geschrieben werden")
 
-        if "job_title" in update_fields and role_key and body.job_title:
-            kwargs[role_key] = body.job_title
-            updated.append("job_title")
+        if "job_title" in update_fields and body.job_title:
+            if role_key:
+                kwargs[role_key] = body.job_title
+                updated.append("job_title")
+            else:
+                logger.warning("role_key ist None — Rolle kann nicht geschrieben werden")
 
         if kwargs:
+            logger.info("Pipedrive update_person(%s): %s", body.person_id, list(kwargs.keys()))
             await client.update_person(body.person_id, **kwargs)
 
-        if "picture" in update_fields and body.profile_image_url:
-            image_data = await _download_image(body.profile_image_url)
-            if image_data:
+        if "picture" in update_fields and (body.profile_image_base64 or body.profile_image_url):
+            image_data = None
+            if body.profile_image_base64:
+                import base64
+                try:
+                    image_data = base64.b64decode(body.profile_image_base64)
+                    logger.info("Profilbild aus Base64: %d bytes", len(image_data))
+                except Exception as exc:
+                    logger.warning("Base64-Decode fehlgeschlagen: %s", exc)
+            if not image_data and body.profile_image_url:
+                logger.info("Profilbild-Download von: %s", body.profile_image_url[:80])
+                image_data = await _download_image(body.profile_image_url)
+
+            if image_data and len(image_data) > 500:
                 try:
                     await client.upload_person_picture(body.person_id, image_data)
                     updated.append("picture")
+                    logger.info("Profilbild erfolgreich hochgeladen")
                 except Exception as exc:
                     logger.warning("Profilbild-Upload fehlgeschlagen: %s", exc)
+            else:
+                logger.warning("Kein gültiges Profilbild vorhanden")
 
         _person_cache.clear()
         return LinkedInSyncResponse(
