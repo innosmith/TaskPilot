@@ -184,7 +184,7 @@ class PipedriveClient:
 
     async def create_person(self, name: str, **kwargs) -> dict:
         body = {"name": name, **kwargs}
-        data = await self._post_v2("/persons", body)
+        data = await self._post_v1("/persons", body)
         return data.get("data", {})
 
     async def update_person(self, person_id: int, **kwargs) -> dict:
