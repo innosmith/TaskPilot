@@ -1,6 +1,10 @@
 /**
  * TaskPilot LinkedIn Sync – Popup Logic
- * Steuert die drei Zustaende: Neu / Existiert / Update.
+ * Steuert die drei Zustände: Neu / Existiert / Update.
+ *
+ * Alle strukturierten Profildaten (Name, Headline, Rolle, Firma, Ort)
+ * kommen ausschliesslich vom LLM-Backend. Das Content Script liefert
+ * nur linkedinUrl, profileImageUrl und den rohen Seitentext.
  */
 
 let profileData = null;
@@ -30,7 +34,7 @@ async function extractProfileFromTab() {
     return null;
   }
 
-  const heuristicData = await new Promise((resolve) => {
+  const rawData = await new Promise((resolve) => {
     chrome.tabs.sendMessage(tab.id, { action: 'extractProfile' }, (response) => {
       if (chrome.runtime.lastError || !response || !response.success) {
         resolve(null);
@@ -40,40 +44,44 @@ async function extractProfileFromTab() {
     });
   });
 
-  if (!heuristicData) return null;
+  if (!rawData || !rawData.pageText) return null;
 
-  if (!heuristicData.fallbackHtml) return heuristicData;
+  const result = {
+    linkedinUrl: rawData.linkedinUrl || '',
+    profileImageUrl: rawData.profileImageUrl || '',
+    name: '',
+    headline: '',
+    jobTitle: '',
+    company: '',
+    location: '',
+    experienceCompanies: [],
+    _debug: { source: 'LLM' },
+  };
 
   try {
     const llmResult = await sendToBackground('extractProfileLLM', {
-      html: heuristicData.fallbackHtml,
+      html: rawData.pageText,
     });
 
-    if (llmResult.data && !llmResult.error) {
+    if (llmResult && llmResult.data && !llmResult.error) {
       const llm = llmResult.data;
-      if (!heuristicData.name && llm.name) heuristicData.name = llm.name;
-      if (!heuristicData.headline && llm.headline) heuristicData.headline = llm.headline;
-      if (!heuristicData.location && llm.location) heuristicData.location = llm.location;
-      if (!heuristicData.jobTitle && llm.job_title) heuristicData.jobTitle = llm.job_title;
-      if (!heuristicData.company && llm.companies && llm.companies.length > 0) {
-        heuristicData.company = llm.companies[0];
-      }
-      if ((!heuristicData.experienceCompanies || heuristicData.experienceCompanies.length === 0) && llm.companies) {
-        heuristicData.experienceCompanies = llm.companies;
-      }
-      if (heuristicData.currentPosition && !heuristicData.currentPosition.title && llm.job_title) {
-        heuristicData.currentPosition.title = llm.job_title;
-      }
-      if (heuristicData.currentPosition && !heuristicData.currentPosition.company && llm.companies && llm.companies.length > 0) {
-        heuristicData.currentPosition.company = llm.companies[0];
-      }
-      heuristicData._debug = heuristicData._debug || {};
-      heuristicData._debug.llmUsed = true;
+      result.name = llm.name || '';
+      result.headline = llm.headline || '';
+      result.jobTitle = llm.job_title || '';
+      result.location = llm.location || '';
+      result.experienceCompanies = llm.companies || [];
+      result.company = (llm.companies && llm.companies.length > 0) ? llm.companies[0] : '';
+      result._debug.llmSuccess = true;
+    } else {
+      result._debug.llmSuccess = false;
+      result._debug.llmError = llmResult?.error || 'Unbekannter Fehler';
     }
-  } catch (_) { /* LLM-Fallback optional, weiter mit Heuristik-Daten */ }
+  } catch (err) {
+    result._debug.llmSuccess = false;
+    result._debug.llmError = err.message;
+  }
 
-  delete heuristicData.fallbackHtml;
-  return heuristicData;
+  return result;
 }
 
 function populateNewState(data) {
@@ -304,33 +312,22 @@ function populateDebugPreview(data) {
   tbody.innerHTML = '';
 
   const fields = [
-    { label: 'Name', value: data.name },
-    { label: 'Headline', value: data.headline },
-    { label: 'Akt. Rolle', value: data.currentPosition?.title || data.jobTitle, source: data.currentPosition?.title ? 'Experience' : 'Fallback' },
-    { label: 'Akt. Firma', value: data.currentPosition?.company || data.company, source: data.currentPosition?.company ? 'Experience' : 'Fallback' },
-    { label: 'Zeitraum', value: data.currentPosition?.timeRange },
-    { label: 'Ort', value: data.location },
-    { label: 'Firmen', value: data.experienceCompanies?.join(', ') },
-    { label: 'Bild', value: data.profileImageUrl ? 'vorhanden' : 'nicht gefunden' },
-    { label: 'URL', value: data.linkedinUrl },
+    { label: 'Name', value: data.name, source: 'LLM' },
+    { label: 'Headline', value: data.headline, source: 'LLM' },
+    { label: 'Akt. Rolle', value: data.jobTitle, source: 'LLM' },
+    { label: 'Akt. Firma', value: data.company, source: 'LLM' },
+    { label: 'Ort', value: data.location, source: 'LLM' },
+    { label: 'Firmen', value: data.experienceCompanies?.join(', '), source: 'LLM' },
+    { label: 'Bild', value: data.profileImageUrl ? 'vorhanden' : 'nicht gefunden', source: 'DOM (CDN)' },
+    { label: 'URL', value: data.linkedinUrl, source: 'DOM (Browser)' },
   ];
-
-  if (data.allPositions && data.allPositions.length > 1) {
-    const others = data.allPositions.slice(1).map(
-      p => `${p.title || '?'} @ ${p.company || '?'}`
-    ).join('; ');
-    fields.push({ label: 'Weitere Pos.', value: others });
-  }
 
   if (data._debug) {
     const d = data._debug;
-    const parts = [];
-    parts.push(`Exp: ${d.experienceSectionFound ? 'ja' : 'NEIN'}`);
-    if (d.sectionSearchMethod) parts.push(`via: ${d.sectionSearchMethod}`);
-    parts.push(`Pos: ${d.experiencePositionCount || 0}`);
-    if (d.fallbackHtmlLength) parts.push(`HTML: ${d.fallbackHtmlLength}`);
-    if (d.llmUsed) parts.push('LLM: ja');
-    fields.push({ label: 'DOM-Diagnose', value: parts.join(' · ') });
+    const parts = [`Quelle: ${d.source || '?'}`];
+    if (d.llmSuccess !== undefined) parts.push(`LLM: ${d.llmSuccess ? 'OK' : 'Fehler'}`);
+    if (d.llmError) parts.push(`Fehler: ${d.llmError}`);
+    fields.push({ label: 'Diagnose', value: parts.join(' · ') });
   }
 
   for (const field of fields) {

@@ -1,12 +1,11 @@
 """Router für LLM-basierte LinkedIn-Profil-Extraktion.
 
-Nimmt rohes HTML einer LinkedIn-Profilseite entgegen und extrahiert
-strukturierte Profildaten via LLM. Dient als Fallback, wenn die
-heuristischen Selektoren im Chrome-Extension Content-Script versagen
-(z.B. nach LinkedIn-DOM-Änderungen).
+Nimmt den Plaintext einer LinkedIn-Profilseite entgegen (via Content
+Script innerText) und extrahiert strukturierte Profildaten via LLM.
+Das ist die primäre und einzige Extraktionsmethode — kein Fallback.
 
-LinkedIn-Profildaten sind öffentlich → Cloud-LLMs (Gemini Flash,
-GPT-4o-mini) sind erlaubt und massiv schneller als lokale Modelle.
+LinkedIn-Profildaten sind öffentlich → Cloud-LLMs (GPT-4.1-nano)
+sind erlaubt und massiv schneller als lokale Modelle.
 """
 
 import json
@@ -54,13 +53,12 @@ RESPONSE_FORMAT = {
 }
 
 SYSTEM_PROMPT = (
-    "Du extrahierst strukturierte Profildaten aus LinkedIn-Profiltext. "
-    "Der Input kann HTML oder Plaintext sein. "
+    "Du extrahierst strukturierte Profildaten aus dem Plaintext einer LinkedIn-Profilseite. "
     "Antworte NUR mit validem JSON, kein anderer Text. Felder: "
-    "name (Vorname + Nachname), headline (Berufsbezeichnung/Tagline), "
+    "name (Vorname + Nachname), headline (Berufsbezeichnung/Tagline wie auf dem Profil), "
     "location (Standort/Ort, z.B. 'Bern, Schweiz'), "
-    "job_title (aktuelle Berufsbezeichnung aus dem Experience/Berufserfahrung-Bereich, NICHT die Headline), "
-    "companies (Liste der aktuellen Firmen/Organisationen aus dem Experience-Bereich). "
+    "job_title (aktuelle Berufsbezeichnung aus dem Berufserfahrung/Experience-Bereich, NICHT die Headline), "
+    "companies (Liste der aktuellen Firmen/Organisationen aus dem Berufserfahrung/Experience-Bereich). "
     "WICHTIG: job_title soll die konkrete Rolle aus der Berufserfahrung sein "
     "(z.B. 'Leiterin Internal Services'), nicht die Headline. "
     "Falls ein Feld nicht vorhanden ist, gib einen leeren String "
@@ -78,24 +76,7 @@ def _setup_api_keys():
 
 
 def _clean_input(text: str) -> str:
-    """Bereinigt Input — funktioniert sowohl mit HTML als auch Plaintext."""
-    if "<" in text and ">" in text:
-        try:
-            import lxml.html as LH
-            from lxml.html.clean import Cleaner
-
-            cleaner = Cleaner(
-                scripts=True, javascript=True, style=True,
-                inline_style=True, safe_attrs_only=False,
-            )
-            doc = LH.fromstring(text)
-            cleaned = cleaner.clean_html(doc)
-            return LH.tostring(cleaned, encoding="unicode")
-        except Exception:
-            cleaned = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
-            cleaned = re.sub(r"<style[^>]*>.*?</style>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-            cleaned = re.sub(r"<[^>]+>", " ", cleaned)
-            return re.sub(r"\s+", " ", cleaned).strip()
+    """Bereinigt Plaintext-Input: konsolidiert Whitespace, kürzt auf sinnvolle Länge."""
     return re.sub(r"\s{3,}", "\n", text).strip()
 
 
@@ -111,7 +92,7 @@ def _extract_json(text: str) -> dict:
 
 
 class ExtractProfileRequest(BaseModel):
-    html: str = Field(..., min_length=50, max_length=500_000, description="LinkedIn-Profilinhalt (HTML oder Plaintext)")
+    html: str = Field(..., min_length=50, max_length=500_000, description="Plaintext der LinkedIn-Profilseite (via innerText)")
 
 
 class ExtractedProfile(BaseModel):
@@ -128,19 +109,19 @@ async def extract_profile_from_html(
     body: ExtractProfileRequest,
     user: User = Depends(get_current_user),
 ):
-    """Extrahiert LinkedIn-Profildaten aus rohem HTML via Cloud-LLM."""
+    """Extrahiert LinkedIn-Profildaten aus Plaintext via Cloud-LLM."""
     _setup_api_keys()
 
-    clean_html = _clean_input(body.html)
-    if len(clean_html) > 100_000:
-        clean_html = clean_html[:100_000]
+    clean_text = _clean_input(body.html)
+    if len(clean_text) > 100_000:
+        clean_text = clean_text[:100_000]
 
     try:
         response = await litellm.acompletion(
             model=LINKEDIN_EXTRACT_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": clean_html},
+                {"role": "user", "content": clean_text},
             ],
             response_format=RESPONSE_FORMAT,
             temperature=0,

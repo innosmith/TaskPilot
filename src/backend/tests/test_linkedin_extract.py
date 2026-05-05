@@ -1,14 +1,16 @@
 """Tests für den LLM-basierten LinkedIn-Profil-Extraktions-Endpoint.
 
 Prüft:
-- HTML-Cleaning (Script/Style-Entfernung)
+- Plaintext-Cleaning (Whitespace-Konsolidierung)
 - JSON-Extraktion aus verschiedenen LLM-Output-Formaten
 - Erfolgreiche Extraktion mit gemocktem LiteLLM
 - Fehlerbehandlung bei ungültigem LLM-Output
 - Validierung der Request-Parameter
+- Integrationstests mit echtem LLM (Marker: integration)
 """
 
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -16,51 +18,95 @@ import pytest
 
 from app.routers.linkedin import _clean_input, _extract_json, ExtractProfileRequest
 
-SAMPLE_LINKEDIN_HTML = """
-<section data-member-id="123456">
-  <h1>Max Mustermann</h1>
-  <p>Senior Consultant bei InnoSmith GmbH</p>
-  <p>Bern, Schweiz</p>
-  <a href="/company/innosmith">
-    <span>InnoSmith GmbH</span>
-  </a>
-  <img src="https://media.licdn.com/dms/image/profile-displayphoto-shrink_400_400/abc123" />
-</section>
+
+# ── Fixtures: Realistische LinkedIn-Profiltext-Samples ────────────
+
+PROFILE_DE_MULTI_POSITION = """Kim Tokarski
+Professor (Entrepreneurship & Innovation) BFH | Speaker, Author, Consultant
+Bern, Schweiz
+
+Berufserfahrung
+Professor (Entrepreneurship & Innovation)
+Berner Fachhochschule
+Sep 2010 – Heute · 15 Jahre 9 Monate
+Bern, Schweiz
+
+Visiting Professor
+University of Applied Sciences Upper Austria
+Mär 2020 – Heute · 5 Jahre 3 Monate
+
+Direktor
+Institute for Innovation, Strategic Entrepreneurship and Sustainable Development
+Jan 2018 – Dez 2022 · 5 Jahre
+Bern, Schweiz
+
+Ausbildung
+Universität Bern
+Dr. rer. oec., Betriebswirtschaftslehre
+2004 – 2008
 """
 
-SAMPLE_NOISY_HTML = """
-<html>
-<head>
-  <script>var tracking = true; console.log('spy');</script>
-  <style>.hidden { display: none; }</style>
-</head>
-<body>
-  <section>
-    <h1>Anna Beispiel</h1>
-    <p>CTO at TechCorp</p>
-  </section>
-  <script>analytics.track('view');</script>
-</body>
-</html>
+PROFILE_EN_SHORT = """Lars Kayser
+Urbanist @ Urban Equipe
+Bern, Switzerland
+
+Experience
+Urbanist
+Urban Equipe
+Oct 2018 – Present · 6 years 8 months
+Bern, Switzerland
+
+Co-Founder
+Collectif Dynamo
+Jan 2015 – Dec 2020 · 6 years
+
+Education
+ETH Zürich
+MSc Architecture
+2012 – 2014
 """
 
+PROFILE_DE_SINGLE_ROLE = """Anna Meier
+Head of People & Culture bei TechCorp AG
+Zürich, Schweiz
+
+Berufserfahrung
+Head of People & Culture
+TechCorp AG
+Jan 2022 – Heute · 3 Jahre 5 Monate
+Zürich, Schweiz
+
+HR Business Partner
+SwissRe
+Mär 2018 – Dez 2021 · 3 Jahre 10 Monate
+
+Ausbildung
+Universität St. Gallen
+Master in Business Administration
+2015 – 2017
+"""
+
+PROFILE_EN_MINIMAL = """John Smith
+Software Engineer
+San Francisco Bay Area
+
+Experience
+Software Engineer
+Google
+2021 – Present
+"""
+
+
+# ── Unit Tests ──────────────────────────────────────────────────
 
 class TestInputCleaning:
 
-    def test_removes_script_tags(self):
-        cleaned = _clean_input(SAMPLE_NOISY_HTML)
-        assert "tracking" not in cleaned
-        assert "analytics.track" not in cleaned
-
-    def test_removes_style_tags(self):
-        cleaned = _clean_input(SAMPLE_NOISY_HTML)
-        assert ".hidden" not in cleaned
-        assert "display: none" not in cleaned
-
-    def test_preserves_content(self):
-        cleaned = _clean_input(SAMPLE_NOISY_HTML)
-        assert "Anna Beispiel" in cleaned
-        assert "CTO at TechCorp" in cleaned
+    def test_consolidates_whitespace(self):
+        text = "Zeile 1\n\n\n\n\nZeile 2"
+        result = _clean_input(text)
+        assert "Zeile 1" in result
+        assert "Zeile 2" in result
+        assert "\n\n\n" not in result
 
     def test_handles_empty_input(self):
         assert _clean_input("") == ""
@@ -70,10 +116,15 @@ class TestInputCleaning:
         assert "Einfacher Text" in result
 
     def test_handles_linkedin_plaintext(self):
-        text = "Lars Kaiser\nUrbanist @ Urban Equipe\nBern, Schweiz\n\nBerufserfahrung\nUrbanist\nUrban Equipe\nOkt 2018 – Heute"
-        result = _clean_input(text)
-        assert "Lars Kaiser" in result
+        result = _clean_input(PROFILE_EN_SHORT)
+        assert "Lars Kayser" in result
         assert "Urban Equipe" in result
+        assert "Experience" in result
+
+    def test_preserves_structure(self):
+        result = _clean_input(PROFILE_DE_MULTI_POSITION)
+        assert "Kim Tokarski" in result
+        assert "Berner Fachhochschule" in result
         assert "Berufserfahrung" in result
 
 
@@ -104,12 +155,12 @@ class TestJsonExtraction:
 
 class TestExtractProfileRequest:
 
-    def test_rejects_short_html(self):
+    def test_rejects_short_text(self):
         with pytest.raises(Exception):
-            ExtractProfileRequest(html="<p>kurz</p>")
+            ExtractProfileRequest(html="kurzer Text")
 
-    def test_accepts_valid_html(self):
-        req = ExtractProfileRequest(html=SAMPLE_LINKEDIN_HTML)
+    def test_accepts_valid_text(self):
+        req = ExtractProfileRequest(html=PROFILE_DE_MULTI_POSITION)
         assert len(req.html) > 50
 
 
@@ -147,7 +198,7 @@ class TestExtractProfileEndpoint:
                 return_value=_mock_litellm_response(expected_output)
             )
 
-            body = ExtractProfileRequest(html=SAMPLE_LINKEDIN_HTML)
+            body = ExtractProfileRequest(html=PROFILE_DE_MULTI_POSITION)
             result = await extract_profile_from_html(body=body, user=mock_user)
 
             assert result.name == "Max Mustermann"
@@ -178,7 +229,7 @@ class TestExtractProfileEndpoint:
                 return_value=_mock_litellm_response(empty_output)
             )
 
-            body = ExtractProfileRequest(html=SAMPLE_LINKEDIN_HTML)
+            body = ExtractProfileRequest(html=PROFILE_DE_MULTI_POSITION)
             result = await extract_profile_from_html(body=body, user=mock_user)
 
             assert result.name == ""
@@ -204,7 +255,7 @@ class TestExtractProfileEndpoint:
         with patch("app.routers.linkedin.litellm") as mock_litellm:
             mock_litellm.acompletion = AsyncMock(return_value=broken_response)
 
-            body = ExtractProfileRequest(html=SAMPLE_LINKEDIN_HTML)
+            body = ExtractProfileRequest(html=PROFILE_DE_MULTI_POSITION)
             with pytest.raises(HTTPException) as exc_info:
                 await extract_profile_from_html(body=body, user=mock_user)
             assert exc_info.value.status_code == 502
@@ -223,7 +274,7 @@ class TestExtractProfileEndpoint:
                 side_effect=ConnectionError("API nicht erreichbar")
             )
 
-            body = ExtractProfileRequest(html=SAMPLE_LINKEDIN_HTML)
+            body = ExtractProfileRequest(html=PROFILE_DE_MULTI_POSITION)
             with pytest.raises(HTTPException) as exc_info:
                 await extract_profile_from_html(body=body, user=mock_user)
             assert exc_info.value.status_code == 502
@@ -248,7 +299,88 @@ class TestExtractProfileEndpoint:
         with patch("app.routers.linkedin.litellm") as mock_litellm:
             mock_litellm.acompletion = AsyncMock(return_value=empty_response)
 
-            body = ExtractProfileRequest(html=SAMPLE_LINKEDIN_HTML)
+            body = ExtractProfileRequest(html=PROFILE_DE_MULTI_POSITION)
             with pytest.raises(HTTPException) as exc_info:
                 await extract_profile_from_html(body=body, user=mock_user)
             assert exc_info.value.status_code == 502
+
+
+# ── Integrationstests (echtes LLM, kein Mock) ───────────────────
+# Aufruf: pytest -m integration src/backend/tests/test_linkedin_extract.py
+
+@pytest.mark.integration
+class TestLLMIntegration:
+    """Testet die Extraktion mit echtem LLM-Aufruf gegen den Backend-Endpoint.
+
+    Benötigt: OPENAI_API_KEY in der Umgebung oder .env.dev.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_api_key(self):
+        if not os.environ.get("OPENAI_API_KEY"):
+            try:
+                from app.config import get_settings
+                s = get_settings()
+                if s.openai_api_key:
+                    os.environ["OPENAI_API_KEY"] = s.openai_api_key
+                else:
+                    pytest.skip("OPENAI_API_KEY nicht verfügbar")
+            except Exception:
+                pytest.skip("OPENAI_API_KEY nicht verfügbar")
+
+    @pytest.fixture
+    def mock_user(self):
+        return SimpleNamespace(
+            id=1, email="test@example.com", role="owner", settings={}
+        )
+
+    @pytest.mark.asyncio
+    async def test_de_profile_multi_position(self, mock_user):
+        from app.routers.linkedin import extract_profile_from_html, ExtractProfileRequest
+
+        body = ExtractProfileRequest(html=PROFILE_DE_MULTI_POSITION)
+        result = await extract_profile_from_html(body=body, user=mock_user)
+
+        assert "Tokarski" in result.name
+        assert result.job_title, "job_title darf nicht leer sein"
+        assert any("Berner Fachhochschule" in c or "BFH" in c for c in result.companies), \
+            f"Erwarte BFH in companies, erhalten: {result.companies}"
+        assert result.location, "location darf nicht leer sein"
+
+    @pytest.mark.asyncio
+    async def test_en_profile_short(self, mock_user):
+        from app.routers.linkedin import extract_profile_from_html, ExtractProfileRequest
+
+        body = ExtractProfileRequest(html=PROFILE_EN_SHORT)
+        result = await extract_profile_from_html(body=body, user=mock_user)
+
+        assert "Kayser" in result.name
+        assert result.job_title, "job_title darf nicht leer sein"
+        assert any("Urban Equipe" in c for c in result.companies), \
+            f"Erwarte Urban Equipe in companies, erhalten: {result.companies}"
+
+    @pytest.mark.asyncio
+    async def test_de_single_role(self, mock_user):
+        from app.routers.linkedin import extract_profile_from_html, ExtractProfileRequest
+
+        body = ExtractProfileRequest(html=PROFILE_DE_SINGLE_ROLE)
+        result = await extract_profile_from_html(body=body, user=mock_user)
+
+        assert "Meier" in result.name
+        assert "People" in result.job_title or "Culture" in result.job_title, \
+            f"Erwarte People/Culture in job_title, erhalten: {result.job_title}"
+        assert any("TechCorp" in c for c in result.companies), \
+            f"Erwarte TechCorp in companies, erhalten: {result.companies}"
+        assert "Zürich" in result.location or "Zurich" in result.location
+
+    @pytest.mark.asyncio
+    async def test_en_minimal_profile(self, mock_user):
+        from app.routers.linkedin import extract_profile_from_html, ExtractProfileRequest
+
+        body = ExtractProfileRequest(html=PROFILE_EN_MINIMAL)
+        result = await extract_profile_from_html(body=body, user=mock_user)
+
+        assert "Smith" in result.name
+        assert result.job_title, "job_title darf nicht leer sein"
+        assert any("Google" in c for c in result.companies), \
+            f"Erwarte Google in companies, erhalten: {result.companies}"
