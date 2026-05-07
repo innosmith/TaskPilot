@@ -13,6 +13,7 @@ import rehypeStringify from 'rehype-stringify';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { ExportDialog } from '../components/ExportDialog';
+import { AnonymizePanel } from '../components/AnonymizePanel';
 import { OneDrivePicker, type ContextSource } from '../components/OneDrivePicker';
 
 let mermaidReady: Promise<typeof import('mermaid')> | null = null;
@@ -212,6 +213,10 @@ export function ChatPage() {
   const [copyMenuId, setCopyMenuId] = useState<string | null>(null);
   const [exportMsgId, setExportMsgId] = useState<string | null>(null);
   const [exportMsgContent, setExportMsgContent] = useState('');
+  const [anonymizeOpen, setAnonymizeOpen] = useState(false);
+  const [anonymizeInitialText, setAnonymizeInitialText] = useState('');
+  const [anonymizeSessionIds, setAnonymizeSessionIds] = useState<Record<string, string>>({});
+  const [deanonymizing, setDeanonymizing] = useState<string | null>(null);
   const [onedriveOpen, setOnedriveOpen] = useState(false);
   const [contextSources, setContextSources] = useState<ContextSource[]>([]);
 
@@ -1258,6 +1263,9 @@ export function ChatPage() {
                     <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
                     <button onClick={() => fileInputRef.current?.click()} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="Datei anhängen"><AttachIcon className="h-4 w-4" /></button>
                     <button onClick={() => setOnedriveOpen(true)} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="OneDrive-Dateien anhängen"><OneDriveIcon className="h-4 w-4" /></button>
+                    <button onClick={() => { setAnonymizeInitialText(input); setAnonymizeOpen(true); }} className="rounded-md p-1 text-emerald-500 transition-colors hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/30" title="Text anonymisieren">
+                      <ShieldIcon className="h-4 w-4" />
+                    </button>
                     <button onClick={handleSend} disabled={!input.trim() || isStreaming} className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"><SendIcon className="h-3.5 w-3.5" /></button>
                   </div>
                 </div>
@@ -1388,6 +1396,32 @@ export function ChatPage() {
                         <button onClick={() => { setExportMsgId(msg.id); setExportMsgContent(msg.content); }} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Herunterladen als...">
                           <DownloadIcon className="h-3.5 w-3.5" />
                         </button>
+                        <button onClick={() => { setAnonymizeInitialText(msg.content); setAnonymizeOpen(true); }} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Text anonymisieren">
+                          <ShieldIcon className="h-3.5 w-3.5" />
+                        </button>
+                        {anonymizeSessionIds[msg.id] && (
+                          <button
+                            onClick={async () => {
+                              setDeanonymizing(msg.id);
+                              try {
+                                const res = await api.post<{ original_text: string }>('/api/content/deanonymize', {
+                                  text: msg.content,
+                                  session_id: anonymizeSessionIds[msg.id],
+                                });
+                                if (res.original_text) {
+                                  setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, content: res.original_text } : m));
+                                  setAnonymizeSessionIds(prev => { const n = { ...prev }; delete n[msg.id]; return n; });
+                                }
+                              } catch { /* ignore */ }
+                              setDeanonymizing(null);
+                            }}
+                            disabled={deanonymizing === msg.id}
+                            className="rounded p-1 text-amber-500 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300"
+                            title="De-anonymisieren"
+                          >
+                            <ShieldCheckIcon className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         <button onClick={() => createTaskFromMessage(msg.id, msg.content)} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Aufgabe erstellen">
                           <TaskIcon className="h-3.5 w-3.5" />
                         </button>
@@ -1596,6 +1630,9 @@ export function ChatPage() {
                   <button onClick={() => setOnedriveOpen(true)} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="OneDrive-Dateien anhängen">
                     <OneDriveIcon className="h-4 w-4" />
                   </button>
+                  <button onClick={() => { setAnonymizeInitialText(input); setAnonymizeOpen(true); }} className="rounded-md p-1 text-emerald-500 transition-colors hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/30" title="Text anonymisieren">
+                    <ShieldIcon className="h-4 w-4" />
+                  </button>
                   <button onClick={handleSend} disabled={!input.trim() || isStreaming} className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:opacity-40">
                     <SendIcon className="h-3.5 w-3.5" />
                   </button>
@@ -1630,6 +1667,19 @@ export function ChatPage() {
           messageContent={exportMsgContent}
         />
       )}
+
+      <AnonymizePanel
+        isOpen={anonymizeOpen}
+        onClose={() => setAnonymizeOpen(false)}
+        initialText={anonymizeInitialText}
+        onInsertText={(text, sessionId) => {
+          setInput(text);
+          if (sessionId) {
+            setAnonymizeSessionIds(prev => ({ ...prev, _pending: sessionId }));
+          }
+          textareaRef.current?.focus();
+        }}
+      />
 
       <OneDrivePicker
         isOpen={onedriveOpen}
@@ -1717,4 +1767,10 @@ function ImageIcon({ className }: { className?: string }) {
 }
 function SparkleIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" /></svg>;
+}
+function ShieldIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg>;
+}
+function ShieldCheckIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg>;
 }

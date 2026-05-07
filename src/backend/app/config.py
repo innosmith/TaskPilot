@@ -100,10 +100,11 @@ class Settings(BaseSettings):
     triage_interval_seconds: int = 120
     chat_triage_interval_seconds: int = 300
 
-    # Document Export (mdConverter + md2powerpoint)
-    mdconverter_path: str = "/home/innosmith/dev/github/mdConverter"
-    md2powerpoint_path: str = "/home/innosmith/dev/github/md2powerpoint"
-    pptx_template_dir: str = "/home/innosmith/dev/github/md2powerpoint/templates"
+    # Document Export & Content-Services (contentConverter)
+    contentconverter_path: str = "/home/innosmith/dev/github/contentConverter"
+    contentconverter_cconv_bin: str = "/home/innosmith/dev/github/TaskPilot/.venv/bin/cconv"
+    pptx_template_dir: str = "/home/innosmith/dev/github/contentConverter/templates"
+    mapping_keys_ttl_seconds: int = 7200  # 2h
 
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env.dev"),

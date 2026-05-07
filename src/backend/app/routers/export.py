@@ -1,4 +1,8 @@
-"""Router für Chat-Nachrichten-Export (Markdown, Word, PDF, PowerPoint)."""
+"""Router für Chat-Nachrichten-Export (Markdown, Word, PDF, PowerPoint).
+
+Alle Konvertierungen laufen über den contentConverter MCP-Client-Service --
+ein einziger Codepath für Agent und Chat-Modus.
+"""
 
 import logging
 import tempfile
@@ -14,10 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
-from app.config import get_settings
 from app.database import get_db
 from app.models import User
 from app.models.models import LlmMessage
+from app.services import content_converter as cc
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat-export"])
@@ -35,44 +39,6 @@ class ExportRequest(BaseModel):
     template: str | None = None
     pptx_template: str | None = None
     filename: str | None = None
-
-
-def prepare_markdown_for_docx(
-    content: str,
-    title: str,
-    author: str,
-    title_page: bool = True,
-) -> str:
-    """Bereitet Chat-Markdown fuer den mdConverter auf.
-
-    Fuegt YAML-Frontmatter und optionalen Titelblock hinzu,
-    wenn diese im Content fehlen.
-    """
-    today = date.today()
-    today_iso = today.strftime("%Y-%m-%d")
-    lines = content.strip().split("\n")
-    has_frontmatter = len(lines) > 0 and lines[0].strip() == "---"
-    has_h1 = any(line.startswith("# ") for line in lines[:5])
-
-    parts: list[str] = []
-
-    if not has_frontmatter:
-        parts.append(
-            f'---\ntitle: "{title}"\nauthor: "{author}"\n'
-            f'date: "{today_iso}"\nlang: "de-CH"\n---\n'
-        )
-
-    if title_page and not has_h1:
-        month_year = today.strftime("%B %Y")
-        parts.append(
-            f"# {title}\n\n## \n\n"
-            f"| | |\n|---|---|\n"
-            f"| **Autor** | {author} |\n"
-            f"| **Datum** | {month_year} |\n\n---\n"
-        )
-
-    parts.append(content)
-    return "\n".join(parts)
 
 
 @router.post("/messages/{msg_id}/export")
@@ -112,49 +78,50 @@ async def _export_pptx(
     base_name: str,
     body: ExportRequest,
 ) -> FileResponse:
-    """Exportiert als PowerPoint via md2powerpoint."""
-    try:
-        from md2powerpoint.parser import parse_markdown
-        from md2powerpoint.classifier import classify_slides
-        from md2powerpoint.builder import build_presentation
-        from md2powerpoint.config import ConverterConfig
-    except ImportError:
-        raise HTTPException(
-            status_code=501,
-            detail="md2powerpoint ist nicht installiert",
-        )
-
-    settings = get_settings()
-    template_dir = Path(settings.pptx_template_dir)
-
-    template_path = None
-    if body.pptx_template:
-        template_path = Path(body.pptx_template)
-    else:
+    """Exportiert als PowerPoint via contentConverter MCP-Server."""
+    pptx_template = body.pptx_template
+    if not pptx_template:
+        from app.config import get_settings
+        settings = get_settings()
+        template_dir = Path(settings.pptx_template_dir)
         candidates = list(template_dir.glob("*.pptx")) if template_dir.exists() else []
         if candidates:
-            template_path = candidates[0]
+            pptx_template = str(candidates[0])
 
-    if not template_path or not template_path.exists():
+    if not pptx_template:
         raise HTTPException(
             status_code=400,
             detail="Kein PPTX-Template gefunden. Bitte Template-Pfad angeben.",
         )
 
+    slide_script = await cc.call_tool("prepare_for_slides", text=content)
+
+    tmp_md = EXPORT_TMP_DIR / f"{uuid.uuid4().hex}.md"
+    tmp_md.write_text(
+        slide_script if isinstance(slide_script, str) else str(slide_script),
+        encoding="utf-8",
+    )
+
     try:
-        slides = classify_slides(parse_markdown(content))
-        prs = build_presentation(slides, template_path, ConverterConfig())
-        output_path = EXPORT_TMP_DIR / f"{uuid.uuid4().hex}.pptx"
-        prs.save(str(output_path))
+        result_path = await cc.call_tool(
+            "convert_to_pptx",
+            input_file=str(tmp_md),
+            template=pptx_template,
+            output=str(EXPORT_TMP_DIR / f"{uuid.uuid4().hex}.pptx"),
+        )
     except Exception as e:
         logger.error("PowerPoint-Konvertierung fehlgeschlagen: %s", e)
         raise HTTPException(
             status_code=500,
             detail=f"PowerPoint-Konvertierung fehlgeschlagen: {e}",
         )
+    finally:
+        tmp_md.unlink(missing_ok=True)
+
+    output_path = result_path if isinstance(result_path, str) else str(result_path)
 
     return FileResponse(
-        str(output_path),
+        output_path,
         filename=f"{base_name}.pptx",
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
@@ -165,44 +132,34 @@ async def _export_docx_pdf(
     base_name: str,
     body: ExportRequest,
 ) -> FileResponse:
-    """Exportiert als Word oder PDF via mdConverter."""
-    try:
-        from mdconverter import convert, convert_to_pdf
-    except ImportError:
-        raise HTTPException(
-            status_code=501,
-            detail="mdconverter ist nicht installiert",
-        )
-
-    prepared = prepare_markdown_for_docx(
-        content,
+    """Exportiert als Word oder PDF via contentConverter MCP-Server."""
+    prepared = await cc.call_tool(
+        "prepare_for_word",
+        text=content,
         title=body.title,
         author=body.author,
-        title_page=body.title_page,
+        lang="de-CH",
     )
 
     tmp_md = EXPORT_TMP_DIR / f"{uuid.uuid4().hex}.md"
-    tmp_md.write_text(prepared, encoding="utf-8")
-
-    reference_doc = None
-    if body.template:
-        settings = get_settings()
-        ref_candidate = Path(settings.mdconverter_path) / "templates" / f"{body.template}.docx"
-        if ref_candidate.exists():
-            reference_doc = str(ref_candidate)
+    tmp_md.write_text(
+        prepared if isinstance(prepared, str) else str(prepared),
+        encoding="utf-8",
+    )
 
     try:
-        docx_path = convert(
+        docx_output = str(EXPORT_TMP_DIR / f"{uuid.uuid4().hex}.docx")
+        docx_path = await cc.call_tool(
+            "convert_to_word",
             input_file=str(tmp_md),
-            output=str(EXPORT_TMP_DIR / f"{uuid.uuid4().hex}.docx"),
-            title_page=body.title_page,
-            toc=body.toc,
-            reference_doc=reference_doc,
-            title=body.title,
+            output=docx_output,
+            lang="de-CH",
             author=body.author,
+            title=body.title,
+            template=body.template,
         )
     except Exception as e:
-        logger.error("mdConverter-Fehler: %s", e)
+        logger.error("Word-Konvertierung fehlgeschlagen: %s", e)
         raise HTTPException(
             status_code=500,
             detail=f"Konvertierung fehlgeschlagen: {e}",
@@ -210,9 +167,14 @@ async def _export_docx_pdf(
     finally:
         tmp_md.unlink(missing_ok=True)
 
+    docx_path_str = docx_path if isinstance(docx_path, str) else str(docx_path)
+
     if body.format == "pdf":
         try:
-            pdf_path = convert_to_pdf(str(docx_path))
+            pdf_path = await cc.call_tool(
+                "convert_to_pdf",
+                input_file=docx_path_str,
+            )
         except Exception as e:
             logger.error("PDF-Konvertierung fehlgeschlagen: %s", e)
             raise HTTPException(
@@ -220,13 +182,13 @@ async def _export_docx_pdf(
                 detail=f"PDF-Konvertierung fehlgeschlagen: {e}",
             )
         return FileResponse(
-            str(pdf_path),
+            pdf_path if isinstance(pdf_path, str) else str(pdf_path),
             filename=f"{base_name}.pdf",
             media_type="application/pdf",
         )
 
     return FileResponse(
-        str(docx_path),
+        docx_path_str,
         filename=f"{base_name}.docx",
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )

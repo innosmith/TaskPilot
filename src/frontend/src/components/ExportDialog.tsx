@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getToken } from '../api/client';
+import { api, getToken } from '../api/client';
 
 type ExportFormat = 'markdown' | 'docx' | 'pdf' | 'pptx';
 
@@ -8,6 +8,11 @@ interface ExportDialogProps {
   onClose: () => void;
   messageId: string;
   messageContent: string;
+}
+
+interface TemplateInfo {
+  name: string;
+  path: string;
 }
 
 const FORMAT_OPTIONS: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
@@ -27,6 +32,8 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
   const [filename, setFilename] = useState('');
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
 
   const slideCount = format === 'pptx'
     ? (messageContent.split(/\n---\n/).length)
@@ -40,8 +47,21 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
       setExporting(false);
       const dateStr = new Date().toISOString().slice(0, 10);
       setFilename(`export-${dateStr}`);
+      loadTemplates();
     }
   }, [isOpen]);
+
+  const loadTemplates = async () => {
+    setTemplatesLoading(true);
+    try {
+      const result = await api.get<TemplateInfo[]>('/api/content/templates');
+      setTemplates(result || []);
+    } catch {
+      setTemplates([]);
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -179,8 +199,10 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
                   className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-600 dark:bg-gray-700 dark:text-white"
                 >
                   <option value="">Standard (InnoSmith)</option>
-                  <option value="InnoSmith">InnoSmith</option>
-                  <option value="Kt. Bern MBA">Kt. Bern MBA</option>
+                  {templates.map(t => (
+                    <option key={t.name} value={t.name}>{t.name}</option>
+                  ))}
+                  {templatesLoading && <option disabled>Laden...</option>}
                 </select>
               </div>
               <div>
@@ -203,6 +225,9 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
                 <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">Template</label>
                 <select value={template} onChange={e => setTemplate(e.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-600 dark:bg-gray-700 dark:text-white">
                   <option value="">InnoSmith</option>
+                  {templates.filter(t => t.path?.endsWith('.pptx')).map(t => (
+                    <option key={t.name} value={t.name}>{t.name}</option>
+                  ))}
                 </select>
               </div>
               <div className="flex items-start gap-2 rounded-lg bg-blue-50 px-3 py-2 dark:bg-blue-900/20">

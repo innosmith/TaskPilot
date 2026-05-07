@@ -17,6 +17,7 @@ from app.routers import (
     calendar,
     chat,
     code_execute,
+    content,
     creditors,
     debtors,
     emails,
@@ -45,6 +46,7 @@ from app.routers import (
 )
 from app.routers import settings as user_settings
 from app.routers.auth import ensure_owner_exists
+from app.services.content_converter import start_content_converter, stop_content_converter
 from app.services.nanobot_worker import start_nanobot_worker, stop_nanobot_worker
 from app.services.recurring import start_recurring_scheduler, stop_recurring_scheduler
 from app.services.triage import start_triage_service, stop_triage_service
@@ -84,6 +86,7 @@ async def lifespan(app: FastAPI):
             )
         await db.commit()
 
+    await start_content_converter()
     await start_nanobot_worker()
     await start_recurring_scheduler()
     await start_triage_service()
@@ -91,6 +94,7 @@ async def lifespan(app: FastAPI):
     await stop_triage_service()
     await stop_recurring_scheduler()
     await stop_nanobot_worker()
+    await stop_content_converter()
 
 
 app = FastAPI(
@@ -135,6 +139,7 @@ app.include_router(signa.router)
 app.include_router(chat.router)
 app.include_router(code_execute.router)
 app.include_router(export.router)
+app.include_router(content.router)
 app.include_router(onedrive.router)
 app.include_router(teams.router)
 app.include_router(planner.router)

@@ -38,12 +38,10 @@ mcp>=1.27
 # ── Markdown & Content ──
 Markdown>=3.10
 
-# ── Document Export ──
-# mdconverter: privates Package, lokal installieren via
-#   pip install -e /path/to/mdConverter
-# md2powerpoint: privates Package, lokal installieren via
-#   pip install -e /path/to/md2powerpoint
-# Deren transitive Dependencies:
+# ── Document Export & Content-Services ──
+# contentconverter: privates Package (Export, Anonymisierung, Extraktion)
+#   pip install -e /path/to/contentConverter[all]
+# Transitive Dependencies:
 python-docx>=1.2
 python-pptx>=1.0
 pyyaml>=6.0
@@ -54,6 +52,10 @@ pypandoc_binary>=1.17
 # System-Dependencies für Document Export (siehe Dockerfile):
 #   - libreoffice   (apt: libreoffice-writer) → PDF-Konvertierung via docx→pdf
 #   - pandoc wird via pypandoc_binary mitgeliefert, Symlink in venv/bin nötig
+
+# Anonymisierung (via contentconverter[anonymize])
+# presidio-analyzer, presidio-anonymizer, faker, spacy, gliner
+# werden transitiv durch contentconverter[all] installiert
 
 # ── PDF-Extraktion (OneDrive-Downloads) ──
 pymupdf>=1.27

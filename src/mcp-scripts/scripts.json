@@ -31,14 +31,14 @@
       "autonomy": "L2"
     },
     {
-      "id": "md-to-word",
-      "name": "Markdown → Word Converter",
-      "description": "Konvertiert eine Markdown-Datei in ein formatiertes Word-Dokument mit CI/CD-Template",
-      "image": "taskpilot-scripts/md-converter:latest",
-      "source_repo": "github.com/innosmith/doc-pipeline",
+      "id": "content-convert-word",
+      "name": "Content → Word Converter",
+      "description": "Konvertiert Markdown in ein formatiertes Word-Dokument via contentConverter",
+      "image": "taskpilot-scripts/content-converter:latest",
+      "source_repo": "github.com/innosmith/contentConverter",
       "params": [
         {"name": "input_file", "type": "path", "required": true, "description": "Pfad zur Markdown-Datei (relativ zu /input)"},
-        {"name": "template", "type": "string", "required": false, "description": "Template-Name (default: innosmith-standard)"},
+        {"name": "template", "type": "string", "required": false, "description": "Template-Profil (z.B. 'InnoSmith', 'Kt. Bern MBA')"},
         {"name": "output_format", "type": "string", "required": false, "description": "docx oder pdf (default: docx)"}
       ],
       "output_type": "file",
@@ -59,14 +59,14 @@
       "autonomy": "L2"
     },
     {
-      "id": "md-to-pptx",
-      "name": "Markdown → PowerPoint Converter",
-      "description": "Konvertiert eine strukturierte Markdown-Datei in eine PowerPoint-Präsentation",
-      "image": "taskpilot-scripts/md-converter:latest",
-      "source_repo": "github.com/innosmith/doc-pipeline",
+      "id": "content-convert-pptx",
+      "name": "Content → PowerPoint Converter",
+      "description": "Konvertiert ein Markdown-Slide-Script in eine PowerPoint-Präsentation via contentConverter",
+      "image": "taskpilot-scripts/content-converter:latest",
+      "source_repo": "github.com/innosmith/contentConverter",
       "params": [
         {"name": "input_file", "type": "path", "required": true, "description": "Pfad zur Markdown-Datei (relativ zu /input)"},
-        {"name": "template", "type": "string", "required": false, "description": "PPTX-Template-Name"}
+        {"name": "template", "type": "string", "required": false, "description": "PPTX-Template-Pfad"}
       ],
       "output_type": "file",
       "output_description": "PowerPoint-Datei im /output Verzeichnis",
