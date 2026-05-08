@@ -1,16 +1,17 @@
-"""Router für Content-Services: Anonymisierung, Extraktion, Templates.
+"""Router für Content-Services: Anonymisierung, Extraktion, Templates, Konvertierung.
 
 Dünne REST-Schicht die alle Aufrufe an den contentConverter MCP-Client-Service
 delegiert. Mapping-Keys werden im In-Memory-Store verwaltet (TTL 2h).
 """
 
-import json
 import logging
 import tempfile
 import uuid
+from datetime import date
 from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -18,6 +19,7 @@ from app.auth.deps import get_current_user
 from app.models import User
 from app.services import content_converter as cc
 from app.services import mapping_store
+from app.services.document_export import ConvertOptions, convert_markdown
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/content", tags=["content"])
@@ -262,3 +264,91 @@ async def list_templates(
         raise HTTPException(status_code=503, detail=str(e))
 
     return result if isinstance(result, list) else []
+
+
+# --- Direkt-Konvertierung ---
+
+
+class ConvertRequest(BaseModel):
+    text: str
+    format: Literal["docx", "pdf", "pptx"]
+    title: str = "Export"
+    author: str = "InnoSmith"
+    title_page: bool = True
+    toc: bool = True
+    template: str | None = None
+    pptx_template: str | None = None
+    filename: str | None = None
+
+
+@router.post("/convert")
+async def convert_text(
+    body: ConvertRequest,
+    user: User = Depends(get_current_user),
+):
+    """Konvertiert Markdown-Text direkt in DOCX, PDF oder PPTX."""
+    base_name = body.filename or f"export-{date.today().isoformat()}"
+
+    opts = ConvertOptions(
+        format=body.format,
+        title=body.title,
+        author=body.author,
+        title_page=body.title_page,
+        toc=body.toc,
+        template=body.template,
+        pptx_template=body.pptx_template,
+        filename=body.filename,
+    )
+
+    return await convert_markdown(body.text, base_name, opts)
+
+
+@router.post("/convert/file")
+async def convert_file(
+    file: UploadFile = File(...),
+    format: Literal["docx", "pdf", "pptx"] = Form("docx"),
+    title: str = Form("Export"),
+    author: str = Form("InnoSmith"),
+    title_page: bool = Form(True),
+    toc: bool = Form(True),
+    template: str | None = Form(None),
+    pptx_template: str | None = Form(None),
+    filename: str | None = Form(None),
+    user: User = Depends(get_current_user),
+):
+    """Konvertiert eine hochgeladene Datei (.md, .docx, .pdf) ins Zielformat.
+
+    Bei Nicht-Markdown-Dateien wird zuerst der Text via extract_content
+    extrahiert, dann ins Zielformat konvertiert.
+    """
+    suffix = Path(file.filename or "upload.txt").suffix.lower()
+    tmp_path = _TMP_DIR / f"{uuid.uuid4().hex}{suffix}"
+
+    try:
+        content_bytes = await file.read()
+        tmp_path.write_bytes(content_bytes)
+
+        if suffix == ".md":
+            text_content = content_bytes.decode("utf-8")
+        else:
+            extracted = await cc.call_tool("extract_content", input_file=str(tmp_path))
+            text_content = extracted if isinstance(extracted, str) else str(extracted)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    base_name = filename or Path(file.filename or "export").stem
+
+    opts = ConvertOptions(
+        format=format,
+        title=title,
+        author=author,
+        title_page=title_page,
+        toc=toc,
+        template=template,
+        pptx_template=pptx_template,
+        filename=filename,
+    )
+
+    return await convert_markdown(text_content, base_name, opts)

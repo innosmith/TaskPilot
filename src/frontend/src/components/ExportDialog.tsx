@@ -1,14 +1,35 @@
 import { useState, useEffect } from 'react';
-import { api, getToken } from '../api/client';
+import { getToken } from '../api/client';
 
 type ExportFormat = 'markdown' | 'docx' | 'pdf' | 'pptx';
 
-interface ExportDialogProps {
+interface ExportDialogBaseProps {
   isOpen: boolean;
   onClose: () => void;
+}
+
+interface MessageModeProps extends ExportDialogBaseProps {
   messageId: string;
   messageContent: string;
+  rawContent?: never;
+  sourceFile?: never;
 }
+
+interface DirectTextModeProps extends ExportDialogBaseProps {
+  rawContent: string;
+  messageId?: never;
+  messageContent?: never;
+  sourceFile?: never;
+}
+
+interface DirectFileModeProps extends ExportDialogBaseProps {
+  sourceFile: File;
+  messageId?: never;
+  messageContent?: never;
+  rawContent?: never;
+}
+
+export type ExportDialogProps = MessageModeProps | DirectTextModeProps | DirectFileModeProps;
 
 interface TemplateInfo {
   name: string;
@@ -22,8 +43,20 @@ const FORMAT_OPTIONS: { id: ExportFormat; label: string; ext: string; mime: stri
   { id: 'pptx', label: 'PowerPoint (.pptx)', ext: 'pptx', mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
 ];
 
-export function ExportDialog({ isOpen, onClose, messageId, messageContent }: ExportDialogProps) {
-  const [format, setFormat] = useState<ExportFormat>('markdown');
+function getContentText(props: ExportDialogProps): string {
+  if ('messageContent' in props && props.messageContent) return props.messageContent;
+  if ('rawContent' in props && props.rawContent) return props.rawContent;
+  return '';
+}
+
+export function ExportDialog(props: ExportDialogProps) {
+  const { isOpen, onClose } = props;
+
+  const isMessageMode = 'messageId' in props && !!props.messageId;
+  const isFileMode = 'sourceFile' in props && !!props.sourceFile;
+  const contentText = getContentText(props);
+
+  const [format, setFormat] = useState<ExportFormat>('docx');
   const [titlePage, setTitlePage] = useState(true);
   const [toc, setToc] = useState(true);
   const [template, setTemplate] = useState<string>('');
@@ -35,8 +68,8 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
 
-  const slideCount = format === 'pptx'
-    ? (messageContent.split(/\n---\n/).length)
+  const slideCount = format === 'pptx' && contentText
+    ? (contentText.split(/\n---\n/).length)
     : null;
 
   const supportsFilePicker = typeof window !== 'undefined' && 'showSaveFilePicker' in window;
@@ -46,7 +79,18 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
       setError(null);
       setExporting(false);
       const dateStr = new Date().toISOString().slice(0, 10);
-      setFilename(`export-${dateStr}`);
+
+      if (isFileMode) {
+        const stem = (props as DirectFileModeProps).sourceFile.name.replace(/\.[^.]+$/, '');
+        setFilename(stem);
+      } else {
+        setFilename(`export-${dateStr}`);
+      }
+
+      if (!isMessageMode) {
+        setFormat('docx');
+      }
+
       loadTemplates();
     }
   }, [isOpen]);
@@ -54,8 +98,15 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
   const loadTemplates = async () => {
     setTemplatesLoading(true);
     try {
-      const result = await api.get<TemplateInfo[]>('/api/content/templates');
-      setTemplates(result || []);
+      const token = getToken();
+      const resp = await fetch('/api/content/templates', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (resp.ok) {
+        setTemplates(await resp.json());
+      } else {
+        setTemplates([]);
+      }
     } catch {
       setTemplates([]);
     } finally {
@@ -65,28 +116,76 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
 
   if (!isOpen) return null;
 
+  const dialogTitle = isFileMode
+    ? `Datei konvertieren: ${(props as DirectFileModeProps).sourceFile.name}`
+    : isMessageMode
+      ? 'Herunterladen als...'
+      : 'Text konvertieren';
+
+  const formatOptions = isMessageMode
+    ? FORMAT_OPTIONS
+    : FORMAT_OPTIONS.filter(f => f.id !== 'markdown');
+
   const handleExport = async () => {
     setExporting(true);
     setError(null);
 
     try {
       const token = getToken();
-      const resp = await fetch(`/api/chat/messages/${messageId}/export`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          format,
-          title,
-          author,
-          title_page: titlePage,
-          toc,
-          template: template || null,
-          filename: filename || null,
-        }),
-      });
+      let resp: Response;
+
+      if (isFileMode) {
+        const formData = new FormData();
+        formData.append('file', (props as DirectFileModeProps).sourceFile);
+        formData.append('format', format);
+        formData.append('title', title);
+        formData.append('author', author);
+        formData.append('title_page', String(titlePage));
+        formData.append('toc', String(toc));
+        if (template) formData.append('template', template);
+        if (filename) formData.append('filename', filename);
+
+        resp = await fetch('/api/content/convert/file', {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          body: formData,
+        });
+      } else if (isMessageMode) {
+        resp = await fetch(`/api/chat/messages/${(props as MessageModeProps).messageId}/export`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            format,
+            title,
+            author,
+            title_page: titlePage,
+            toc,
+            template: template || null,
+            filename: filename || null,
+          }),
+        });
+      } else {
+        resp = await fetch('/api/content/convert', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            text: (props as DirectTextModeProps).rawContent,
+            format,
+            title,
+            author,
+            title_page: titlePage,
+            toc,
+            template: template || null,
+            filename: filename || null,
+          }),
+        });
+      }
 
       if (!resp.ok) {
         const text = await resp.text();
@@ -142,10 +241,10 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
         className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-800"
         onClick={e => e.stopPropagation()}
       >
-        <h3 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Herunterladen als...</h3>
+        <h3 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">{dialogTitle}</h3>
 
         <div className="mb-4 space-y-2">
-          {FORMAT_OPTIONS.map(opt => (
+          {formatOptions.map(opt => (
             <label
               key={opt.id}
               className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 transition-colors ${
@@ -241,6 +340,15 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
           </div>
         )}
 
+        {!supportsFilePicker && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 dark:bg-amber-900/20">
+            <InfoIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500" />
+            <span className="text-xs text-amber-700 dark:text-amber-300">
+              Tipp: In Chrome oder Edge kannst du das Zielverzeichnis und den Dateinamen frei wählen. In diesem Browser wird die Datei im Standard-Download-Ordner gespeichert.
+            </span>
+          </div>
+        )}
+
         {error && (
           <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400">
             {error}
@@ -252,7 +360,7 @@ export function ExportDialog({ isOpen, onClose, messageId, messageContent }: Exp
             Abbrechen
           </button>
           <button onClick={handleExport} disabled={exporting} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50">
-            {exporting ? 'Exportiert...' : 'Speichern unter...'}
+            {exporting ? 'Konvertiert...' : 'Speichern unter...'}
           </button>
         </div>
       </div>

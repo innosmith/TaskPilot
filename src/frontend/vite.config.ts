@@ -47,7 +47,7 @@ export default defineConfig({
     }),
   ],
   server: {
-    allowedHosts: ['tp.innosmith.ai'],
+    allowedHosts: ['tp.innosmith.ai', 'tp-dev.innosmith.ai', 'tp-int.innosmith.ai'],
     proxy: {
       '/api/code': {
         target: 'http://localhost:8000',

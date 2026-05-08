@@ -213,6 +213,8 @@ export function ChatPage() {
   const [copyMenuId, setCopyMenuId] = useState<string | null>(null);
   const [exportMsgId, setExportMsgId] = useState<string | null>(null);
   const [exportMsgContent, setExportMsgContent] = useState('');
+  const [convertRawContent, setConvertRawContent] = useState<string | null>(null);
+  const [convertSourceFile, setConvertSourceFile] = useState<File | null>(null);
   const [anonymizeOpen, setAnonymizeOpen] = useState(false);
   const [anonymizeInitialText, setAnonymizeInitialText] = useState('');
   const [anonymizeSessionIds, setAnonymizeSessionIds] = useState<Record<string, string>>({});
@@ -1266,6 +1268,21 @@ export function ChatPage() {
                     <button onClick={() => { setAnonymizeInitialText(input); setAnonymizeOpen(true); }} className="rounded-md p-1 text-emerald-500 transition-colors hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/30" title="Text anonymisieren">
                       <ShieldIcon className="h-4 w-4" />
                     </button>
+                    <button
+                      onClick={() => {
+                        const mdFile = attachments.find(f => f.name.toLowerCase().endsWith('.md'));
+                        if (mdFile) {
+                          setConvertSourceFile(mdFile);
+                        } else if (input.trim()) {
+                          setConvertRawContent(input.trim());
+                        }
+                      }}
+                      disabled={!input.trim() && !attachments.some(f => f.name.toLowerCase().endsWith('.md'))}
+                      className="rounded-md p-1 text-orange-500 transition-colors hover:bg-orange-50 hover:text-orange-600 disabled:opacity-40 dark:hover:bg-orange-900/30"
+                      title="Text/Datei als Word, PDF oder PPTX konvertieren"
+                    >
+                      <FileOutputIcon className="h-4 w-4" />
+                    </button>
                     <button onClick={handleSend} disabled={!input.trim() || isStreaming} className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"><SendIcon className="h-3.5 w-3.5" /></button>
                   </div>
                 </div>
@@ -1633,6 +1650,21 @@ export function ChatPage() {
                   <button onClick={() => { setAnonymizeInitialText(input); setAnonymizeOpen(true); }} className="rounded-md p-1 text-emerald-500 transition-colors hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/30" title="Text anonymisieren">
                     <ShieldIcon className="h-4 w-4" />
                   </button>
+                  <button
+                    onClick={() => {
+                      const mdFile = attachments.find(f => f.name.toLowerCase().endsWith('.md'));
+                      if (mdFile) {
+                        setConvertSourceFile(mdFile);
+                      } else if (input.trim()) {
+                        setConvertRawContent(input.trim());
+                      }
+                    }}
+                    disabled={!input.trim() && !attachments.some(f => f.name.toLowerCase().endsWith('.md'))}
+                    className="rounded-md p-1 text-orange-500 transition-colors hover:bg-orange-50 hover:text-orange-600 disabled:opacity-40 dark:hover:bg-orange-900/30"
+                    title="Text/Datei als Word, PDF oder PPTX konvertieren"
+                  >
+                    <FileOutputIcon className="h-4 w-4" />
+                  </button>
                   <button onClick={handleSend} disabled={!input.trim() || isStreaming} className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:opacity-40">
                     <SendIcon className="h-3.5 w-3.5" />
                   </button>
@@ -1665,6 +1697,22 @@ export function ChatPage() {
           onClose={() => setExportMsgId(null)}
           messageId={exportMsgId}
           messageContent={exportMsgContent}
+        />
+      )}
+
+      {convertRawContent && (
+        <ExportDialog
+          isOpen={true}
+          onClose={() => setConvertRawContent(null)}
+          rawContent={convertRawContent}
+        />
+      )}
+
+      {convertSourceFile && (
+        <ExportDialog
+          isOpen={true}
+          onClose={() => setConvertSourceFile(null)}
+          sourceFile={convertSourceFile}
         />
       )}
 
@@ -1722,6 +1770,9 @@ function AttachIcon({ className }: { className?: string }) {
 }
 function FileIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" /></svg>;
+}
+function FileOutputIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h4.5m-4.5 3h4.5m2.25 0 2.25 2.25 2.25-2.25m-2.25-4.5v6.75M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" /></svg>;
 }
 function XIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>;
