@@ -1,10 +1,5 @@
-# Legacy Dev-Compose (nur Postgres Dev + LiteLLM)
-# Fuer die neue Multi-Environment-Architektur stattdessen verwenden:
-#   make dev   → docker compose -f docker/docker-compose.yml up -d
-#   make int   → + Integration-Backend/Frontend
-#   make prod  → Standalone Produktion
-#
-# Diese Datei bleibt fuer Abwaertskompatibilitaet bestehen.
+# Shared Infrastructure: Postgres (Dev + Integration DBs) + LiteLLM
+# Gestartet mit: docker compose -f docker/docker-compose.yml up -d
 
 services:
   postgres:
@@ -17,9 +12,10 @@ services:
       POSTGRES_PASSWORD: ${TP_DB_PASSWORD:-taskpilot_dev_2026}
       POSTGRES_DB: ${TP_DB_NAME:-taskpilot_dev}
     volumes:
-      - ${HOME}/.local/share/taskpilot/postgres/dev:/var/lib/postgresql/data
-      - ${PWD}/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-      - ${PWD}/db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      - ${HOME}/.local/share/taskpilot/postgres/shared:/var/lib/postgresql/data
+      - ../db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      - ./init-int-db.sql:/docker-entrypoint-initdb.d/03-init-int-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U taskpilot -d taskpilot_dev"]
       interval: 5s
@@ -39,6 +35,7 @@ services:
       ANTHROPIC_API_KEY: ${TP_ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${TP_OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${TP_GEMINI_API_KEY:-}
+      PERPLEXITY_API_KEY: ${TP_PERPLEXITY_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

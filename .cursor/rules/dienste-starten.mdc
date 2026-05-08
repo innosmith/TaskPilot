@@ -5,153 +5,144 @@ alwaysApply: false
 
 # TaskPilot Dienste verwalten
 
+## Multi-Environment-Architektur
+
+TaskPilot laeuft in 3 Umgebungen auf der GX10:
+
+| Umgebung | Zugang | Compose-Dateien |
+|----------|--------|-----------------|
+| **Dev** | tp-dev.innosmith.ai | `docker-compose.yml` (Infra) + bare-metal Backend/Frontend |
+| **Integration** | tp-int.innosmith.ai | `docker-compose.yml` + `docker-compose.integration.yml` |
+| **Produktion** | tp.innosmith.ai | `docker-compose.prod.yml` (Standalone) |
+
+## Makefile-Shortcuts
+
+```bash
+cd /home/innosmith/dev/github/TaskPilot
+
+make dev        # Shared Infra starten, Anleitung fuer bare-metal Backend/Frontend
+make int        # Integration komplett (inkl. Build)
+make prod       # Produktion komplett (eigene DB)
+make down       # Alles stoppen
+make status     # Container-Uebersicht
+make health     # Health-Checks aller Umgebungen
+make build      # Alle Images bauen (ohne Start)
+make vendor     # Vendor-Verzeichnis vorbereiten
+make sandbox    # Sandbox-Image bauen
+make migrate-int   # Schema auf Int-DB anwenden
+make migrate-prod  # Schema auf Prod-DB anwenden
+```
+
 ## Voraussetzungen
 
 - Python-venv: `/home/innosmith/dev/github/TaskPilot/.venv/`
-- Docker Compose Config: `docker/docker-compose.dev.yml`
+- Docker (Snap): Volumes nur unter `$HOME` moeglich
 - Nanobot Config: `~/.nanobot/config.json`
-- Dependencies: `pip install -r src/backend/requirements.txt`
-- Private Packages: `pip install -e ~/dev/github/mdConverter -e ~/dev/github/md2powerpoint`
-- Pandoc-Symlink: muss in `.venv/bin/pandoc` zeigen (via pypandoc_binary)
+- Cloudflare Tunnel: `cloudflared` als systemd-Service
+- Ollama: systemd-Service (Port 11434, geteilt von allen Umgebungen)
 
 ## WICHTIG: Snap-Docker und Volume-Pfade
 
 Docker ist als **Snap** installiert. Snap-Docker kann nur auf Pfade unter `$HOME` zugreifen.
-Postgres-Volume liegt daher unter `~/.local/share/taskpilot/postgres/dev/` (nicht unter `/data/`).
+Postgres-Volumes liegen daher unter `~/.local/share/taskpilot/postgres/{shared,prod}/`.
 
-Verifizieren, dass der Mount kein tmpfs ist:
-`docker exec taskpilot-postgres sh -c 'mount | grep postgresql'`
-→ Muss `ext4` (o.ä.) zeigen, **nicht** `tmpfs`. Bei tmpfs gehen alle DB-Daten bei jedem Restart verloren.
+## Port-Uebersicht
+
+| Dienst | Dev | Integration | Prod |
+|--------|-----|-------------|------|
+| Frontend | :5173 (Vite) | :3100 (nginx) | :3200 (nginx) |
+| Backend | :8000 (uvicorn --reload) | :8100 | :8200 |
+| PostgreSQL | :5435 (shared) | :5435 (shared) | :5437 (eigener Container) |
+| LiteLLM | :4000 (shared) | :4000 (shared) | :4000 (shared) |
+| Ollama | :11434 (systemd) | :11434 | :11434 |
 
 ## Startreihenfolge
 
-### 1. Docker-Container (PostgreSQL + LiteLLM)
+### 1. Shared Infra (Postgres + LiteLLM)
 
 ```bash
 cd /home/innosmith/dev/github/TaskPilot
-docker compose -f docker/docker-compose.dev.yml up -d
+make infra
+# oder: docker compose -f docker/docker-compose.yml up -d
 ```
 
-Prüfen ob sie laufen: `docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"`
-
-| Container | Image | Port |
-|---|---|---|
-| taskpilot-postgres | pgvector/pgvector:pg16 | 127.0.0.1:**5435**→5432 |
-| taskpilot-litellm | ghcr.io/berriai/litellm | 127.0.0.1:**4000**→4000 |
-
-### 2. Ollama (LLM-Inference)
-
-Ollama läuft als systemd-Service und startet automatisch. Prüfen:
-`curl -s http://localhost:11434/api/tags | head -c 200`
-
-### 3. FastAPI Backend (Port 8000)
-
-**Working Directory MUSS das Projekt-Root sein** (dort liegt `.env.dev` — Pydantic Settings löst den Pfad relativ zum CWD auf). `PYTHONPATH=src/backend` sorgt dafür, dass `app.main:app` trotzdem importiert werden kann.
+### 2a. Dev-Modus (bare-metal mit Hot-Reload)
 
 ```bash
-cd /home/innosmith/dev/github/TaskPilot
+# Backend
 source .venv/bin/activate
 PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src/backend
+
+# Frontend (separates Terminal)
+cd src/frontend && npm run dev
 ```
 
-Wenn stattdessen aus `src/backend/` gestartet wird, findet Pydantic die `.env.dev` nicht → Unsplash, Graph API, etc. bleiben unkonfiguriert.
-
-Health-Check (prüft auch DB-Verbindung): `curl http://localhost:8000/api/health`
-→ `"db": "ok"` = Postgres erreichbar, `"db": "unreachable"` + Status 503 = Problem.
-
-Startet automatisch im Lifespan:
-- **Nanobot Worker** (pollt alle 10s nach queued AgentJobs via Python SDK)
-- **Recurring Scheduler** (wiederkehrende Tasks, Intervall 300s)
-- **Triage Service** (E-Mail-Triage, nur wenn Graph-API-Credentials konfiguriert)
-
-### 4. Vite Frontend Dev-Server (Port 5173)
+### 2b. Integration (Full Docker)
 
 ```bash
-cd /home/innosmith/dev/github/TaskPilot/src/frontend
-npm run dev
+make int
+# oder: docker compose -f docker/docker-compose.yml -f docker/docker-compose.integration.yml up -d --build
 ```
 
-Proxy-Config in `vite.config.ts`: `/api` und `/uploads` → `http://localhost:8000`
-
-## Port-Übersicht
-
-| Dienst | Port | Typ |
-|---|---|---|
-| PostgreSQL (pgvector) | 5435 | Docker |
-| LiteLLM Proxy | 4000 | Docker |
-| Ollama | 11434 | systemd |
-| FastAPI Backend | 8000 | uvicorn (venv) |
-| Vite Frontend | 5173 | npm (node) |
-| Nanobot WebSocket | 8765 | (innerhalb Backend) |
-
-## Schnell-Check: Läuft alles?
+### 2c. Produktion (Standalone)
 
 ```bash
-curl -s http://localhost:8000/api/health        # Backend
-curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/  # Frontend
-curl -s http://localhost:11434/api/tags | head -c 100          # Ollama
-docker ps --format "{{.Names}}: {{.Status}}" | grep taskpilot  # Docker
+make prod
+# oder: docker compose -f docker/docker-compose.prod.yml up -d --build
+```
+
+### 3. Ollama (laeuft immer)
+
+```bash
+# Status pruefen
+curl -s http://localhost:11434/api/tags | head -c 200
+
+# Falls nicht laeuft:
+sudo systemctl start ollama
+```
+
+## Health-Checks
+
+```bash
+make health
+# oder einzeln:
+curl -s http://localhost:8000/api/health    # Dev Backend
+curl -s http://localhost:8100/api/health    # Int Backend
+curl -s http://localhost:8200/api/health    # Prod Backend
 ```
 
 ## Dienste stoppen
 
-### Backend (Port 8000)
 ```bash
-lsof -ti:8000 | xargs -r kill -9
+make down              # Alles
+make int-down          # Nur Integration (Shared Infra bleibt)
+make prod-down         # Nur Produktion
+make infra-down        # Shared Infra
+
+# Dev bare-metal Prozesse:
+lsof -ti:8000 | xargs -r kill -9   # Backend
+lsof -ti:5173 | xargs -r kill -9   # Frontend
 ```
 
-### Frontend (Port 5173)
-```bash
-lsof -ti:5173 | xargs -r kill -9
-```
+## Wann ist ein Rebuild noetig?
 
-### Docker-Container
-```bash
-cd /home/innosmith/dev/github/TaskPilot
-docker compose -f docker/docker-compose.dev.yml down
-```
+| Aenderung | Dev | Integration | Produktion |
+|-----------|-----|-------------|-----------|
+| Python-Code in `src/backend/` | Nein (--reload) | Ja (make int) | Ja (make prod) |
+| Frontend-Code (TSX/CSS) | Nein (HMR) | Ja (make int) | Ja (make prod) |
+| Neue pip-Pakete | Ja (pip install) | Ja (rebuild) | Ja (rebuild) |
+| `.env.*` geaendert | Ja (restart) | Ja (restart) | Ja (restart) |
+| DB-Schema geaendert | Ja (restart) | Ja (migrate-int) | Ja (migrate-prod) |
+| Docker-Compose geaendert | - | Ja (make int) | Ja (make prod) |
+| MCP-Server-Code | Nein (Nanobot laedt neu) | Ja (rebuild) | Ja (rebuild) |
 
-## Neustart (Backend + Frontend)
-
-Verwaiste Prozesse sind ein **wiederkehrendes Problem** -- bei Neustarts immer zuerst die Ports freigeben:
-
-```bash
-lsof -ti:8000 | xargs -r kill -9; lsof -ti:5173 | xargs -r kill -9
-sleep 1
-
-# Backend
-cd /home/innosmith/dev/github/TaskPilot
-source .venv/bin/activate
-PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src/backend &
-
-# Frontend
-cd /home/innosmith/dev/github/TaskPilot/src/frontend
-npm run dev &
-```
-
-## Wann ist ein manueller Neustart nötig?
-
-| Änderung | Neustart nötig? |
-|----------|----------------|
-| Python-Dateien in `src/backend/` | Nein -- `--reload` erkennt Änderungen |
-| Neue pip-Pakete installiert | **Ja** -- Backend neu starten |
-| DB-Schema geändert (Alembic/SQL) | **Ja** -- Backend neu starten |
-| `.env.dev` geändert | **Ja** -- Backend neu starten |
-| Frontend-Dateien (TSX/TS/CSS) | Nein -- Vite HMR |
-| Neue npm-Pakete installiert | **Ja** -- Frontend neu starten |
-| Docker-Compose geändert | **Ja** -- `docker compose down && up -d` |
-
-## Docker-Deployment (Produktion)
+## Docker-Build vorbereiten
 
 ```bash
 # 1. Private Packages in vendor/ kopieren
-./docker/build.sh
+make vendor
+# oder: ./docker/build.sh
 
-# 2. Images bauen
-docker compose -f docker/docker-compose.prod.yml build
-
-# 3. Starten
-docker compose -f docker/docker-compose.prod.yml up -d
+# 2. Alle Images bauen
+make build
 ```
-
-Siehe `.cursor/rules/deployment-docker.mdc` für Details.

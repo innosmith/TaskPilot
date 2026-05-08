@@ -1,0 +1,58 @@
+# Integration Environment: Backend + Frontend (gebaute Images)
+# Nutzt shared Postgres + LiteLLM aus docker-compose.yml
+#
+# Starten mit:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.integration.yml up -d
+#
+# Oder via Makefile: make int
+
+services:
+  backend-int:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: taskpilot-backend-int
+    ports:
+      - "127.0.0.1:8100:8000"
+    env_file: ../.env.integration
+    environment:
+      TP_DB_HOST: postgres
+      TP_DB_PORT: "5432"
+      TP_LITELLM_BASE_URL: http://litellm:4000
+    volumes:
+      - int-uploads:/app/uploads
+      - int-exports:/tmp/taskpilot-exports
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.nanobot/workspace:/root/.nanobot/workspace:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend-int:
+    build:
+      context: ../src/frontend
+      dockerfile: ../../docker/Dockerfile.frontend
+    container_name: taskpilot-frontend-int
+    ports:
+      - "127.0.0.1:3100:80"
+    environment:
+      BACKEND_HOST: backend-int
+    depends_on:
+      backend-int:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  int-uploads:
+  int-exports:

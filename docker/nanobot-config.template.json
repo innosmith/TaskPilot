@@ -1,0 +1,197 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/root/.nanobot/workspace",
+      "model": "qwen3.5:35b",
+      "provider": "ollama",
+      "maxTokens": 4096,
+      "contextWindowTokens": 65536,
+      "contextBlockLimit": null,
+      "temperature": 0.1,
+      "maxToolIterations": 200,
+      "maxToolResultChars": 16000,
+      "providerRetryMode": "standard",
+      "reasoningEffort": null,
+      "timezone": "UTC",
+      "unifiedSession": false,
+      "disabledSkills": [],
+      "idleCompactAfterMinutes": 0,
+      "dream": {
+        "intervalH": 2,
+        "modelOverride": null,
+        "maxBatchSize": 20,
+        "maxIterations": 15,
+        "annotateLineAges": true
+      }
+    }
+  },
+  "channels": {
+    "sendProgress": true,
+    "sendToolHints": false,
+    "sendMaxRetries": 3,
+    "websocket": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "port": 8765,
+      "path": "/",
+      "token": "${TP_NANOBOT_WS_TOKEN}",
+      "tokenIssuePath": "",
+      "tokenIssueSecret": "",
+      "tokenTtlS": 300,
+      "websocketRequiresToken": true,
+      "allowFrom": ["*"],
+      "streaming": true,
+      "maxMessageBytes": 1048576,
+      "pingIntervalS": 20.0,
+      "pingTimeoutS": 20.0,
+      "sslCertfile": "",
+      "sslKeyfile": ""
+    }
+  },
+  "providers": {
+    "custom": {
+      "apiKey": "sk-litellm-local",
+      "apiBase": "${TP_LITELLM_BASE_URL}/v1",
+      "extraHeaders": null
+    },
+    "ollama": {
+      "apiKey": "ollama",
+      "apiBase": "http://host.docker.internal:11434/v1",
+      "extraHeaders": null
+    }
+  },
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8900,
+    "timeout": 120.0
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790,
+    "heartbeat": {
+      "enabled": true,
+      "intervalS": 1800,
+      "keepRecentMessages": 8
+    }
+  },
+  "tools": {
+    "web": {
+      "enable": true,
+      "proxy": null,
+      "search": {
+        "provider": "tavily",
+        "apiKey": "${TP_TAVILY_API_KEY}",
+        "baseUrl": "",
+        "maxResults": 5,
+        "timeout": 30
+      }
+    },
+    "exec": {
+      "enable": true,
+      "timeout": 60,
+      "pathAppend": "",
+      "sandbox": "",
+      "allowedEnvKeys": []
+    },
+    "my": {
+      "enable": true,
+      "allowSet": false
+    },
+    "restrictToWorkspace": true,
+    "mcpServers": {
+      "taskpilot": {
+        "command": "python3",
+        "args": ["/app/mcp-taskpilot/server.py"],
+        "env": {
+          "TP_DB_HOST": "${TP_DB_HOST}",
+          "TP_DB_PORT": "${TP_DB_PORT}",
+          "TP_DB_USER": "${TP_DB_USER}",
+          "TP_DB_PASSWORD": "${TP_DB_PASSWORD}",
+          "TP_DB_NAME": "${TP_DB_NAME}",
+          "PYTHONPATH": "/app:/app/email-graph:/app/pipedrive:/app/bexio:/app/toggl"
+        }
+      },
+      "graph": {
+        "command": "python3",
+        "args": ["/app/mcp-graph/server.py"],
+        "env": {
+          "GRAPH_TENANT_ID": "${TP_GRAPH_TENANT_ID}",
+          "GRAPH_CLIENT_ID": "${TP_GRAPH_CLIENT_ID}",
+          "GRAPH_CLIENT_SECRET": "${TP_GRAPH_CLIENT_SECRET}",
+          "GRAPH_USER_EMAIL": "${TP_GRAPH_USER_EMAIL}",
+          "PYTHONPATH": "/app:/app/email-graph"
+        }
+      },
+      "pipedrive": {
+        "command": "python3",
+        "args": ["/app/mcp-pipedrive/server.py"],
+        "env": {
+          "TP_PIPEDRIVE_API_TOKEN": "${TP_PIPEDRIVE_API_TOKEN}",
+          "TP_PIPEDRIVE_DOMAIN": "${TP_PIPEDRIVE_DOMAIN}",
+          "PYTHONPATH": "/app:/app/pipedrive"
+        }
+      },
+      "toggl": {
+        "command": "python3",
+        "args": ["/app/mcp-toggl/server.py"],
+        "env": {
+          "TP_TOGGL_API_TOKEN": "${TP_TOGGL_API_TOKEN}",
+          "TP_TOGGL_WORKSPACE_ID": "${TP_TOGGL_WORKSPACE_ID}",
+          "PYTHONPATH": "/app:/app/toggl"
+        }
+      },
+      "bexio": {
+        "command": "python3",
+        "args": ["/app/mcp-bexio/server.py"],
+        "env": {
+          "TP_BEXIO_API_TOKEN": "${TP_BEXIO_API_TOKEN}",
+          "PYTHONPATH": "/app:/app/bexio"
+        }
+      },
+      "signa": {
+        "command": "python3",
+        "args": ["/app/mcp-signa/server.py"],
+        "env": {
+          "ISI_HOST": "${TP_ISI_HOST}",
+          "ISI_DB": "${TP_ISI_DB}",
+          "ISI_USER": "${TP_ISI_USER}",
+          "ISI_SECRET": "${TP_ISI_SECRET}",
+          "PYTHONPATH": "/app"
+        }
+      },
+      "invoiceinsight": {
+        "command": "python3",
+        "args": ["/app/mcp-invoiceinsight/server.py"],
+        "env": {
+          "TP_INVOICEINSIGHT_URL": "${TP_INVOICEINSIGHT_URL}",
+          "TP_INVOICEINSIGHT_API_KEY": "${TP_INVOICEINSIGHT_API_KEY}",
+          "PYTHONPATH": "/app"
+        }
+      },
+      "scripts": {
+        "command": "python3",
+        "args": ["/app/mcp-scripts/server.py"],
+        "env": {
+          "TP_SECRETS_DIR": "/root/.secrets/taskpilot",
+          "TP_SCRIPTS_OUTPUT_DIR": "/tmp/taskpilot-scripts-output",
+          "PYTHONPATH": "/app"
+        }
+      },
+      "sandbox": {
+        "command": "python3",
+        "args": ["/app/mcp-sandbox/server.py"],
+        "env": {
+          "TP_SANDBOX_IMAGE": "${TP_SANDBOX_IMAGE}",
+          "TP_SANDBOX_OUTPUT_DIR": "/tmp/taskpilot-sandbox-output",
+          "PYTHONPATH": "/app"
+        }
+      },
+      "contentConverter": {
+        "command": "cconv",
+        "args": ["serve"],
+        "env": {}
+      }
+    },
+    "ssrfWhitelist": []
+  }
+}

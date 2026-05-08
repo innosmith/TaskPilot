@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.cursor
+.vscode
+*.swp
+*.swo
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.venv
+.pytest_cache
+.mypy_cache
+
+# Node
+src/frontend/node_modules
+src/frontend/dist
+
+# Environment (Secrets)
+.env
+.env.*
+!.env.example
+
+# Docker (vermeidet rekursiven Kontext)
+docker/sandbox/
+
+# Dokumentation
+docs/
+*.md
+!src/backend/app/**/*.md
+
+# Tests
+src/backend/tests/
+
+# Lokale Daten
+uploads/
+*.sqlite
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporaer
+/tmp
+*.log
