@@ -119,30 +119,32 @@ export function Sidebar({
           )}
         </div>
 
-        {/* Suche */}
-        {!collapsed ? (
-          <div className="px-3 pt-3">
-            <button
-              onClick={onSearchOpen}
-              className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-500 transition-colors hover:border-gray-300 hover:text-gray-700 dark:border-gray-700 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:text-gray-300"
-            >
-              <SearchIcon className="h-4 w-4 shrink-0" />
-              <span className="flex-1 text-left">Suchen...</span>
-              <kbd className="rounded border border-gray-300 px-1.5 py-0.5 text-xs text-gray-400 dark:border-gray-600">
-                /
-              </kbd>
-            </button>
-          </div>
-        ) : (
-          <div className="flex justify-center pt-3">
-            <button
-              onClick={onSearchOpen}
-              className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
-              title="Suchen (/)"
-            >
-              <SearchIcon className="h-5 w-5" />
-            </button>
-          </div>
+        {/* Suche (nur Owner) */}
+        {isOwner && (
+          !collapsed ? (
+            <div className="px-3 pt-3">
+              <button
+                onClick={onSearchOpen}
+                className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-500 transition-colors hover:border-gray-300 hover:text-gray-700 dark:border-gray-700 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:text-gray-300"
+              >
+                <SearchIcon className="h-4 w-4 shrink-0" />
+                <span className="flex-1 text-left">Suchen...</span>
+                <kbd className="rounded border border-gray-300 px-1.5 py-0.5 text-xs text-gray-400 dark:border-gray-600">
+                  /
+                </kbd>
+              </button>
+            </div>
+          ) : (
+            <div className="flex justify-center pt-3">
+              <button
+                onClick={onSearchOpen}
+                className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                title="Suchen (/)"
+              >
+                <SearchIcon className="h-5 w-5" />
+              </button>
+            </div>
+          )
         )}
 
         {/* Navigation */}

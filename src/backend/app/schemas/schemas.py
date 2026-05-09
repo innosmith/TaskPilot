@@ -144,6 +144,12 @@ class TaskUpdate(BaseModel):
     pipedrive_person_id: int | None = None
 
 
+class AssigneeUser(BaseModel):
+    id: uuid.UUID
+    display_name: str
+    avatar_url: str | None = None
+
+
 class TaskOut(TaskBase):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
@@ -161,6 +167,7 @@ class TaskOut(TaskBase):
     template_id: uuid.UUID | None = None
     pipedrive_deal_id: int | None = None
     pipedrive_person_id: int | None = None
+    assignee_user: AssigneeUser | None = None
     created_at: datetime
     updated_at: datetime
     tags: list[TagOut] = []
@@ -178,6 +185,7 @@ class TaskCard(BaseModel):
     pipeline_column_id: uuid.UUID | None
     pipeline_position: float | None
     assignee: str
+    assignee_user: AssigneeUser | None = None
     due_date: date | None
     is_completed: bool
     is_pinned: bool
@@ -231,6 +239,7 @@ class UserOut(BaseModel):
     display_name: str
     role: str
     avatar_url: str | None = None
+    is_active: bool = True
     mfa_enabled: bool = False
 
 

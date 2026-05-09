@@ -11,6 +11,7 @@ from app.auth.deps import check_project_access, get_current_user, require_role
 from app.database import get_db
 from app.models import BoardColumn, BoardMember, Project, Task, User
 from app.schemas import (
+    AssigneeUser,
     BoardColumnCreate,
     BoardColumnOut,
     BoardColumnUpdate,
@@ -49,7 +50,7 @@ async def list_projects(
 async def create_project(
     body: ProjectCreate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(require_role("owner")),
+    user: User = Depends(require_role("owner")),
 ) -> ProjectOut:
     project = Project(**body.model_dump())
     db.add(project)
@@ -61,6 +62,9 @@ async def create_project(
         BoardColumn(project_id=project.id, name="Done", position=3.0, is_archive=True),
     ]
     db.add_all(defaults)
+
+    db.add(BoardMember(project_id=project.id, user_id=user.id, role="member"))
+
     return project
 
 
@@ -130,6 +134,11 @@ async def get_board(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    user_cache: dict[str, AssigneeUser] = {}
+    all_users = (await db.execute(select(User))).scalars().all()
+    for u in all_users:
+        user_cache[str(u.id)] = AssigneeUser(id=u.id, display_name=u.display_name, avatar_url=u.avatar_url)
+
     columns_out = []
     for col in sorted(project.board_columns, key=lambda c: c.position):
         task_result = await db.execute(
@@ -151,6 +160,7 @@ async def get_board(
                 pipeline_column_id=t.pipeline_column_id,
                 pipeline_position=t.pipeline_position,
                 assignee=t.assignee,
+                assignee_user=user_cache.get(t.assignee),
                 due_date=t.due_date,
                 is_completed=t.is_completed,
                 is_pinned=t.is_pinned,
@@ -299,6 +309,7 @@ class MemberOut(BaseModel):
     user_id: uuid.UUID
     email: str
     display_name: str
+    avatar_url: str | None = None
     role: str
     invited_at: datetime | None = None
 
@@ -324,7 +335,8 @@ async def list_members(
             user_id=u.id,
             email=u.email,
             display_name=u.display_name,
-            role=bm.role,
+            avatar_url=u.avatar_url,
+            role=u.role if u.role == "owner" else bm.role,
             invited_at=bm.invited_at,
         )
         for bm, u in rows

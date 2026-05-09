@@ -141,15 +141,23 @@ export function TaskCard({
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-violet-100 text-violet-600 dark:bg-violet-900/40 dark:text-violet-300">
               <AgentBadgeIcon className="h-3 w-3" />
             </span>
-          ) : userAvatarUrl ? (
+          ) : task.assignee_user?.avatar_url ? (
             <img
-              src={userAvatarUrl}
-              alt=""
+              src={task.assignee_user.avatar_url}
+              alt={task.assignee_user.display_name}
+              title={task.assignee_user.display_name}
               className="h-5 w-5 rounded-full object-cover"
             />
+          ) : task.assignee_user ? (
+            <span
+              className="flex h-5 w-5 items-center justify-center rounded-full bg-indigo-100 text-[9px] font-bold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300"
+              title={task.assignee_user.display_name}
+            >
+              {task.assignee_user.display_name.charAt(0).toUpperCase()}
+            </span>
           ) : (
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-indigo-100 text-[9px] font-bold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300">
-              Ich
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-100 text-[9px] font-bold text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+              ?
             </span>
           )}
         </span>

@@ -4,6 +4,12 @@ export interface Tag {
   color: string;
 }
 
+export interface AssigneeUser {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
 export interface TaskCard {
   id: string;
   title: string;
@@ -13,6 +19,7 @@ export interface TaskCard {
   pipeline_column_id: string | null;
   pipeline_position: number | null;
   assignee: string;
+  assignee_user: AssigneeUser | null;
   due_date: string | null;
   is_completed: boolean;
   is_pinned: boolean;
@@ -40,6 +47,7 @@ export interface TaskDetail {
   pipeline_column_id: string | null;
   pipeline_position: number | null;
   assignee: string;
+  assignee_user: AssigneeUser | null;
   due_date: string | null;
   is_completed: boolean;
   is_pinned: boolean;

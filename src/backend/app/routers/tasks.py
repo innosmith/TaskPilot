@@ -13,8 +13,9 @@ from sqlalchemy.orm import selectinload
 from app.auth.deps import MEMBER_RESTRICTED_TASK_FIELDS, check_project_access, get_current_user, require_role
 from app.routers.uploads import _scan_with_clamav
 from app.database import get_db
-from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, ChecklistItem, Project, Task, User
+from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, BoardMember, ChecklistItem, Project, Task, User
 from app.schemas import (
+    AssigneeUser,
     ChecklistItemCreate,
     ChecklistItemOut,
     ChecklistItemUpdate,
@@ -22,6 +23,51 @@ from app.schemas import (
     TaskOut,
     TaskUpdate,
 )
+
+
+async def _resolve_assignee_user(assignee: str, db: AsyncSession) -> AssigneeUser | None:
+    """Löst eine assignee-UUID in ein AssigneeUser-Objekt auf."""
+    if not assignee or assignee == "agent":
+        return None
+    try:
+        uid = uuid.UUID(assignee)
+    except ValueError:
+        return None
+    result = await db.execute(select(User).where(User.id == uid))
+    u = result.scalar_one_or_none()
+    if not u:
+        return None
+    return AssigneeUser(id=u.id, display_name=u.display_name, avatar_url=u.avatar_url)
+
+
+def _resolve_assignee_input(assignee: str | None, user: User) -> str | None:
+    """Wandelt 'me' in die User-UUID um."""
+    if assignee == "me":
+        return str(user.id)
+    return assignee
+
+
+async def _validate_assignee(
+    assignee: str, project_id: uuid.UUID, db: AsyncSession,
+) -> None:
+    """Stellt sicher, dass ein UUID-Assignee BoardMember des Projekts ist."""
+    if assignee in ("agent", "me"):
+        return
+    try:
+        uid = uuid.UUID(assignee)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Ungültiger Assignee-Wert")
+    result = await db.execute(
+        select(BoardMember).where(
+            BoardMember.project_id == project_id,
+            BoardMember.user_id == uid,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Zugewiesene Person ist kein Mitglied dieses Projekts",
+        )
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -74,6 +120,9 @@ async def create_task(
 
     body.title = _sanitize_text(body.title) or body.title
     body.description = _sanitize_text(body.description)
+    body.assignee = _resolve_assignee_input(body.assignee, user) or body.assignee
+    if project_id:
+        await _validate_assignee(body.assignee, project_id, db)
 
     task = Task(**body.model_dump())
     db.add(task)
@@ -84,7 +133,10 @@ async def create_task(
         .options(selectinload(Task.tags), selectinload(Task.checklist_items))
         .where(Task.id == task.id)
     )
-    return result.scalar_one()
+    task_obj = result.scalar_one()
+    task_out = TaskOut.model_validate(task_obj)
+    task_out.assignee_user = await _resolve_assignee_user(task_obj.assignee, db)
+    return task_out
 
 
 # --- Pending Review (auto-erstellte Tasks aus E-Mail-Triage) ---
@@ -206,7 +258,9 @@ async def get_task(
         raise HTTPException(status_code=404, detail="Task not found")
     if not await check_project_access(task.project_id, user, db):
         raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
-    return task
+    task_out = TaskOut.model_validate(task)
+    task_out.assignee_user = await _resolve_assignee_user(task.assignee, db)
+    return task_out
 
 
 @router.patch("/{task_id}", response_model=TaskOut)
@@ -231,6 +285,10 @@ async def update_task(
     old_assignee = task.assignee
     update_data = body.model_dump(exclude_unset=True)
 
+    if "assignee" in update_data:
+        update_data["assignee"] = _resolve_assignee_input(update_data["assignee"], user)
+        await _validate_assignee(update_data["assignee"], task.project_id, db)
+
     if user.role != "owner":
         for field in MEMBER_RESTRICTED_TASK_FIELDS:
             update_data.pop(field, None)
@@ -248,7 +306,9 @@ async def update_task(
         job = AgentJob(task_id=task.id, llm_model=task.llm_override)
         db.add(job)
 
-    return task
+    task_out = TaskOut.model_validate(task)
+    task_out.assignee_user = await _resolve_assignee_user(task.assignee, db)
+    return task_out
 
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)

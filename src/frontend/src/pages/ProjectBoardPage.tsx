@@ -48,7 +48,8 @@ export function ProjectBoardPage() {
   const [showColCount, setShowColCount] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
   const [members, setMembers] = useState<ProjectMember[]>([]);
-  const [inviteEmail, setInviteEmail] = useState('');
+  const [teamUsers, setTeamUsers] = useState<{ id: string; email: string; display_name: string }[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteMsg, setInviteMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -61,14 +62,15 @@ export function ProjectBoardPage() {
   const fetchBoard = useCallback(async () => {
     if (!id) return;
     try {
-      const [data, userData, settingsData] = await Promise.all([
+      const [data, userData] = await Promise.all([
         api.get<BoardData>(`/api/projects/${id}/board`),
         api.get<{ avatar_url: string | null }>('/api/auth/me'),
-        api.get<{ show_column_count: boolean | null }>('/api/settings'),
       ]);
       setBoard(data);
       setUserAvatarUrl(userData.avatar_url);
-      setShowColCount(settingsData.show_column_count ?? false);
+      api.get<{ show_column_count: boolean | null }>('/api/settings')
+        .then((s) => setShowColCount(s.show_column_count ?? false))
+        .catch(() => {});
     } catch {
       /* handled by api client */
     } finally {
@@ -230,6 +232,14 @@ export function ProjectBoardPage() {
     }
   };
 
+  const fetchMembers = useCallback(async () => {
+    if (!id) return;
+    try {
+      const data = await api.get<ProjectMember[]>(`/api/projects/${id}/members`);
+      setMembers(data);
+    } catch { /* leer */ }
+  }, [id]);
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -279,31 +289,30 @@ export function ProjectBoardPage() {
     navigate('/projects');
   };
 
-  const fetchMembers = useCallback(async () => {
-    if (!id) return;
-    try {
-      const data = await api.get<ProjectMember[]>(`/api/projects/${id}/members`);
-      setMembers(data);
-    } catch { /* leer */ }
-  }, [id]);
-
   const openMembersPanel = () => {
     setSettingsOpen(false);
     setMembersOpen(true);
     fetchMembers();
+    api.get<{ id: string; email: string; display_name: string }[]>('/api/auth/users')
+      .then(setTeamUsers).catch(() => {});
   };
 
-  const handleInvite = async () => {
-    if (!id || !inviteEmail.trim()) return;
+  const handleAddMember = async () => {
+    if (!id || !selectedUserId) return;
+    const user = teamUsers.find((u) => u.id === selectedUserId);
+    if (!user) return;
     setInviteLoading(true);
     setInviteMsg(null);
     try {
-      await api.post('/api/auth/invite', { email: inviteEmail.trim(), project_id: id });
-      setInviteMsg({ type: 'ok', text: `${inviteEmail.trim()} wurde eingeladen` });
-      setInviteEmail('');
+      await api.post<{ email: string; temp_password: string }>('/api/auth/invite', {
+        email: user.email,
+        project_id: id,
+      });
+      setInviteMsg({ type: 'ok', text: `${user.display_name} wurde dem Projekt hinzugefügt.` });
+      setSelectedUserId('');
       fetchMembers();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Einladung fehlgeschlagen';
+      const msg = e instanceof Error ? e.message : 'Hinzufügen fehlgeschlagen';
       setInviteMsg({ type: 'err', text: msg });
     } finally {
       setInviteLoading(false);
@@ -328,7 +337,7 @@ export function ProjectBoardPage() {
       )}
 
       <div
-        className={`relative z-10 border-b px-4 py-4 sm:px-6 ${
+        className={`relative z-30 border-b px-4 py-4 sm:px-6 ${
           hasBg
             ? 'border-white/10 bg-black/20 text-white backdrop-blur-sm'
             : 'border-gray-200 dark:border-gray-800'
@@ -356,7 +365,7 @@ export function ProjectBoardPage() {
             {board.project.name}
           </h1>
           <div className="ml-auto flex items-center gap-1">
-            <div className="relative" ref={settingsRef}>
+            {isOwner && <div className="relative" ref={settingsRef}>
               <button
                 onClick={() => { setSettingsOpen(!settingsOpen); setConfirmDelete(false); setIconPickerOpen(false); setIconMenuOpen(false); }}
                 className={`rounded-lg p-2 transition-colors ${
@@ -369,7 +378,7 @@ export function ProjectBoardPage() {
                 <GearIcon className="h-5 w-5" />
               </button>
               {settingsOpen && (
-                <div className="absolute right-0 top-10 z-20 w-64 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                <div className="absolute right-0 top-10 z-[100] w-64 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
                   <button
                     onClick={() => { setIconMenuOpen(!iconMenuOpen); setSettingsOpen(false); }}
                     className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -509,7 +518,7 @@ export function ProjectBoardPage() {
                   onClose={() => setIconPickerOpen(false)}
                 />
               )}
-            </div>
+            </div>}
           </div>
         </div>
       </div>
@@ -543,41 +552,44 @@ export function ProjectBoardPage() {
                   columnIcon={col.icon_emoji}
                   onTaskClick={(task) => setSelectedTaskId(task.id)}
                   onCreateTask={handleCreateTask}
-                  onRenameColumn={async (colId, name) => {
+                  onRenameColumn={isOwner ? async (colId, name) => {
                     await api.patch(`/api/projects/${id}/columns/${colId}`, { name });
                     fetchBoard();
-                  }}
-                  onUpdateColumn={async (colId, updates) => {
+                  } : undefined}
+                  onUpdateColumn={isOwner ? async (colId, updates) => {
                     await api.patch(`/api/projects/${id}/columns/${colId}`, updates);
                     fetchBoard();
-                  }}
-                  onDeleteColumn={async (colId) => {
+                  } : undefined}
+                  onDeleteColumn={isOwner ? async (colId) => {
                     await api.delete(`/api/projects/${id}/columns/${colId}`);
                     fetchBoard();
-                  }}
+                  } : undefined}
                   onArchiveTask={async (taskId) => {
                     await api.patch(`/api/tasks/${taskId}`, { is_completed: true });
                     fetchBoard();
                   }}
                 />
               ))}
-            </SortableContext>            <div className="flex w-72 shrink-0 flex-col">
-              <button
-                onClick={async () => {
-                  if (!id) return;
-                  await api.post(`/api/projects/${id}/columns`, { name: 'Neue Spalte' });
-                  fetchBoard();
-                }}
-                className={`flex items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-3 text-sm font-medium transition-colors ${
-                  hasBg
-                    ? 'border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
-                    : 'border-gray-200 text-gray-400 hover:border-gray-300 hover:text-gray-600 dark:border-gray-700 dark:text-gray-500 dark:hover:border-gray-600 dark:hover:text-gray-400'
-                }`}
-              >
-                <AddColumnIcon className="h-4 w-4" />
-                Spalte hinzufügen
-              </button>
-            </div>
+            </SortableContext>
+            {isOwner && (
+              <div className="flex w-72 shrink-0 flex-col">
+                <button
+                  onClick={async () => {
+                    if (!id) return;
+                    await api.post(`/api/projects/${id}/columns`, { name: 'Neue Spalte' });
+                    fetchBoard();
+                  }}
+                  className={`flex items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-3 text-sm font-medium transition-colors ${
+                    hasBg
+                      ? 'border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
+                      : 'border-gray-200 text-gray-400 hover:border-gray-300 hover:text-gray-600 dark:border-gray-700 dark:text-gray-500 dark:hover:border-gray-600 dark:hover:text-gray-400'
+                  }`}
+                >
+                  <AddColumnIcon className="h-4 w-4" />
+                  Spalte hinzufügen
+                </button>
+              </div>
+            )}
           </div>
 
           <DragOverlay>
@@ -605,7 +617,7 @@ export function ProjectBoardPage() {
 
       {membersOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+          <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
                 Mitglieder verwalten
@@ -654,29 +666,46 @@ export function ProjectBoardPage() {
 
             <div className="border-t border-gray-100 pt-4 dark:border-gray-800">
               <p className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-                Mitglied einladen
+                Mitglied hinzufügen
               </p>
-              <div className="flex gap-2">
-                <input
-                  type="email"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleInvite(); }}
-                  placeholder="E-Mail-Adresse"
-                  className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-white"
-                />
-                <button
-                  onClick={handleInvite}
-                  disabled={inviteLoading || !inviteEmail.trim()}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {inviteLoading ? 'Lädt…' : 'Einladen'}
-                </button>
-              </div>
+              {(() => {
+                const memberIds = new Set(members.map((m) => m.user_id));
+                const available = teamUsers.filter((u) => !memberIds.has(u.id));
+                if (available.length === 0) {
+                  return (
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      Alle Team-Mitglieder sind bereits in diesem Projekt.
+                    </p>
+                  );
+                }
+                return (
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedUserId}
+                      onChange={(e) => setSelectedUserId(e.target.value)}
+                      className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                    >
+                      <option value="">Person auswählen…</option>
+                      {available.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.display_name} ({u.email})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={handleAddMember}
+                      disabled={inviteLoading || !selectedUserId}
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {inviteLoading ? 'Lädt…' : 'Hinzufügen'}
+                    </button>
+                  </div>
+                );
+              })()}
               {inviteMsg && (
-                <p className={`mt-2 text-xs ${inviteMsg.type === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                  {inviteMsg.text}
-                </p>
+                <div className={`mt-3 rounded-lg p-3 text-sm ${inviteMsg.type === 'ok' ? 'border border-green-200 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-300' : 'border border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300'}`}>
+                  <p>{inviteMsg.text}</p>
+                </div>
               )}
             </div>
           </div>

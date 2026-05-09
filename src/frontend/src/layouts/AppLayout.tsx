@@ -9,6 +9,7 @@ import { useBadgeData, BadgeProvider } from '../hooks/useBadges';
 import { useScrollDirection } from '../hooks/useScrollDirection';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { api } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 
 interface AppSettings {
   sidebar_collapsed?: boolean;
@@ -24,17 +25,25 @@ export function AppLayout() {
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const [appSettings, setAppSettings] = useState<AppSettings>({});
   const navigate = useNavigate();
+  const { isOwner } = useAuth();
 
   const badges = useBadgeData(sidebarRefreshKey);
 
   useEffect(() => {
-    api.get<AppSettings>('/api/settings').then((s) => {
-      if (s.sidebar_collapsed) setSidebarCollapsed(true);
-      setAppSettings(s);
-    }).catch(() => {});
-  }, []);
+    if (isOwner) {
+      api.get<AppSettings>('/api/settings').then((s) => {
+        if (s.sidebar_collapsed) setSidebarCollapsed(true);
+        setAppSettings(s);
+      }).catch(() => {});
+    } else {
+      api.get<AppSettings>('/api/settings/branding').then((s) => {
+        setAppSettings(s);
+      }).catch(() => {});
+    }
+  }, [isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === '/' && !searchOpen && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
         e.preventDefault();
@@ -43,13 +52,15 @@ export function AppLayout() {
     };
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
-  }, [searchOpen]);
+  }, [searchOpen, isOwner]);
 
   const toggleCollapse = useCallback(() => {
     const next = !sidebarCollapsed;
     setSidebarCollapsed(next);
-    api.patch('/api/settings', { sidebar_collapsed: next }).catch(() => {});
-  }, [sidebarCollapsed]);
+    if (isOwner) {
+      api.patch('/api/settings', { sidebar_collapsed: next }).catch(() => {});
+    }
+  }, [sidebarCollapsed, isOwner]);
 
   const handleTaskClick = useCallback(
     (taskId: string) => {
@@ -72,10 +83,11 @@ export function AppLayout() {
   }, []);
 
   const refreshAppSettings = useCallback(() => {
-    api.get<AppSettings>('/api/settings').then((s) => {
+    const url = isOwner ? '/api/settings' : '/api/settings/branding';
+    api.get<AppSettings>(url).then((s) => {
       setAppSettings(s);
     }).catch(() => {});
-  }, []);
+  }, [isOwner]);
 
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const openSearch = useCallback(() => setSearchOpen(true), []);
@@ -105,12 +117,14 @@ export function AppLayout() {
           </main>
         </div>
 
-        <SearchDialog
-          isOpen={searchOpen}
-          onClose={() => setSearchOpen(false)}
-          onTaskClick={handleTaskClick}
-          onProjectClick={handleProjectClick}
-        />
+        {isOwner && (
+          <SearchDialog
+            isOpen={searchOpen}
+            onClose={() => setSearchOpen(false)}
+            onTaskClick={handleTaskClick}
+            onProjectClick={handleProjectClick}
+          />
+        )}
 
         {selectedTaskId && (
           <TaskDetailDialog

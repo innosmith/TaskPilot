@@ -1,4 +1,5 @@
 import { useLocation } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 
 const PAGE_TITLES: Record<string, string> = {
   '/cockpit': 'Cockpit',
@@ -19,6 +20,7 @@ interface MobileHeaderProps {
 
 export function MobileHeader({ onMenuOpen, onSearchOpen }: MobileHeaderProps) {
   const { pathname } = useLocation();
+  const { isOwner } = useAuth();
 
   const title =
     PAGE_TITLES[pathname] ??
@@ -41,13 +43,17 @@ export function MobileHeader({ onMenuOpen, onSearchOpen }: MobileHeaderProps) {
           {title}
         </h1>
 
-        <button
-          onClick={onSearchOpen}
-          className="flex h-11 w-11 items-center justify-center rounded-xl text-gray-600 transition-colors active:bg-gray-200/60 dark:text-gray-300 dark:active:bg-gray-800/60"
-          aria-label="Suche öffnen"
-        >
-          <SearchIcon className="h-5 w-5" />
-        </button>
+        {isOwner ? (
+          <button
+            onClick={onSearchOpen}
+            className="flex h-11 w-11 items-center justify-center rounded-xl text-gray-600 transition-colors active:bg-gray-200/60 dark:text-gray-300 dark:active:bg-gray-800/60"
+            aria-label="Suche öffnen"
+          >
+            <SearchIcon className="h-5 w-5" />
+          </button>
+        ) : (
+          <div className="h-11 w-11" />
+        )}
       </div>
     </header>
   );

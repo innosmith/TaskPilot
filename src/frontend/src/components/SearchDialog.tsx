@@ -13,7 +13,7 @@ interface SearchTask {
   title: string;
   project_id: string;
   project_name: string;
-  assignee: 'me' | 'agent';
+  assignee: string;
   is_completed: boolean;
   due_date: string;
 }

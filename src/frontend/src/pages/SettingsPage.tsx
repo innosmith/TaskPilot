@@ -31,6 +31,7 @@ interface ManagedUser {
   display_name: string;
   role: string;
   avatar_url: string | null;
+  is_active: boolean;
 }
 
 interface TriageSettingsData {
@@ -112,6 +113,8 @@ export function SettingsPage() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState('member');
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
+  const [createdUserPassword, setCreatedUserPassword] = useState<{ email: string; password: string } | null>(null);
 
   const [triagePrompt, setTriagePrompt] = useState('');
   const [triageInterval, setTriageInterval] = useState(2);
@@ -161,20 +164,18 @@ export function SettingsPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [p, s] = await Promise.all([
-        api.get<UserProfile>('/api/auth/me'),
-        api.get<UserSettingsData>('/api/settings'),
-      ]);
+      const p = await api.get<UserProfile>('/api/auth/me');
       setProfile(p);
-      setSettings(s);
       setDisplayName(p.display_name);
       setProfileEmail(p.email);
       setMfaEnabled(!!p.mfa_enabled);
       if (p.role === 'owner') {
-        const [u, ts] = await Promise.all([
+        const [s, u, ts] = await Promise.all([
+          api.get<UserSettingsData>('/api/settings'),
           api.get<ManagedUser[]>('/api/auth/users'),
           api.get<TriageSettingsData>('/api/settings/triage'),
         ]);
+        setSettings(s);
         setUsers(u);
         if (ts.triage_prompt) setTriagePrompt(ts.triage_prompt);
         if (ts.triage_interval_seconds) setTriageInterval(Math.round(ts.triage_interval_seconds / 60));
@@ -331,7 +332,12 @@ export function SettingsPage() {
   const createUser = async () => {
     if (!inviteEmail.trim() || !inviteName.trim()) return;
     try {
-      await api.post('/api/auth/users', { email: inviteEmail.trim(), display_name: inviteName.trim(), role: inviteRole });
+      const res = await api.post<{ email: string; temp_password: string }>('/api/auth/users', {
+        email: inviteEmail.trim(),
+        display_name: inviteName.trim(),
+        role: inviteRole,
+      });
+      setCreatedUserPassword({ email: res.email, password: res.temp_password });
       setInviteEmail(''); setInviteName(''); setInviteRole('member');
       const u = await api.get<ManagedUser[]>('/api/auth/users');
       setUsers(u);
@@ -342,6 +348,15 @@ export function SettingsPage() {
     await api.patch(`/api/auth/users/${userId}`, { is_active: !currentlyActive });
     const u = await api.get<ManagedUser[]>('/api/auth/users');
     setUsers(u);
+  };
+
+  const deleteUser = async (userId: string) => {
+    try {
+      await api.delete(`/api/auth/users/${userId}`);
+      setConfirmDeleteUserId(null);
+      const u = await api.get<ManagedUser[]>('/api/auth/users');
+      setUsers(u);
+    } catch { /* */ }
   };
 
   const saveTriageSettings = async () => {
@@ -506,6 +521,12 @@ export function SettingsPage() {
     setTimeout(() => setExtCopied(false), 3000);
   };
 
+  const isOwner = profile?.role === 'owner';
+
+  useEffect(() => {
+    if (!isOwner && tab !== 'profile') setTab('profile');
+  }, [isOwner, tab]);
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -514,17 +535,18 @@ export function SettingsPage() {
     );
   }
 
-  const isOwner = profile?.role === 'owner';
-  const tabs: { id: SettingsTab; label: string }[] = [
-    { id: 'profile', label: 'Profil' },
-    { id: 'display', label: 'Erscheinungsbild' },
-    { id: 'cockpit', label: 'Cockpit' },
-    { id: 'llm', label: 'LLM-Modelle' },
-    ...(isOwner ? [{ id: 'integrations' as const, label: 'Integrationen' }] : []),
-    ...(isOwner ? [{ id: 'triage' as const, label: 'E-Mail-Triage' }] : []),
-    ...(isOwner ? [{ id: 'team' as const, label: 'Team' }] : []),
-    { id: 'intelligence', label: 'Intelligenz' },
-  ];
+  const tabs: { id: SettingsTab; label: string }[] = isOwner
+    ? [
+        { id: 'profile', label: 'Profil' },
+        { id: 'display', label: 'Erscheinungsbild' },
+        { id: 'cockpit', label: 'Cockpit' },
+        { id: 'llm', label: 'LLM-Modelle' },
+        { id: 'integrations', label: 'Integrationen' },
+        { id: 'triage', label: 'E-Mail-Triage' },
+        { id: 'team', label: 'Team' },
+        { id: 'intelligence', label: 'Intelligenz' },
+      ]
+    : [{ id: 'profile', label: 'Profil' }];
 
   return (
     <div className="flex h-full flex-col">
@@ -551,7 +573,7 @@ export function SettingsPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
-        <div className="mx-auto max-w-2xl space-y-8 rounded-2xl border border-white/40 bg-white/60 p-6 shadow-sm backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/60">
+        <div className="mx-auto max-w-4xl space-y-8 rounded-2xl border border-white/40 bg-white/60 p-6 shadow-sm backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/60">
 
           {/* ── Profil ── */}
           {tab === 'profile' && profile && (
@@ -1390,10 +1412,31 @@ export function SettingsPage() {
                     Einladen
                   </button>
                 </div>
+
+                {createdUserPassword && (
+                  <div className="mt-3 rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-950">
+                    <p className="text-sm text-green-800 dark:text-green-300">
+                      <strong>{createdUserPassword.email}</strong> wurde erstellt.
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-green-800 dark:text-green-300">Temporäres Passwort:</p>
+                    <code className="mt-1 block select-all rounded bg-white px-2 py-1 font-mono text-sm dark:bg-gray-800 dark:text-green-300">
+                      {createdUserPassword.password}
+                    </code>
+                    <p className="mt-1 text-xs text-green-600 opacity-70 dark:text-green-400">
+                      Bitte an die Person weitergeben. Es wird nur einmal angezeigt.
+                    </p>
+                    <button
+                      onClick={() => setCreatedUserPassword(null)}
+                      className="mt-2 rounded px-2 py-1 text-xs font-medium text-green-700 hover:bg-green-100 dark:text-green-400 dark:hover:bg-green-900"
+                    >
+                      Schliessen
+                    </button>
+                  </div>
+                )}
               </div>
 
-              <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
-                <table className="w-full text-left text-sm">
+              <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800">
+                <table className="w-full min-w-[640px] text-left text-sm">
                   <thead>
                     <tr className="border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60">
                       <th className="px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Name</th>
@@ -1404,7 +1447,7 @@ export function SettingsPage() {
                   </thead>
                   <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
                     {users.map((u) => (
-                      <tr key={u.id} className="bg-white dark:bg-gray-900">
+                      <tr key={u.id} className={`${u.is_active ? 'bg-white dark:bg-gray-900' : 'bg-gray-50 opacity-60 dark:bg-gray-950'}`}>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
                             {u.avatar_url ? (
@@ -1415,6 +1458,9 @@ export function SettingsPage() {
                               </div>
                             )}
                             <span className="font-medium text-gray-900 dark:text-white">{u.display_name}</span>
+                            {!u.is_active && (
+                              <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-400">inaktiv</span>
+                            )}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{u.email}</td>
@@ -1429,12 +1475,43 @@ export function SettingsPage() {
                         </td>
                         <td className="px-4 py-3 text-right">
                           {u.role !== 'owner' && (
-                            <button
-                              onClick={() => toggleUserActive(u.id, true)}
-                              className="rounded-lg px-2.5 py-1 text-xs font-medium text-red-500 transition-colors hover:bg-red-50 dark:hover:bg-red-950"
-                            >
-                              Deaktivieren
-                            </button>
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                onClick={() => toggleUserActive(u.id, u.is_active)}
+                                className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                                  u.is_active
+                                    ? 'text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950'
+                                    : 'text-green-600 hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-950'
+                                }`}
+                              >
+                                {u.is_active ? 'Deaktivieren' : 'Reaktivieren'}
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteUserId(u.id === confirmDeleteUserId ? null : u.id)}
+                                className="rounded-lg px-2.5 py-1 text-xs font-medium text-red-500 transition-colors hover:bg-red-50 dark:hover:bg-red-950"
+                              >
+                                Entfernen
+                              </button>
+                            </div>
+                          )}
+                          {confirmDeleteUserId === u.id && (
+                            <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-2 text-left dark:border-red-800 dark:bg-red-950">
+                              <p className="mb-1.5 text-xs text-red-700 dark:text-red-300">User unwiderruflich löschen?</p>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => deleteUser(u.id)}
+                                  className="rounded bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-700"
+                                >
+                                  Löschen
+                                </button>
+                                <button
+                                  onClick={() => setConfirmDeleteUserId(null)}
+                                  className="rounded px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                                >
+                                  Abbrechen
+                                </button>
+                              </div>
+                            </div>
                           )}
                         </td>
                       </tr>

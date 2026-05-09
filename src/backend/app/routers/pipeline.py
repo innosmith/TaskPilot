@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 from app.auth.deps import get_current_user, require_role
 from app.database import get_db
 from app.models import PipelineColumn, Task, User
-from app.schemas import PipelineColumnOut, PipelineColumnUpdate, PipelineColumnWithTasks, PipelineOut, TaskCard
+from app.schemas import AssigneeUser, PipelineColumnOut, PipelineColumnUpdate, PipelineColumnWithTasks, PipelineOut, TaskCard
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 
@@ -22,6 +22,10 @@ async def get_pipeline(
     )
     columns = col_result.scalars().all()
 
+    user_cache: dict[str, AssigneeUser] = {}
+    all_users = (await db.execute(select(User))).scalars().all()
+    for u in all_users:
+        user_cache[str(u.id)] = AssigneeUser(id=u.id, display_name=u.display_name, avatar_url=u.avatar_url)
     columns_out = []
     for col in columns:
         task_result = await db.execute(
@@ -42,6 +46,7 @@ async def get_pipeline(
                 pipeline_column_id=t.pipeline_column_id,
                 pipeline_position=t.pipeline_position,
                 assignee=t.assignee,
+                assignee_user=user_cache.get(t.assignee),
                 due_date=t.due_date,
                 is_completed=t.is_completed,
                 is_pinned=t.is_pinned,

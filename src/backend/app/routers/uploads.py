@@ -60,6 +60,41 @@ async def upload_icon(
     return await _save_file(file, "icons")
 
 
+@router.get("/icons/{filename}")
+async def serve_icon(filename: str) -> FileResponse:
+    """Icons/Logos ohne Auth ausliefern (nicht-sensible Assets)."""
+    safe_filename = pathlib.Path(filename).name
+    filepath = UPLOADS_DIR / "icons" / safe_filename
+    if not filepath.is_file():
+        raise HTTPException(status_code=404, detail="Datei nicht gefunden")
+    return FileResponse(filepath)
+
+
+@router.get("/avatars/{filename}")
+async def serve_avatar(filename: str) -> FileResponse:
+    """Avatars ohne Auth ausliefern (Profilbilder, nicht-sensitiv)."""
+    safe_filename = pathlib.Path(filename).name
+    filepath = UPLOADS_DIR / "avatars" / safe_filename
+    if not filepath.is_file():
+        raise HTTPException(status_code=404, detail="Datei nicht gefunden")
+    return FileResponse(filepath)
+
+
+@router.get("/tasks/{task_id}/{filename}")
+async def serve_task_attachment(
+    task_id: str,
+    filename: str,
+    _user: User = Depends(require_role("member")),
+) -> FileResponse:
+    """Task-Attachments mit Auth ausliefern."""
+    safe_task_id = pathlib.Path(task_id).name
+    safe_filename = pathlib.Path(filename).name
+    filepath = UPLOADS_DIR / "tasks" / safe_task_id / safe_filename
+    if not filepath.is_file():
+        raise HTTPException(status_code=404, detail="Datei nicht gefunden")
+    return FileResponse(filepath)
+
+
 @router.get("/{subfolder}/{filename}")
 async def serve_upload(
     subfolder: str,

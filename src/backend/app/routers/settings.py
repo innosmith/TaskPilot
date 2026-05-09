@@ -47,6 +47,25 @@ SETTINGS_FIELDS = [
 ]
 
 
+class BrandingSettings(BaseModel):
+    app_logo_url: str | None = None
+    sidebar_color: str | None = None
+
+
+@router.get("/branding", response_model=BrandingSettings)
+async def get_branding(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BrandingSettings:
+    """Öffentliche Branding-Settings (Logo, Sidebar-Farbe) für alle Rollen."""
+    from sqlalchemy import select
+    owner = (await db.execute(select(User).where(User.role == "owner").limit(1))).scalar_one_or_none()
+    if not owner or not owner.settings:
+        return BrandingSettings()
+    s = owner.settings
+    return BrandingSettings(app_logo_url=s.get("app_logo_url"), sidebar_color=s.get("sidebar_color"))
+
+
 @router.get("", response_model=UserSettings)
 async def get_settings(
     user: User = Depends(require_role("owner")),

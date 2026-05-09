@@ -1,4 +1,5 @@
 from app.schemas.schemas import (
+    AssigneeUser,
     AgentJobCreate,
     AgentJobOut,
     AgentJobUpdate,
@@ -44,6 +45,7 @@ from app.schemas.schemas import (
 )
 
 __all__ = [
+    "AssigneeUser",
     "AgentJobCreate",
     "AgentJobOut",
     "AgentJobUpdate",

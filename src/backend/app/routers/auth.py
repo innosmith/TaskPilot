@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pyotp
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -294,6 +294,15 @@ class UserUpdateBody(BaseModel):
     is_active: bool | None = None
 
 
+class UserCreateResult(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    email: str
+    display_name: str
+    role: str
+    temp_password: str
+
+
 @router.get("/users", response_model=list[UserOut])
 async def list_users(
     db: AsyncSession = Depends(get_db),
@@ -303,12 +312,12 @@ async def list_users(
     return result.scalars().all()
 
 
-@router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post("/users", response_model=UserCreateResult, status_code=status.HTTP_201_CREATED)
 async def create_user(
     body: UserCreateBody,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require_owner),
-) -> UserOut:
+) -> UserCreateResult:
     existing = await db.execute(select(User).where(User.email == body.email))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="E-Mail bereits registriert")
@@ -319,10 +328,17 @@ async def create_user(
         password_hash=hash_password(temp_password),
         display_name=body.display_name,
         role=body.role,
+        must_change_password=True,
     )
     db.add(user)
     await db.flush()
-    return user
+    return UserCreateResult(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        role=user.role,
+        temp_password=temp_password,
+    )
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
@@ -339,6 +355,25 @@ async def update_user(
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(user, field, value)
     return user
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_owner),
+) -> None:
+    if current_user.id == user_id:
+        raise HTTPException(status_code=400, detail="Du kannst dich nicht selbst löschen")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User nicht gefunden")
+    if user.role == "owner":
+        raise HTTPException(status_code=403, detail="Owner-Accounts können nicht gelöscht werden")
+
+    await db.delete(user)
 
 
 # --- Einladungs-Flow ---

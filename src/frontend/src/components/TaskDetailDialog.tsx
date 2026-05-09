@@ -3,6 +3,7 @@ import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type D
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { api } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import { RichTextEditor } from './RichTextEditor';
 import type {
   TaskDetail, ChecklistItem, TaskUpdatePayload, AgentJob, Tag,
@@ -47,11 +48,13 @@ interface AttachmentEntry {
 }
 
 export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialogProps) {
+  const { isOwner, user: authUser } = useAuth();
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [agentJobs, setAgentJobs] = useState<AgentJob[]>([]);
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [pipelineCols, setPipelineCols] = useState<PipelineColumn[]>([]);
+  const [boardMembers, setBoardMembers] = useState<{ user_id: string; display_name: string; avatar_url?: string | null }[]>([]);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -118,6 +121,9 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
     api.get<Project>(`/api/projects/${projectId}`)
       .then(setCurrentProject)
       .catch(() => {});
+    api.get<{ user_id: string; display_name: string; avatar_url?: string | null }[]>(`/api/projects/${projectId}/members`)
+      .then(setBoardMembers)
+      .catch(() => setBoardMembers([]));
   }, []);
 
   useEffect(() => {
@@ -125,14 +131,12 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
     setLoading(true);
     Promise.all([
       api.get<TaskDetail>(`/api/tasks/${taskId}`),
-      api.get<AgentJob[]>(`/api/agent-jobs?task_id=${taskId}`),
       api.get<Tag[]>('/api/tags'),
       api.get<ActivityLogEntry[]>(`/api/tasks/${taskId}/activity`),
       api.get<AttachmentEntry[]>(`/api/tasks/${taskId}/attachments`),
     ])
-      .then(([taskData, jobsData, tagsData, activityData, attachmentData]) => {
+      .then(([taskData, tagsData, activityData, attachmentData]) => {
         setTask(taskData);
-        setAgentJobs(jobsData);
         setAllTags(tagsData);
         setActivities(activityData);
         setAttachments(attachmentData);
@@ -142,6 +146,8 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
       })
       .catch(() => {})
       .finally(() => setLoading(false));
+    api.get<AgentJob[]>(`/api/agent-jobs?task_id=${taskId}`)
+      .then(setAgentJobs).catch(() => setAgentJobs([]));
   }, [taskId, loadProject]);
 
   const updateTask = useCallback(async (payload: TaskUpdatePayload) => {
@@ -411,7 +417,15 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                         {attachments.map((att) => (
                           <div key={att.id} className="group flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-white dark:hover:bg-gray-800">
                             <PaperclipIcon className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-                            <a href={att.filepath} target="_blank" rel="noopener noreferrer" className="flex-1 truncate text-indigo-600 hover:underline dark:text-indigo-400">{att.filename}</a>
+                            <button onClick={async () => {
+                              const token = localStorage.getItem('taskpilot_token');
+                              const res = await fetch(`/api${att.filepath}`, { headers: { Authorization: `Bearer ${token}` } });
+                              if (!res.ok) return;
+                              const blob = await res.blob();
+                              const url = URL.createObjectURL(blob);
+                              window.open(url, '_blank');
+                              setTimeout(() => URL.revokeObjectURL(url), 60000);
+                            }} className="flex-1 truncate text-left text-indigo-600 hover:underline dark:text-indigo-400">{att.filename}</button>
                             <span className="shrink-0 text-[10px] text-gray-400">{formatFileSize(att.size)}</span>
                             <button onClick={() => deleteAttachment(att.id)} className="shrink-0 rounded p-0.5 text-gray-300 opacity-0 hover:text-red-500 group-hover:opacity-100 dark:text-gray-600" title="Löschen">
                               <TrashIcon className="h-3 w-3" />
@@ -430,8 +444,8 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                   </div>
                 </section>
 
-                {/* Agent-Aufträge */}
-                {agentJobs.length > 0 && (
+                {/* Agent-Aufträge (Owner-only) */}
+                {isOwner && agentJobs.length > 0 && (
                   <section>
                     <SectionLabel icon={AgentSmallIcon} text="Agent-Aufträge" />
                     <div className="space-y-2">
@@ -488,13 +502,15 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
 
               {/* ═══════════ Rechte Spalte: Attribute ═══════════ */}
               <div className="space-y-1 bg-gray-50/40 p-5 dark:bg-gray-900/20">
-                {/* Agenda */}
-                <AttrRow icon={AgendaIcon} label="Agenda">
-                  <select value={task.pipeline_column_id || ''} onChange={(e) => updateTask({ pipeline_column_id: e.target.value || null })} className={ATTR_SELECT}>
-                    <option value="">Nicht in Agenda</option>
-                    {pipelineCols.map((col) => <option key={col.id} value={col.id}>{col.icon_emoji ? `${col.icon_emoji} ` : ''}{col.name}</option>)}
-                  </select>
-                </AttrRow>
+                {/* Agenda (Owner-only) */}
+                {isOwner && (
+                  <AttrRow icon={AgendaIcon} label="Agenda">
+                    <select value={task.pipeline_column_id || ''} onChange={(e) => updateTask({ pipeline_column_id: e.target.value || null })} className={ATTR_SELECT}>
+                      <option value="">Nicht in Agenda</option>
+                      {pipelineCols.map((col) => <option key={col.id} value={col.id}>{col.icon_emoji ? `${col.icon_emoji} ` : ''}{col.name}</option>)}
+                    </select>
+                  </AttrRow>
+                )}
 
                 {/* Fällig am */}
                 <AttrRow icon={CalendarIcon} label="Fällig am">
@@ -524,16 +540,18 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
 
                 {/* Zuständig */}
                 <AttrRow icon={UserIcon} label="Zuständig">
-                  <button
-                    onClick={() => updateTask({ assignee: task.assignee === 'agent' ? 'me' : 'agent' })}
-                    className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                      task.assignee === 'agent'
-                        ? 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300'
-                        : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300'
-                    }`}
+                  <select
+                    value={task.assignee}
+                    onChange={(e) => updateTask({ assignee: e.target.value })}
+                    className={ATTR_SELECT}
                   >
-                    {task.assignee === 'agent' ? <><AgentSmallIcon className="h-3.5 w-3.5" /> AI Agent</> : <><UserIcon className="h-3.5 w-3.5" /> Ich</>}
-                  </button>
+                    {isOwner && <option value="agent">AI Agent</option>}
+                    {boardMembers.map((m) => (
+                      <option key={m.user_id} value={m.user_id}>
+                        {m.display_name}{m.user_id === authUser?.id ? ' (Du)' : ''}
+                      </option>
+                    ))}
+                  </select>
                 </AttrRow>
 
                 {/* Tags */}
@@ -568,7 +586,7 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                   <RecurrenceSelector value={task.recurrence_rule} isInstance={!!task.template_id} onChange={(rule) => updateTask({ recurrence_rule: rule } as TaskUpdatePayload)} />
                 </AttrRow>
 
-                {task.recurrence_rule && !task.template_id && (
+                {isOwner && task.recurrence_rule && !task.template_id && (
                   <>
                     <AttrRow icon={ClockIcon} label="Kalender-Dauer">
                       <select value={task.calendar_duration_minutes ?? ''} onChange={(e) => updateTask({ calendar_duration_minutes: e.target.value ? Number(e.target.value) : null } as TaskUpdatePayload)} className={ATTR_SELECT}>
@@ -592,8 +610,8 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                   </>
                 )}
 
-                {/* Agent-Konfiguration */}
-                {task.assignee === 'agent' && (
+                {/* Agent-Konfiguration (Owner-only) */}
+                {isOwner && task.assignee === 'agent' && (
                   <div className="!mt-3 space-y-2 rounded-xl border border-violet-200/60 bg-violet-50/40 p-3 dark:border-violet-900/40 dark:bg-violet-950/20">
                     <h4 className="text-[11px] font-semibold uppercase tracking-wider text-violet-600 dark:text-violet-400">Agent-Konfiguration</h4>
                     <AttrRow icon={AgentSmallIcon} label="LLM-Modell">

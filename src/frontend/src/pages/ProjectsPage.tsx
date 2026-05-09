@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import { ProjectIcon } from '../components/ProjectIcon';
 
 interface ProjectMetrics {
@@ -36,6 +37,7 @@ const PRESET_COLORS = [
 
 export function ProjectsPage() {
   const navigate = useNavigate();
+  const { isOwner } = useAuth();
   const [projects, setProjects] = useState<ProjectMetrics[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -124,36 +126,40 @@ export function ProjectsPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold text-gray-900 dark:text-white">Projekte</h1>
-            <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-              {activeProjects.length} aktiv{archivedProjects.length > 0 && ` · ${archivedProjects.length} archiviert`}
-            </p>
+            {isOwner && (
+              <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+                {activeProjects.length} aktiv{archivedProjects.length > 0 && ` · ${archivedProjects.length} archiviert`}
+              </p>
+            )}
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex rounded-lg border border-gray-200 dark:border-gray-700">
+          {isOwner && (
+            <div className="flex items-center gap-3">
+              <div className="flex rounded-lg border border-gray-200 dark:border-gray-700">
+                <button
+                  onClick={() => setShowArchived(false)}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${!showArchived ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'}`}
+                >
+                  Aktiv ({activeProjects.length})
+                </button>
+                <button
+                  onClick={() => setShowArchived(true)}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${showArchived ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'}`}
+                >
+                  Archiv ({archivedProjects.length})
+                </button>
+              </div>
               <button
-                onClick={() => setShowArchived(false)}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${!showArchived ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'}`}
+                onClick={() => setShowForm((v) => !v)}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
               >
-                Aktiv ({activeProjects.length})
-              </button>
-              <button
-                onClick={() => setShowArchived(true)}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${showArchived ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'}`}
-              >
-                Archiv ({archivedProjects.length})
+                {showForm ? 'Abbrechen' : 'Neues Projekt'}
               </button>
             </div>
-            <button
-              onClick={() => setShowForm((v) => !v)}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
-            >
-              {showForm ? 'Abbrechen' : 'Neues Projekt'}
-            </button>
-          </div>
+          )}
         </div>
       </div>
 
-      {showForm && (
+      {isOwner && showForm && (
         <div className="border-b border-gray-200 bg-gray-50 px-4 py-4 sm:px-6 dark:border-gray-800 dark:bg-gray-900/50">
           <form onSubmit={handleCreate} className="flex flex-wrap items-end gap-4">
             <div className="min-w-[200px] flex-1">
@@ -226,7 +232,7 @@ export function ProjectsPage() {
                   <th className="px-4 py-3 text-right font-medium text-gray-500 dark:text-gray-400">Erledigt</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500 dark:text-gray-400">Überfällig</th>
                   <th className="w-48 px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Fortschritt</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500 dark:text-gray-400">Aktionen</th>
+                  {isOwner && <th className="px-4 py-3 text-right font-medium text-gray-500 dark:text-gray-400">Aktionen</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
@@ -290,33 +296,35 @@ export function ProjectsPage() {
                         </span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        {project.status === 'active' ? (
-                          <button
-                            onClick={(e) => handleArchive(e, project.id)}
-                            className="rounded-lg px-2.5 py-1 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-                          >
-                            Archivieren
-                          </button>
-                        ) : (
-                          <>
+                    {isOwner && (
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {project.status === 'active' ? (
                             <button
-                              onClick={(e) => handleReactivate(e, project.id)}
-                              className="rounded-lg px-2.5 py-1 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950"
+                              onClick={(e) => handleArchive(e, project.id)}
+                              className="rounded-lg px-2.5 py-1 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                             >
-                              Reaktivieren
+                              Archivieren
                             </button>
-                            <button
-                              onClick={(e) => handleDelete(e, project.id)}
-                              className="rounded-lg px-2.5 py-1 text-xs font-medium text-red-500 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
-                            >
-                              Löschen
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
+                          ) : (
+                            <>
+                              <button
+                                onClick={(e) => handleReactivate(e, project.id)}
+                                className="rounded-lg px-2.5 py-1 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950"
+                              >
+                                Reaktivieren
+                              </button>
+                              <button
+                                onClick={(e) => handleDelete(e, project.id)}
+                                className="rounded-lg px-2.5 py-1 text-xs font-medium text-red-500 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                              >
+                                Löschen
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
