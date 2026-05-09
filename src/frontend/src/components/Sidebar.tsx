@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -42,7 +42,7 @@ export function Sidebar({
 }: SidebarProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const { activeJobCount, unreadMailCount, pendingDecisions, focusTaskCount } = useBadges();
-  const { logout } = useAuth();
+  const { logout, isOwner } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -149,41 +149,45 @@ export function Sidebar({
         <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
           {collapsed ? (
             <>
-              <NavLink to="/cockpit" className={collapsedLinkClasses} onClick={onClose} title="Cockpit">
-                <span className="relative">
-                  <CockpitIcon className="h-5 w-5" />
-                  {pendingDecisions > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-rose-500 text-[9px] font-bold text-white">
-                      {pendingDecisions}
+              {isOwner && (
+                <>
+                  <NavLink to="/cockpit" className={collapsedLinkClasses} onClick={onClose} title="Cockpit">
+                    <span className="relative">
+                      <CockpitIcon className="h-5 w-5" />
+                      {pendingDecisions > 0 && (
+                        <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-rose-500 text-[9px] font-bold text-white">
+                          {pendingDecisions}
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
-              </NavLink>
-              <NavLink to="/pipeline" className={collapsedLinkClasses} onClick={onClose} title="Agenda">
-                <span className="relative">
-                  <AgendaIcon className="h-5 w-5" />
-                  {focusTaskCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold text-white">
-                      {focusTaskCount > 9 ? '9+' : focusTaskCount}
+                  </NavLink>
+                  <NavLink to="/pipeline" className={collapsedLinkClasses} onClick={onClose} title="Agenda">
+                    <span className="relative">
+                      <AgendaIcon className="h-5 w-5" />
+                      {focusTaskCount > 0 && (
+                        <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold text-white">
+                          {focusTaskCount > 9 ? '9+' : focusTaskCount}
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
-              </NavLink>
-              <NavLink to="/agenten" className={collapsedLinkClasses} onClick={onClose} title="Agenten">
-                <span className="relative">
-                  <AgentIcon className="h-5 w-5" />
-                  {activeJobCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-indigo-500 text-[9px] font-bold text-white">
-                      {activeJobCount}
+                  </NavLink>
+                  <NavLink to="/agenten" className={collapsedLinkClasses} onClick={onClose} title="Agenten">
+                    <span className="relative">
+                      <AgentIcon className="h-5 w-5" />
+                      {activeJobCount > 0 && (
+                        <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-indigo-500 text-[9px] font-bold text-white">
+                          {activeJobCount}
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
-              </NavLink>
-              <NavLink to="/agenten/chat" className={collapsedLinkClasses} onClick={onClose} title="Chat">
-                <ChatIcon className="h-5 w-5" />
-              </NavLink>
+                  </NavLink>
+                  <NavLink to="/agenten/chat" className={collapsedLinkClasses} onClick={onClose} title="Chat">
+                    <ChatIcon className="h-5 w-5" />
+                  </NavLink>
 
-              <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
+                  <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
+                </>
+              )}
 
               {projects.map((project) => (
                 <NavLink
@@ -202,66 +206,73 @@ export function Sidebar({
                 </NavLink>
               ))}
 
-              <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
+              {isOwner && (
+                <>
+                  <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
 
-              <NavLink to="/inbox" className={collapsedLinkClasses} onClick={onClose} title="Posteingang">
-                <span className="relative">
-                  <MailIcon className="h-5 w-5" />
-                  {unreadMailCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-500 text-[9px] font-bold text-white">
-                      {unreadMailCount > 9 ? '9+' : unreadMailCount}
+                  <NavLink to="/inbox" className={collapsedLinkClasses} onClick={onClose} title="Posteingang">
+                    <span className="relative">
+                      <MailIcon className="h-5 w-5" />
+                      {unreadMailCount > 0 && (
+                        <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-500 text-[9px] font-bold text-white">
+                          {unreadMailCount > 9 ? '9+' : unreadMailCount}
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
-              </NavLink>
-              <NavLink to="/signale" className={collapsedLinkClasses} onClick={onClose} title="Signale">
-                <SignaleIcon className="h-5 w-5" />
-              </NavLink>
-              <NavLink to="/finanzen" className={collapsedLinkClasses} onClick={onClose} title="Finanzen">
-                <FinanceIcon className="h-5 w-5" />
-              </NavLink>
-              <NavLink to="/debitoren" className={collapsedLinkClasses} onClick={onClose} title="Debitoren">
-                <DebtorsIcon className="h-5 w-5" />
-              </NavLink>
-              {/* Kreditoren: deaktiviert (nicht demo-reif) */}
+                  </NavLink>
+                  <NavLink to="/signale" className={collapsedLinkClasses} onClick={onClose} title="Signale">
+                    <SignaleIcon className="h-5 w-5" />
+                  </NavLink>
+                  <NavLink to="/finanzen" className={collapsedLinkClasses} onClick={onClose} title="Finanzen">
+                    <FinanceIcon className="h-5 w-5" />
+                  </NavLink>
+                  <NavLink to="/debitoren" className={collapsedLinkClasses} onClick={onClose} title="Debitoren">
+                    <DebtorsIcon className="h-5 w-5" />
+                  </NavLink>
+                </>
+              )}
             </>
           ) : (
             <>
-              <NavLink to="/cockpit" className={linkClasses} onClick={onClose}>
-                <CockpitIcon className="h-5 w-5" />
-                <span className="flex-1">Cockpit</span>
-                {pendingDecisions > 0 && (
-                  <span className="flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
-                    {pendingDecisions}
-                  </span>
-                )}
-              </NavLink>
+              {isOwner && (
+                <>
+                  <NavLink to="/cockpit" className={linkClasses} onClick={onClose}>
+                    <CockpitIcon className="h-5 w-5" />
+                    <span className="flex-1">Cockpit</span>
+                    {pendingDecisions > 0 && (
+                      <span className="flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+                        {pendingDecisions}
+                      </span>
+                    )}
+                  </NavLink>
 
-              <NavLink to="/pipeline" className={linkClasses} onClick={onClose}>
-                <AgendaIcon className="h-5 w-5" />
-                <span className="flex-1">Agenda</span>
-                {focusTaskCount > 0 && (
-                  <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
-                    {focusTaskCount}
-                  </span>
-                )}
-              </NavLink>
+                  <NavLink to="/pipeline" className={linkClasses} onClick={onClose}>
+                    <AgendaIcon className="h-5 w-5" />
+                    <span className="flex-1">Agenda</span>
+                    {focusTaskCount > 0 && (
+                      <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                        {focusTaskCount}
+                      </span>
+                    )}
+                  </NavLink>
 
-              <NavLink to="/agenten" className={linkClasses} onClick={onClose}>
-                <AgentIcon className="h-5 w-5" />
-                <span className="flex-1">Agenten</span>
-                {activeJobCount > 0 && (
-                  <span className="flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" />
-                    {activeJobCount}
-                  </span>
-                )}
-              </NavLink>
+                  <NavLink to="/agenten" className={linkClasses} onClick={onClose}>
+                    <AgentIcon className="h-5 w-5" />
+                    <span className="flex-1">Agenten</span>
+                    {activeJobCount > 0 && (
+                      <span className="flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" />
+                        {activeJobCount}
+                      </span>
+                    )}
+                  </NavLink>
 
-              <NavLink to="/agenten/chat" className={linkClasses} onClick={onClose}>
-                <ChatIcon className="h-5 w-5" />
-                <span className="flex-1">Chat</span>
-              </NavLink>
+                  <NavLink to="/agenten/chat" className={linkClasses} onClick={onClose}>
+                    <ChatIcon className="h-5 w-5" />
+                    <span className="flex-1">Chat</span>
+                  </NavLink>
+                </>
+              )}
 
               <div className="mt-6 mb-2 flex items-center justify-between px-3">
                 <span className="text-xs font-semibold tracking-wider text-gray-400 uppercase dark:text-gray-500">
@@ -294,34 +305,36 @@ export function Sidebar({
                 </NavLink>
               ))}
 
-              <div className="mt-4 mb-2 border-t border-gray-200 pt-2 dark:border-gray-800" />
+              {isOwner && (
+                <>
+                  <div className="mt-4 mb-2 border-t border-gray-200 pt-2 dark:border-gray-800" />
 
-              <NavLink to="/inbox" className={linkClasses} onClick={onClose}>
-                <MailIcon className="h-5 w-5" />
-                <span className="flex-1">Posteingang</span>
-                {unreadMailCount > 0 && (
-                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
-                    {unreadMailCount}
-                  </span>
-                )}
-              </NavLink>
+                  <NavLink to="/inbox" className={linkClasses} onClick={onClose}>
+                    <MailIcon className="h-5 w-5" />
+                    <span className="flex-1">Posteingang</span>
+                    {unreadMailCount > 0 && (
+                      <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                        {unreadMailCount}
+                      </span>
+                    )}
+                  </NavLink>
 
-              <NavLink to="/signale" className={linkClasses} onClick={onClose}>
-                <SignaleIcon className="h-5 w-5" />
-                <span className="flex-1">Signale</span>
-              </NavLink>
+                  <NavLink to="/signale" className={linkClasses} onClick={onClose}>
+                    <SignaleIcon className="h-5 w-5" />
+                    <span className="flex-1">Signale</span>
+                  </NavLink>
 
-              <NavLink to="/finanzen" className={linkClasses} onClick={onClose}>
-                <FinanceIcon className="h-5 w-5" />
-                <span className="flex-1">Finanzen</span>
-              </NavLink>
+                  <NavLink to="/finanzen" className={linkClasses} onClick={onClose}>
+                    <FinanceIcon className="h-5 w-5" />
+                    <span className="flex-1">Finanzen</span>
+                  </NavLink>
 
-              <NavLink to="/debitoren" className={linkClasses} onClick={onClose}>
-                <DebtorsIcon className="h-5 w-5" />
-                <span className="flex-1">Debitoren</span>
-              </NavLink>
-
-              {/* Kreditoren: deaktiviert (nicht demo-reif) */}
+                  <NavLink to="/debitoren" className={linkClasses} onClick={onClose}>
+                    <DebtorsIcon className="h-5 w-5" />
+                    <span className="flex-1">Debitoren</span>
+                  </NavLink>
+                </>
+              )}
             </>
           )}
         </nav>
@@ -481,14 +494,6 @@ function SettingsIcon({ className }: { className?: string }) {
   );
 }
 
-function ChevronLeftIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
-    </svg>
-  );
-}
-
 function MenuIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -501,14 +506,6 @@ function CollapseIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M12 17.25h8.25" />
-    </svg>
-  );
-}
-
-function ChevronRightIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
     </svg>
   );
 }
@@ -549,14 +546,6 @@ function DebtorsIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-    </svg>
-  );
-}
-
-function CreditorsIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
     </svg>
   );
 }

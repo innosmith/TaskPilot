@@ -65,10 +65,11 @@ async def list_plans(user: User = Depends(get_current_user)):
             for p in plans
         ]
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Planner list_plans: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf Planner verweigert")
     except Exception as e:
-        logger.error("list_plans fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("list_plans fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Planner-Pläne konnten nicht geladen werden")
 
 
 @router.get("/tasks")
@@ -95,10 +96,11 @@ async def list_tasks(
             for t in tasks
         ]
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Planner list_tasks: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf Planner verweigert")
     except Exception as e:
-        logger.error("list_tasks fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("list_tasks fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Planner-Aufgaben konnten nicht geladen werden")
 
 
 @router.get("/tasks/{task_id}")
@@ -120,10 +122,11 @@ async def get_task(
         task["details"] = details
         return task
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Planner get_task: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf Planner verweigert")
     except Exception as e:
-        logger.error("get_task fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("get_task fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Planner-Aufgabe konnte nicht geladen werden")
 
 
 class CreatePlannerTask(BaseModel):
@@ -155,7 +158,8 @@ async def create_task(
             "status": "created",
         }
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Planner create_task: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf Planner verweigert")
     except Exception as e:
-        logger.error("create_task fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("create_task fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Planner-Aufgabe konnte nicht erstellt werden")

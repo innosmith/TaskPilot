@@ -1,3 +1,4 @@
+import logging
 import uuid
 import json
 import os
@@ -10,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.database import get_db
 from app.models import AgentJob, ChatTriage, EmailTriage, Task, User
 from app.schemas import AgentJobCreate, AgentJobOut, AgentJobUpdate, AgentJobWithTask
@@ -18,6 +19,8 @@ from app.schemas import AgentJobCreate, AgentJobOut, AgentJobUpdate, AgentJobWit
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
 from graph_client import GraphClient, GraphConfig  # noqa: E402
 from app.config import get_settings  # noqa: E402
+
+logger = logging.getLogger("taskpilot.agent_jobs")
 
 router = APIRouter(prefix="/api/agent-jobs", tags=["agent-jobs"])
 
@@ -68,7 +71,7 @@ async def list_agent_jobs(
     task_id: uuid.UUID | None = None,
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> list[AgentJobWithTask]:
     query = select(AgentJob, Task.title).outerjoin(Task, AgentJob.task_id == Task.id)
     if status:
@@ -89,7 +92,7 @@ async def list_agent_jobs(
 async def get_agent_job(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> AgentJobWithTask:
     result = await db.execute(
         select(AgentJob, Task.title)
@@ -107,7 +110,7 @@ async def get_agent_job(
 async def get_draft_preview(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> dict:
     """Lädt den Draft-Inhalt aus Outlook für die Vorschau im Approval-Flow."""
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
@@ -150,7 +153,8 @@ async def get_draft_preview(
             job.output = (job.output or "") + "\n\n--- Entwurf wurde in Outlook gesendet oder gelöscht. Job automatisch abgeschlossen. ---"
             job.completed_at = datetime.now(timezone.utc)
             await db.commit()
-        raise HTTPException(status_code=502, detail=f"Draft konnte nicht geladen werden: {e}")
+        logger.exception("Draft konnte nicht geladen werden für Job %s", job_id)
+        raise HTTPException(status_code=502, detail="Draft konnte nicht geladen werden")
     finally:
         await client.close()
 
@@ -167,7 +171,7 @@ async def update_draft(
     job_id: uuid.UUID,
     body: DraftUpdateBody,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> dict:
     """Entwurf in Outlook aktualisieren (Betreff, Body, Empfaenger)."""
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
@@ -193,7 +197,8 @@ async def update_draft(
         )
         return {"ok": True, "draft_id": draft_id}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Draft konnte nicht aktualisiert werden: {e}")
+        logger.exception("Draft konnte nicht aktualisiert werden für Job %s", job_id)
+        raise HTTPException(status_code=502, detail="Draft konnte nicht aktualisiert werden")
     finally:
         await client.close()
 
@@ -202,7 +207,7 @@ async def update_draft(
 async def create_agent_job(
     body: AgentJobCreate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> AgentJobOut:
     task_result = await db.execute(select(Task).where(Task.id == body.task_id))
     task = task_result.scalar_one_or_none()
@@ -220,7 +225,7 @@ async def update_agent_job(
     job_id: uuid.UUID,
     body: AgentJobUpdate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> AgentJobOut:
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
     job = result.scalar_one_or_none()
@@ -288,7 +293,7 @@ async def bulk_delete_agent_jobs(
     older_than_days: int | None = Query(None, ge=0, description="Nur Jobs älter als X Tage löschen"),
     job_type: str | None = Query(None, description="Nur Jobs dieses Typs (z.B. email_triage, chat_triage, chat_agent)"),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> BulkDeleteResult:
     """Bulk-Löschung von abgeschlossenen/fehlgeschlagenen Jobs.
     
@@ -359,7 +364,7 @@ async def bulk_delete_agent_jobs(
 async def delete_agent_job(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> None:
     """Einzelnen Job löschen (completed/failed) oder abbrechen (running/queued)."""
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
@@ -393,7 +398,7 @@ async def delete_agent_job(
 async def get_agent_job_trace(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> dict:
     """Session-Trace eines Agent-Jobs: Tool-Aufrufe, Reasoning, Fehler."""
     from app.routers.memory import NANOBOT_WORKSPACE

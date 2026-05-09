@@ -60,6 +60,12 @@ RUN chmod +x /app/entrypoint.sh
 ENV TP_CONTENTCONVERTER_PATH=/opt/vendor/contentconverter
 ENV TP_CONTENTCONVERTER_CCONV_BIN=/usr/local/bin/cconv
 
+RUN useradd -r -s /usr/sbin/nologin taskpilot && \
+    mkdir -p /app/uploads /tmp/taskpilot-exports && \
+    chown -R taskpilot:taskpilot /app /tmp/taskpilot-exports
+
+USER taskpilot
+
 EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

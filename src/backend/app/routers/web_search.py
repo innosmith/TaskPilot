@@ -8,7 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import get_current_user
+from pydantic import BaseModel, Field
+
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
 from app.database import get_db
 from app.models import User
@@ -18,6 +20,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/search", tags=["web-search"])
 
 TAVILY_API_URL = "https://api.tavily.com/search"
+
+
+class WebSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+    search_depth: str = Field("basic", pattern="^(basic|advanced)$")
+    max_results: int = Field(5, ge=1, le=20)
+    task_id: str | None = None
+    conversation_id: str | None = None
+    triggered_by: str = "user"
 
 
 async def _tavily_search(query: str, search_depth: str = "basic", max_results: int = 5) -> dict:
@@ -40,26 +51,24 @@ async def _tavily_search(query: str, search_depth: str = "basic", max_results: i
         )
         if resp.status_code != 200:
             logger.error("Tavily-Fehler: %d %s", resp.status_code, resp.text)
-            raise HTTPException(status_code=502, detail=f"Tavily-Fehler: {resp.status_code}")
+            raise HTTPException(status_code=502, detail="Web-Suche fehlgeschlagen")
         return resp.json()
 
 
 @router.post("")
 async def perform_search(
-    body: dict,
-    user: User = Depends(get_current_user),
+    body: WebSearchRequest,
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Websuche ausführen und historisieren."""
-    query = body.get("query", "").strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="Suchbegriff fehlt")
+    """Websuche ausfuehren und historisieren."""
+    query = body.query.strip()
 
-    search_depth = body.get("search_depth", "basic")
-    max_results = body.get("max_results", 5)
-    task_id = body.get("task_id")
-    conversation_id = body.get("conversation_id")
-    triggered_by = body.get("triggered_by", "user")
+    search_depth = body.search_depth
+    max_results = body.max_results
+    task_id = body.task_id
+    conversation_id = body.conversation_id
+    triggered_by = body.triggered_by
 
     tavily_result = await _tavily_search(query, search_depth, max_results)
 
@@ -109,7 +118,7 @@ async def search_history(
     limit: int = Query(50, ge=1, le=100),
     task_id: uuid.UUID | None = None,
     q: str | None = None,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Suchverlauf (paginiert, neueste zuerst)."""
@@ -152,7 +161,7 @@ async def search_history(
 @router.get("/{search_id}")
 async def get_search(
     search_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Einzelnes Suchergebnis laden."""

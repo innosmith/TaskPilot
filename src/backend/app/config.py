@@ -8,7 +8,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 class Settings(BaseSettings):
     app_name: str = "TaskPilot"
-    debug: bool = True
+    debug: bool = False
 
     # PostgreSQL
     db_host: str = "localhost"
@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     # Auth
     secret_key: str = "dev-secret-change-in-production"
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24 * 7  # 7 Tage für Dev
+    access_token_expire_minutes: int = 60  # 1h Access-Token
+    refresh_token_expire_hours: int = 24  # 24h Refresh-Token (Owner), 4h fuer Member
 
     # Owner (Phase 0: nur ein User)
     owner_email: str = "admin@innosmith.ai"
@@ -99,6 +100,10 @@ class Settings(BaseSettings):
     # Triage
     triage_interval_seconds: int = 120
     chat_triage_interval_seconds: int = 300
+
+    # ClamAV (Virenscanner fuer Uploads)
+    clamav_host: str = "localhost"
+    clamav_port: int = 3310
 
     # Document Export & Content-Services (contentConverter)
     contentconverter_path: str = "/home/innosmith/dev/github/contentConverter"

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.database import get_db
 from app.models import EmailTriage, User
 
@@ -43,7 +43,7 @@ class SenderProfilesResponse(BaseModel):
 async def get_sender_profiles(
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> SenderProfilesResponse:
     """Top-Absender mit Triage-Verteilung."""
     query = (
@@ -106,7 +106,7 @@ class TriageStats(BaseModel):
 async def get_triage_stats(
     days: int = 30,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> TriageStats:
     """Triage-Statistiken der letzten N Tage."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -150,7 +150,7 @@ class AgentSkillsResponse(BaseModel):
 
 @router.get("/skills", response_model=AgentSkillsResponse)
 async def get_agent_skills(
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> AgentSkillsResponse:
     """Listet die verfügbaren Nanobot-Skills mit Kurzbeschreibung."""
     import os

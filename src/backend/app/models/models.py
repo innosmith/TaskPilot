@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -76,8 +77,12 @@ class User(Base):
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true")
     settings: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    mfa_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, server_default="false")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, server_default="false")
 
 
 class Task(Base):
@@ -266,6 +271,7 @@ class LlmConversation(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
     title: Mapped[str | None] = mapped_column(Text)
     task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     model: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[str] = mapped_column(Text, server_default="chat")
     temperature: Mapped[float] = mapped_column(Float, server_default="0.7")
@@ -308,4 +314,18 @@ class WebSearch(Base):
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("llm_conversations.id", ondelete="SET NULL"))
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     credits_used: Mapped[int] = mapped_column(Integer, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    resource: Mapped[str] = mapped_column(Text, nullable=False)
+    resource_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())

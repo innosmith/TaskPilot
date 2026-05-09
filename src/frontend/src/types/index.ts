@@ -100,10 +100,24 @@ export interface PipelineData {
 export interface LoginRequest {
   email: string;
   password: string;
+  mfa_code?: string;
 }
 
 export interface LoginResponse {
   access_token: string;
+  requires_mfa?: boolean;
+  mfa_token?: string;
+}
+
+export type UserRole = 'owner' | 'member' | 'viewer';
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  display_name: string;
+  avatar_url?: string | null;
+  role: UserRole;
+  mfa_enabled?: boolean;
 }
 
 export interface TaskUpdatePayload {

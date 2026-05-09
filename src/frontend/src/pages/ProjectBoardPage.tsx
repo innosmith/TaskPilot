@@ -13,6 +13,7 @@ import {
 } from '@dnd-kit/core';
 import { arrayMove, SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { api } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import { KanbanColumn } from '../components/KanbanColumn';
 import { TaskCard } from '../components/TaskCard';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
@@ -21,9 +22,18 @@ import { ProjectIcon } from '../components/ProjectIcon';
 import { LucideIconPicker, LucideIconByName } from '../components/LucideIconPicker';
 import type { BoardData, TaskCard as TaskCardType, TaskCreatePayload } from '../types';
 
+interface ProjectMember {
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: string;
+  invited_at: string | null;
+}
+
 export function ProjectBoardPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { isOwner } = useAuth();
   const { refreshSidebar } = useOutletContext<{ refreshSidebar: () => void }>();
   const [board, setBoard] = useState<BoardData | null>(null);
   const [activeTask, setActiveTask] = useState<TaskCardType | null>(null);
@@ -36,6 +46,11 @@ export function ProjectBoardPage() {
   const [iconMenuOpen, setIconMenuOpen] = useState(false);
   const [userAvatarUrl, setUserAvatarUrl] = useState<string | null>(null);
   const [showColCount, setShowColCount] = useState(false);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteMsg, setInviteMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
   const iconUploadRef = useRef<HTMLInputElement>(null);
 
@@ -264,6 +279,45 @@ export function ProjectBoardPage() {
     navigate('/projects');
   };
 
+  const fetchMembers = useCallback(async () => {
+    if (!id) return;
+    try {
+      const data = await api.get<ProjectMember[]>(`/api/projects/${id}/members`);
+      setMembers(data);
+    } catch { /* leer */ }
+  }, [id]);
+
+  const openMembersPanel = () => {
+    setSettingsOpen(false);
+    setMembersOpen(true);
+    fetchMembers();
+  };
+
+  const handleInvite = async () => {
+    if (!id || !inviteEmail.trim()) return;
+    setInviteLoading(true);
+    setInviteMsg(null);
+    try {
+      await api.post('/api/auth/invite', { email: inviteEmail.trim(), project_id: id });
+      setInviteMsg({ type: 'ok', text: `${inviteEmail.trim()} wurde eingeladen` });
+      setInviteEmail('');
+      fetchMembers();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Einladung fehlgeschlagen';
+      setInviteMsg({ type: 'err', text: msg });
+    } finally {
+      setInviteLoading(false);
+    }
+  };
+
+  const handleRemoveMember = async (userId: string) => {
+    if (!id) return;
+    try {
+      await api.delete(`/api/projects/${id}/members/${userId}`);
+      fetchMembers();
+    } catch { /* leer */ }
+  };
+
   return (
     <div className="relative flex h-full flex-col" style={bgStyle}>
       {hasBg && !isGradient && (
@@ -330,6 +384,15 @@ export function ProjectBoardPage() {
                     <CameraIcon className="h-4 w-4" />
                     Hintergrundbild
                   </button>
+                  {isOwner && (
+                    <button
+                      onClick={openMembersPanel}
+                      className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                      <UsersIcon className="h-4 w-4" />
+                      Mitglieder verwalten
+                    </button>
+                  )}
                   <button
                     onClick={handleArchive}
                     className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -539,6 +602,86 @@ export function ProjectBoardPage() {
         currentUrl={board.project.background_url}
         onSelect={(url) => handleBgSelect(url)}
       />
+
+      {membersOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                Mitglieder verwalten
+              </h2>
+              <button
+                onClick={() => { setMembersOpen(false); setInviteMsg(null); }}
+                className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+              >
+                <CloseIcon className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mb-4 space-y-2">
+              {members.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Noch keine Mitglieder in diesem Projekt.
+                </p>
+              ) : (
+                members.map((m) => (
+                  <div
+                    key={m.user_id}
+                    className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2 dark:border-gray-800"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                        {m.display_name}
+                      </p>
+                      <p className="truncate text-xs text-gray-500 dark:text-gray-400">
+                        {m.email}
+                      </p>
+                    </div>
+                    <span className="mx-2 shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+                      {m.role}
+                    </span>
+                    <button
+                      onClick={() => handleRemoveMember(m.user_id)}
+                      className="shrink-0 rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400"
+                      title="Mitglied entfernen"
+                    >
+                      <TrashIcon className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="border-t border-gray-100 pt-4 dark:border-gray-800">
+              <p className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+                Mitglied einladen
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleInvite(); }}
+                  placeholder="E-Mail-Adresse"
+                  className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                />
+                <button
+                  onClick={handleInvite}
+                  disabled={inviteLoading || !inviteEmail.trim()}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {inviteLoading ? 'Lädt…' : 'Einladen'}
+                </button>
+              </div>
+              {inviteMsg && (
+                <p className={`mt-2 text-xs ${inviteMsg.type === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                  {inviteMsg.text}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -588,6 +731,22 @@ function AddColumnIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+    </svg>
+  );
+}
+
+function UsersIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
     </svg>
   );
 }

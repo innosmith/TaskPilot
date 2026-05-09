@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings as _get_settings
 from app.database import get_db
 from app.models import Project, Tag, Task, User
@@ -333,7 +333,7 @@ async def _search_onedrive(term: str) -> list[FileHit]:
 async def search(
     q: str = Query(..., min_length=1),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ) -> SearchResults:
     logger.info("Search-Request: q=%r, user=%s", q, user.email)
     pattern = f"%{q}%"

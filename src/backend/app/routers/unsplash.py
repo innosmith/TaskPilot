@@ -1,7 +1,7 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
 from app.models import User
 
@@ -13,7 +13,7 @@ async def search_photos(
     q: str = Query(..., min_length=1),
     page: int = Query(1, ge=1),
     per_page: int = Query(12, ge=1, le=30),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> dict:
     settings = get_settings()
     if not settings.unsplash_access_key:

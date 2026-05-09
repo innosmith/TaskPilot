@@ -241,11 +241,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             idx += 1
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
-        limit = arguments.get("limit", 50)
+        limit = min(int(arguments.get("limit", 50)), 500)
+        idx_limit = idx
+        params.append(limit)
         rows = await p.fetch(
             f"SELECT t.id, t.title, t.assignee, t.is_completed, t.due_date, p.name as project_name "
             f"FROM tasks t JOIN projects p ON p.id = t.project_id {where} "
-            f"ORDER BY t.created_at DESC LIMIT {limit}",
+            f"ORDER BY t.created_at DESC LIMIT ${idx_limit}",
             *params,
         )
         return [TextContent(type="text", text=json.dumps([_row_to_dict(r) for r in rows], indent=2))]

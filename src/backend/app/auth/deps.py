@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.security import decode_access_token
 from app.database import get_db
-from app.models import User
+from app.models import BoardMember, User
 
 logger = logging.getLogger("taskpilot.auth")
 
@@ -94,3 +94,47 @@ async def require_owner(user: User = Depends(get_current_user)) -> User:
     if user.role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner access required")
     return user
+
+
+ROLE_HIERARCHY = {"owner": 2, "member": 1, "viewer": 0}
+
+
+def require_role(min_role: str):
+    """Erzeugt eine FastAPI-Dependency die prueft, ob der User
+    mindestens die angegebene Rolle hat."""
+    min_level = ROLE_HIERARCHY.get(min_role, 0)
+
+    async def _check(user: User = Depends(get_current_user)) -> User:
+        user_level = ROLE_HIERARCHY.get(user.role, 0)
+        if user_level < min_level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Unzureichende Berechtigung",
+            )
+        return user
+
+    return _check
+
+
+async def check_project_access(
+    project_id, user: User, db: AsyncSession
+) -> bool:
+    """Prueft ob der User Zugriff auf das Projekt hat.
+    Owner hat immer Zugriff, Member nur via board_members."""
+    if user.role == "owner":
+        return True
+    result = await db.execute(
+        select(BoardMember).where(
+            BoardMember.project_id == project_id,
+            BoardMember.user_id == user.id,
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+MEMBER_RESTRICTED_TASK_FIELDS = {
+    "autonomy_level", "llm_override", "data_class",
+    "email_message_id", "calendar_event_id",
+    "calendar_duration_minutes", "calendar_preferred_time",
+    "pipeline_column_id", "pipeline_position",
+}

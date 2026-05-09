@@ -52,8 +52,12 @@ CREATE TABLE users (
     role            TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member', 'viewer')),
     is_active       BOOLEAN DEFAULT true,
     settings        JSONB DEFAULT '{}'::jsonb,
+    mfa_secret      TEXT,
+    mfa_enabled     BOOLEAN DEFAULT false,
     created_at      TIMESTAMPTZ DEFAULT now(),
-    last_login_at   TIMESTAMPTZ
+    last_login_at   TIMESTAMPTZ,
+    invited_by      UUID REFERENCES users(id),
+    must_change_password BOOLEAN DEFAULT false
 );
 
 -- Tasks
@@ -142,6 +146,23 @@ CREATE TABLE activity_log (
     details         JSONB,
     created_at      TIMESTAMPTZ DEFAULT now()
 );
+
+-- Audit-Log (sicherheitsrelevante Aktionen, unabhaengig von Task-Activity)
+CREATE TABLE audit_log (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID REFERENCES users(id) ON DELETE SET NULL,
+    action          TEXT NOT NULL,
+    resource        TEXT NOT NULL,
+    resource_id     TEXT,
+    ip_address      TEXT,
+    user_agent      TEXT,
+    details         JSONB DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_audit_log_user ON audit_log(user_id);
+CREATE INDEX idx_audit_log_created ON audit_log(created_at DESC);
+CREATE INDEX idx_audit_log_action ON audit_log(action);
 
 -- Board-Members (Gast-Zugriff)
 CREATE TABLE board_members (
@@ -247,6 +268,7 @@ CREATE TABLE llm_conversations (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title           TEXT,
     task_id         UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    user_id         UUID REFERENCES users(id) ON DELETE SET NULL,
     model           TEXT NOT NULL,
     mode            TEXT DEFAULT 'chat' CHECK (mode IN ('chat', 'deep_research', 'web_search', 'agent', 'code_execute')),
     temperature     REAL DEFAULT 0.7,
@@ -286,6 +308,7 @@ CREATE TABLE web_searches (
 
 -- Indizes
 CREATE INDEX idx_llm_conversations_task ON llm_conversations(task_id);
+CREATE INDEX idx_llm_conversations_user ON llm_conversations(user_id);
 CREATE INDEX idx_llm_conversations_created ON llm_conversations(created_at DESC);
 CREATE INDEX idx_llm_messages_conversation ON llm_messages(conversation_id);
 CREATE INDEX idx_llm_messages_created ON llm_messages(created_at);

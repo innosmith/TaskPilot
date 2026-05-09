@@ -99,7 +99,8 @@ async def list_events(
     try:
         events = await client.list_events(start, end, top)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Kalender list_events: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf den Kalender verweigert")
 
     excluded = set()
     if exclude_categories:
@@ -157,7 +158,8 @@ async def create_event(
             show_as=body.show_as,
         )
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Kalender create_event: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf den Kalender verweigert")
     return CalendarEvent(
         id=ev.get("id", ""),
         subject=ev.get("subject"),
@@ -181,7 +183,8 @@ async def find_free_slots(
     try:
         slots = await client.find_free_slots(start, end, duration)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Kalender find_free_slots: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf den Kalender verweigert")
     return [FreeSlot(**s) for s in slots]
 
 
@@ -196,4 +199,5 @@ async def delete_event(
     try:
         await client.delete_event(event_id)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Kalender delete_event: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf den Kalender verweigert")

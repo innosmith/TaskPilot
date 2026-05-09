@@ -21,8 +21,8 @@ TaskPilot laeuft in 3 Umgebungen auf der GX10:
 cd /home/innosmith/dev/github/TaskPilot
 
 make dev        # Shared Infra starten, Anleitung fuer bare-metal Backend/Frontend
-make int        # Integration komplett (inkl. Build)
-make prod       # Produktion komplett (eigene DB)
+make int        # Integration komplett (inkl. Build + ClamAV)
+make prod       # Produktion komplett (eigene DB + ClamAV)
 make down       # Alles stoppen
 make status     # Container-Uebersicht
 make health     # Health-Checks aller Umgebungen
@@ -66,6 +66,14 @@ make infra
 # oder: docker compose -f docker/docker-compose.yml up -d
 ```
 
+### 1b. ClamAV fuer Dev (optional, fuer Upload-Virenscans)
+
+```bash
+docker compose -f docker/docker-compose.yml --profile clamav up -d clamav
+# Erster Start: ~2 Min (Signatur-Download), danach auto-update alle 2h
+# Erreichbar auf localhost:3310
+```
+
 ### 2a. Dev-Modus (bare-metal mit Hot-Reload)
 
 ```bash
@@ -77,11 +85,11 @@ PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload 
 cd src/frontend && npm run dev
 ```
 
-### 2b. Integration (Full Docker)
+### 2b. Integration (Full Docker, inkl. ClamAV)
 
 ```bash
 make int
-# oder: docker compose -f docker/docker-compose.yml -f docker/docker-compose.integration.yml up -d --build
+# oder: docker compose -f docker/docker-compose.yml -f docker/docker-compose.integration.yml --profile clamav up -d --build
 ```
 
 ### 2c. Produktion (Standalone)
@@ -132,7 +140,7 @@ lsof -ti:5173 | xargs -r kill -9   # Frontend
 | Frontend-Code (TSX/CSS) | Nein (HMR) | Ja (make int) | Ja (make prod) |
 | Neue pip-Pakete | Ja (pip install) | Ja (rebuild) | Ja (rebuild) |
 | `.env.*` geaendert | Ja (restart) | Ja (restart) | Ja (restart) |
-| DB-Schema geaendert | Ja (restart) | Ja (migrate-int) | Ja (migrate-prod) |
+| DB-Schema geaendert | Ja (alembic upgrade head) | Ja (alembic im Container) | Ja (alembic im Container) |
 | Docker-Compose geaendert | - | Ja (make int) | Ja (make prod) |
 | MCP-Server-Code | Nein (Nanobot laedt neu) | Ja (rebuild) | Ja (rebuild) |
 

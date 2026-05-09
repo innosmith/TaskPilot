@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
 from app.database import get_db, async_session
 from app.models import AgentJob, BoardColumn, Project, Task, User
@@ -40,7 +40,7 @@ async def list_conversations(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     task_id: uuid.UUID | None = None,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Alle Konversationen (paginiert, neueste zuerst).
@@ -65,13 +65,17 @@ async def list_conversations(
         .label("last_preview")
     )
 
-    count_q = select(func.count()).select_from(LlmConversation)
+    from sqlalchemy import or_
+    user_filter = or_(LlmConversation.user_id == user.id, LlmConversation.user_id.is_(None))
+
+    count_q = select(func.count()).select_from(LlmConversation).where(user_filter)
     if task_id:
         count_q = count_q.where(LlmConversation.task_id == task_id)
     total = (await db.execute(count_q)).scalar_one()
 
     q = (
         select(LlmConversation, msg_count_sq, last_preview_sq)
+        .where(user_filter)
         .order_by(LlmConversation.updated_at.desc())
         .offset(skip)
         .limit(limit)
@@ -110,7 +114,7 @@ async def list_conversations(
 @router.post("/conversations")
 async def create_conversation(
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Neue Konversation erstellen."""
@@ -124,6 +128,7 @@ async def create_conversation(
     conv = LlmConversation(
         title=body.get("title"),
         task_id=body.get("task_id"),
+        user_id=user.id,
         model=body.get("model", default_model),
         mode=body.get("mode", "chat"),
         temperature=body.get("temperature", default_temp),
@@ -146,18 +151,20 @@ async def create_conversation(
 
 @router.delete("/conversations")
 async def delete_all_conversations(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Alle Chat-Konversationen löschen (Nachrichten per ON DELETE CASCADE)."""
-    res = await db.execute(delete(LlmConversation))
+    """Alle Chat-Konversationen des Users löschen (Nachrichten per ON DELETE CASCADE)."""
+    res = await db.execute(
+        delete(LlmConversation).where(LlmConversation.user_id == user.id)
+    )
     return {"ok": True, "deleted": res.rowcount or 0}
 
 
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Konversation mit allen Nachrichten laden."""
@@ -202,7 +209,7 @@ async def get_conversation(
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Konversation löschen."""
@@ -220,7 +227,7 @@ async def delete_conversation(
 async def update_conversation(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Konversation aktualisieren (Titel, Modell, Temperatur)."""
@@ -254,7 +261,7 @@ async def update_conversation(
 async def batch_save_messages(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Mehrere Nachrichten synchron speichern (fuer Web-Suche etc.)."""
@@ -292,7 +299,7 @@ async def batch_save_messages(
 async def send_message(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Nachricht senden und LLM-Antwort als SSE streamen."""
@@ -375,7 +382,7 @@ async def send_message(
                         full_response = event["content"]
         except Exception as e:
             logger.exception("Gemini Deep Research Fehler")
-            yield {"event": "error", "data": json.dumps({"error": str(e)})}
+            yield {"event": "error", "data": json.dumps({"error": "Deep Research fehlgeschlagen"})}
             return
 
         async with async_session() as save_db:
@@ -472,7 +479,7 @@ async def send_message(
             logger.exception("Streaming-Fehler mit Modell %s", model)
             yield {
                 "event": "error",
-                "data": json.dumps({"error": str(e)}),
+                "data": json.dumps({"error": "LLM-Streaming fehlgeschlagen"}),
             }
             return
 
@@ -534,7 +541,7 @@ async def send_message(
 async def create_task_from_message(
     message_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Erstellt eine neue Aufgabe basierend auf einer Chat-Nachricht."""
@@ -778,7 +785,7 @@ Regeln:
 
 
 @router.get("/agent-tools")
-async def get_agent_tools(user: User = Depends(get_current_user)):
+async def get_agent_tools(user: User = Depends(require_role("owner"))):
     """Gibt die konfigurierten MCP-Server mit Beschreibungen zurück."""
     servers = _get_configured_mcp_servers()
     result = []
@@ -796,7 +803,7 @@ async def get_agent_tools(user: User = Depends(get_current_user)):
 async def send_agent_message(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Agent-Nachricht absenden — startet Background-Task, gibt job_id zurück.
@@ -957,8 +964,8 @@ async def _run_agent_background(
         bot = await _init_chat_bot()
     except Exception as e:
         logger.exception("[agent-bg] Bot-Init fehlgeschlagen")
-        await _update_agent_job("failed", error_message=f"Init fehlgeschlagen: {e}")
-        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot konnte nicht initialisiert werden: {e}"})})
+        await _update_agent_job("failed", error_message="Bot-Initialisierung fehlgeschlagen")
+        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot konnte nicht initialisiert werden"})})
         _agent_running[job_id] = False
         asyncio.create_task(_cleanup_agent_events(job_id))
         return
@@ -1031,8 +1038,8 @@ async def _run_agent_background(
     except Exception as e:
         logger.exception("[agent-bg] Fehler in job=%s", job_id)
         reset_chat_bot()
-        await _update_agent_job("failed", error_message=str(e))
-        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot-Fehler: {e}"})})
+        await _update_agent_job("failed", error_message="Agent-Ausführung fehlgeschlagen")
+        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot-Ausführung fehlgeschlagen"})})
         _agent_running[job_id] = False
         asyncio.create_task(_cleanup_agent_events(job_id))
         return
@@ -1065,7 +1072,7 @@ async def stream_agent_events(
     conversation_id: uuid.UUID,
     job_id: str = Query(..., description="Agent-Job-ID aus POST-Antwort"),
     offset: int = Query(0, ge=0, description="Event-Offset für Reconnect"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """SSE-Stream der Agent-Events. Reconnect-fähig über offset-Parameter.
 

@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
 from app.database import get_db, async_session
 from app.models import User
@@ -208,7 +208,7 @@ async def _execute_in_sandbox(code: str, input_files: dict | None = None, timeou
 async def generate_code(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Code aus natürlicher Sprache generieren (ohne Ausführung).
@@ -246,7 +246,7 @@ async def generate_code(
         code = await _generate_code(task_description, model, input_file_names)
     except Exception as e:
         logger.exception("Code-Generierung fehlgeschlagen")
-        raise HTTPException(status_code=500, detail=f"Code-Generierung fehlgeschlagen: {str(e)}")
+        raise HTTPException(status_code=500, detail="Code-Generierung fehlgeschlagen")
 
     assistant_msg = LlmMessage(
         conversation_id=conv.id,
@@ -270,7 +270,7 @@ async def generate_code(
 async def execute_code(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Generierten oder manuellen Code in der Sandbox ausführen.
@@ -336,7 +336,7 @@ async def execute_code(
 async def generate_and_execute(
     conversation_id: uuid.UUID,
     body: dict,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Code generieren UND ausführen in einem Schritt (für Chat-Flow mit impliziter Genehmigung).
@@ -395,7 +395,8 @@ async def generate_and_execute(
             yield {"event": "error", "data": json.dumps({"error": "Timeout: LLM hat nicht innerhalb von 120s geantwortet. Ist Ollama aktiv?"})}
             return
         except Exception as e:
-            yield {"event": "error", "data": json.dumps({"error": f"Code-Generierung fehlgeschlagen: {str(e)}"})}
+            logger.exception("Code-Generierung via SSE fehlgeschlagen")
+            yield {"event": "error", "data": json.dumps({"error": "Code-Generierung fehlgeschlagen"})}
             return
 
         yield {"event": "code_generated", "data": json.dumps({"code": code, "model": model})}
@@ -417,7 +418,8 @@ async def generate_and_execute(
         except Exception as e:
             if not exec_task.done():
                 exec_task.cancel()
-            yield {"event": "error", "data": json.dumps({"error": f"Sandbox fehlgeschlagen: {str(e)}"})}
+            logger.exception("Sandbox-Ausführung fehlgeschlagen")
+            yield {"event": "error", "data": json.dumps({"error": "Sandbox-Ausführung fehlgeschlagen"})}
             return
 
         async with async_session() as save_db:

@@ -40,10 +40,13 @@ services:
     volumes:
       - prod-uploads:/app/uploads
       - prod-exports:/tmp/taskpilot-exports
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${HOME}/.nanobot/workspace:/root/.nanobot/workspace:ro
+      - ${HOME}/.nanobot/workspace:/home/taskpilot/.nanobot/workspace:ro
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       postgres-prod:
+        condition: service_healthy
+      clamav:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -69,6 +72,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  clamav:
+    image: clamav/clamav-debian:unstable
+    container_name: taskpilot-clamav
+    volumes:
+      - clamav-data:/var/lib/clamav
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "echo PING | nc localhost 3310 | grep -q PONG"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
 volumes:
   prod-uploads:
   prod-exports:
+  clamav-data:

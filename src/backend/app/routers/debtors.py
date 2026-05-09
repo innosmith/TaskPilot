@@ -14,7 +14,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.models import User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "bexio"))
@@ -203,7 +203,7 @@ def _working_days_elapsed(year: int, month: int) -> int:
 
 @router.get("", response_model=DebtorsResponse)
 async def get_debtors(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Debitorenübersicht: Toggl-Monats-Cockpit + Bexio-Debitoren."""
     cached = _cache.get("debtors")
@@ -513,7 +513,7 @@ async def get_debtors(
 
 
 @router.post("/cache/clear")
-async def clear_cache(user: User = Depends(get_current_user)):
+async def clear_cache(user: User = Depends(require_role("owner"))):
     _cache.clear()
     logger.info("Debtors-Cache manuell geleert")
     return {"status": "ok", "message": "Debtors-Cache geleert"}

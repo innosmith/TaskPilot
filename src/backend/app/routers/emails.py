@@ -131,7 +131,8 @@ async def search_emails(
     try:
         results = await client.search_emails(query=q, top=top)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("E-Mail-Suche: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf E-Mails verweigert")
     emails = []
     for msg in results:
         from_obj = msg.get("from", {}).get("emailAddress", {})
@@ -166,7 +167,8 @@ async def list_folders(
     try:
         folders = await client.list_folders()
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("E-Mail-Ordner: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf E-Mail-Ordner verweigert")
 
     user_hidden: list[str] = (user.settings or {}).get("inbox_hidden_folders") or []
     hidden = _DEFAULT_HIDDEN_FOLDERS | set(user_hidden)
@@ -200,7 +202,8 @@ async def get_unread_count(
         count = inbox.get("unreadItemCount", 0) if inbox else 0
         return UnreadCountResponse(unread_count=count)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Unread-Count: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf E-Mails verweigert")
     except Exception:
         return UnreadCountResponse(unread_count=0)
 
@@ -230,7 +233,8 @@ async def list_flagged_emails(
     try:
         raw = await client.list_flagged_emails(top=top, since_days=since_days)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        logger.warning("Markierte E-Mails: Zugriff verweigert: %s", exc)
+        raise HTTPException(status_code=403, detail="Zugriff auf E-Mails verweigert")
     result = []
     for msg in raw:
         sender = msg.get("from", {}).get("emailAddress", {})
@@ -263,7 +267,8 @@ async def list_emails(
     try:
         data = await client.list_emails(folder=folder, top=top, skip=skip, filter_str=filter_str)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("E-Mail-Liste: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf E-Mails verweigert")
     emails = []
     for msg in data.get("value", []):
         from_obj = msg.get("from", {}).get("emailAddress", {})
@@ -296,7 +301,8 @@ async def get_email(
     try:
         msg = await client.get_email(message_id)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("E-Mail-Detail: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf E-Mail verweigert")
     from_obj = msg.get("from", {}).get("emailAddress", {})
     body = msg.get("body", {})
     return EmailDetail(

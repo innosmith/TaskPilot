@@ -7,7 +7,7 @@ import httpx
 import litellm
 from fastapi import APIRouter, Depends
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
 from app.models import User
 
@@ -254,7 +254,7 @@ async def _fetch_all_models() -> dict:
 
 
 @router.get("/available")
-async def list_available_models(user: User = Depends(get_current_user)) -> dict:
+async def list_available_models(user: User = Depends(require_role("owner"))) -> dict:
     """Alle verfügbaren LLM-Modelle für die Einstellungsseite."""
     now = time.time()
     if _cache["data"] and now < _cache["expires_at"]:
@@ -266,7 +266,7 @@ async def list_available_models(user: User = Depends(get_current_user)) -> dict:
 
 
 @router.get("")
-async def list_models(user: User = Depends(get_current_user)) -> dict:
+async def list_models(user: User = Depends(require_role("owner"))) -> dict:
     """Vom User aktivierte LLM-Modelle."""
     now = time.time()
     if not (_cache["data"] and now < _cache["expires_at"]):
@@ -303,7 +303,7 @@ async def list_models(user: User = Depends(get_current_user)) -> dict:
 
 
 @router.post("/cache/clear")
-async def clear_cache(user: User = Depends(get_current_user)) -> dict:
+async def clear_cache(user: User = Depends(require_role("owner"))) -> dict:
     """Modell-Cache leeren, damit beim naechsten Abruf neu geladen wird."""
     _cache["data"] = None
     _cache["expires_at"] = 0.0

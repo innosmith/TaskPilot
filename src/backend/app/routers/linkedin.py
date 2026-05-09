@@ -17,7 +17,7 @@ import litellm
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
 from app.models import User
 
@@ -107,7 +107,7 @@ class ExtractedProfile(BaseModel):
 @router.post("/extract-profile", response_model=ExtractedProfile)
 async def extract_profile_from_html(
     body: ExtractProfileRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Extrahiert LinkedIn-Profildaten aus Plaintext via Cloud-LLM."""
     _setup_api_keys()
@@ -147,5 +147,5 @@ async def extract_profile_from_html(
         logger.warning("LLM-Antwort war kein valides JSON: %s", exc)
         raise HTTPException(status_code=502, detail="LLM-Antwort konnte nicht als JSON geparst werden")
     except Exception as exc:
-        logger.error("LinkedIn-Profil-Extraktion fehlgeschlagen: %s", exc, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"LLM-Extraktion fehlgeschlagen: {exc}")
+        logger.exception("LinkedIn-Profil-Extraktion fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="LinkedIn-Profil-Extraktion fehlgeschlagen")

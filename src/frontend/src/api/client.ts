@@ -12,6 +12,32 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+let _refreshing: Promise<boolean> | null = null;
+
+async function tryRefreshToken(): Promise<boolean> {
+  if (_refreshing) return _refreshing;
+  _refreshing = (async () => {
+    try {
+      const res = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.access_token) {
+        setToken(data.access_token);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      _refreshing = null;
+    }
+  })();
+  return _refreshing;
+}
+
 class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -41,6 +67,15 @@ async function request<T>(
   });
 
   if (response.status === 401) {
+    const refreshed = await tryRefreshToken();
+    if (refreshed) {
+      const retryHeaders = { ...headers, Authorization: `Bearer ${getToken()}` };
+      const retry = await fetch(path, { ...options, headers: retryHeaders });
+      if (retry.ok) {
+        if (retry.status === 204) return undefined as T;
+        return retry.json();
+      }
+    }
     clearToken();
     window.location.href = '/login';
     throw new ApiError(401, 'Nicht autorisiert');

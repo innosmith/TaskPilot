@@ -8,7 +8,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.models import User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "bexio"))
@@ -45,20 +45,20 @@ def _get_bexio_client(user: User) -> BexioClient:
 # ── Verbindungstest ──────────────────────────────────────
 
 @router.get("/test-connection")
-async def test_connection(user: User = Depends(get_current_user)):
+async def test_connection(user: User = Depends(require_role("owner"))):
     try:
         client = _get_bexio_client(user)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Bexio Client-Erstellung fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=400, detail=f"Client-Fehler: {e}")
+        logger.exception("Bexio Client-Erstellung fehlgeschlagen")
+        raise HTTPException(status_code=400, detail="Bexio-Client konnte nicht erstellt werden")
     try:
         result = await client.test_connection()
         return result
     except Exception as e:
-        logger.error("Bexio Verbindungstest fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=f"Verbindung fehlgeschlagen: {e}")
+        logger.exception("Bexio Verbindungstest fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Bexio-Verbindungstest fehlgeschlagen")
 
 
 # ── Kontakte ─────────────────────────────────────────────
@@ -74,7 +74,7 @@ class ContactSummary(BaseModel):
 @router.get("/contacts", response_model=list[ContactSummary])
 async def list_contacts(
     limit: int = Query(default=50, le=200),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"contacts:{limit}"
     cached = _static_cache.get(cache_key)
@@ -95,7 +95,7 @@ async def list_contacts(
 
 
 @router.get("/contacts/{contact_id}")
-async def get_contact(contact_id: int, user: User = Depends(get_current_user)):
+async def get_contact(contact_id: int, user: User = Depends(require_role("owner"))):
     client = _get_bexio_client(user)
     return await client.get_contact(contact_id)
 
@@ -104,7 +104,7 @@ async def get_contact(contact_id: int, user: User = Depends(get_current_user)):
 async def list_orders_for_contact(
     contact_id: int,
     limit: int = Query(default=50, le=200),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_bexio_client(user)
     return await client.list_orders(contact_id=contact_id, limit=limit)
@@ -129,7 +129,7 @@ class InvoiceSummary(BaseModel):
 @router.get("/invoices", response_model=list[InvoiceSummary])
 async def list_invoices(
     limit: int = Query(default=100, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"invoices:{limit}"
     cached = _invoice_cache.get(cache_key)
@@ -162,7 +162,7 @@ async def search_invoices(
     status: str | None = Query(default=None),
     from_date: str | None = Query(default=None),
     to_date: str | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"inv_search:{status}:{from_date}:{to_date}"
     cached = _invoice_cache.get(cache_key)
@@ -193,7 +193,7 @@ async def search_invoices(
 # ── Bankkonten ───────────────────────────────────────────
 
 @router.get("/bank-accounts")
-async def list_bank_accounts(user: User = Depends(get_current_user)):
+async def list_bank_accounts(user: User = Depends(require_role("owner"))):
     cached = _bank_cache.get("bank_accounts")
     if cached is not None:
         return cached
@@ -204,7 +204,7 @@ async def list_bank_accounts(user: User = Depends(get_current_user)):
 
 
 @router.get("/bank-accounts/{account_id}")
-async def get_bank_account(account_id: int, user: User = Depends(get_current_user)):
+async def get_bank_account(account_id: int, user: User = Depends(require_role("owner"))):
     cache_key = f"bank:{account_id}"
     cached = _bank_cache.get(cache_key)
     if cached is not None:
@@ -220,7 +220,7 @@ async def get_bank_account(account_id: int, user: User = Depends(get_current_use
 @router.get("/payments")
 async def list_payments(
     limit: int = Query(default=200, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"payments:{limit}"
     cached = _payment_cache.get(cache_key)
@@ -235,7 +235,7 @@ async def list_payments(
 # ── Kontenplan ───────────────────────────────────────────
 
 @router.get("/accounts")
-async def list_accounts(user: User = Depends(get_current_user)):
+async def list_accounts(user: User = Depends(require_role("owner"))):
     cached = _account_cache.get("accounts_all")
     if cached is not None:
         return cached
@@ -257,7 +257,7 @@ class ProjectSummary(BaseModel):
 @router.get("/projects", response_model=list[ProjectSummary])
 async def list_projects(
     limit: int = Query(default=50, le=200),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"projects:{limit}"
     cached = _static_cache.get(cache_key)
@@ -282,7 +282,7 @@ async def list_projects(
 @router.get("/search")
 async def search_bexio(
     q: str = Query(min_length=1),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_bexio_client(user)
     contacts = await client.search_contact_by_name(q)
@@ -297,7 +297,7 @@ async def search_bexio(
 # ── Cache-Verwaltung ─────────────────────────────────────
 
 @router.post("/cache/clear")
-async def clear_cache(user: User = Depends(get_current_user)):
+async def clear_cache(user: User = Depends(require_role("owner"))):
     _invoice_cache.clear()
     _bank_cache.clear()
     _payment_cache.clear()
@@ -308,7 +308,7 @@ async def clear_cache(user: User = Depends(get_current_user)):
 
 
 @router.get("/cache/stats")
-async def cache_stats(user: User = Depends(get_current_user)):
+async def cache_stats(user: User = Depends(require_role("owner"))):
     return {
         "invoice_cache": {"size": len(_invoice_cache), "maxsize": _invoice_cache.maxsize, "ttl": _invoice_cache.ttl},
         "bank_cache": {"size": len(_bank_cache), "maxsize": _bank_cache.maxsize, "ttl": _bank_cache.ttl},

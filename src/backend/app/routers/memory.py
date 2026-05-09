@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.models import User
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -23,7 +23,7 @@ class MemoryFile(BaseModel):
 
 @router.get("", response_model=list[MemoryFile])
 async def list_memory_files(
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> list[MemoryFile]:
     memory_dir = NANOBOT_WORKSPACE / "memory"
     if not memory_dir.exists():
@@ -43,7 +43,7 @@ async def list_memory_files(
 @router.get("/{filename}", response_model=MemoryFile)
 async def get_memory_file(
     filename: str,
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> MemoryFile:
     if ".." in filename or "/" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -69,7 +69,7 @@ class HeartbeatInfo(BaseModel):
 
 @router.get("/status/heartbeat", response_model=HeartbeatInfo)
 async def get_heartbeat(
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> HeartbeatInfo:
     heartbeat = ""
     heartbeat_path = NANOBOT_WORKSPACE / "HEARTBEAT.md"

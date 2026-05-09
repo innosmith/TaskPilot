@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.database import get_db
 from app.models import PipelineColumn, Task, User
 from app.schemas import PipelineColumnOut, PipelineColumnUpdate, PipelineColumnWithTasks, PipelineOut, TaskCard
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 @router.get("", response_model=PipelineOut)
 async def get_pipeline(
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> PipelineOut:
     col_result = await db.execute(
         select(PipelineColumn).order_by(PipelineColumn.position)
@@ -76,7 +76,7 @@ class PipelineColumnCreate(BaseModel):
 async def create_pipeline_column(
     body: PipelineColumnCreate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> PipelineColumn:
     if body.position is None:
         max_result = await db.execute(
@@ -95,7 +95,7 @@ async def update_pipeline_column(
     col_id: str,
     body: PipelineColumnUpdate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> PipelineColumn:
     result = await db.execute(select(PipelineColumn).where(PipelineColumn.id == col_id))
     col = result.scalar_one_or_none()
@@ -110,7 +110,7 @@ async def update_pipeline_column(
 async def delete_pipeline_column(
     col_id: str,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> None:
     result = await db.execute(select(PipelineColumn).where(PipelineColumn.id == col_id))
     col = result.scalar_one_or_none()

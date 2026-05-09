@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
+import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../api/client';
 import type { TaskDetailMode } from '../types';
 
@@ -9,6 +10,7 @@ interface UserProfile {
   display_name: string;
   role: string;
   avatar_url: string | null;
+  mfa_enabled?: boolean;
 }
 
 interface UserSettingsData {
@@ -150,6 +152,13 @@ export function SettingsPage() {
   const [extMsg, setExtMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [extCopied, setExtCopied] = useState(false);
 
+  const [mfaEnabled, setMfaEnabled] = useState(false);
+  const [mfaProvUri, setMfaProvUri] = useState<string | null>(null);
+  const [mfaSecret, setMfaSecret] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaMsg, setMfaMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [mfaLoading, setMfaLoading] = useState(false);
+
   const fetchData = useCallback(async () => {
     try {
       const [p, s] = await Promise.all([
@@ -160,6 +169,7 @@ export function SettingsPage() {
       setSettings(s);
       setDisplayName(p.display_name);
       setProfileEmail(p.email);
+      setMfaEnabled(!!p.mfa_enabled);
       if (p.role === 'owner') {
         const [u, ts] = await Promise.all([
           api.get<ManagedUser[]>('/api/auth/users'),
@@ -257,6 +267,56 @@ export function SettingsPage() {
       setTimeout(() => setPwMsg(null), 3000);
     } catch {
       setPwMsg({ type: 'err', text: 'Aktuelles Passwort ist falsch' });
+    }
+  };
+
+  const startMfaSetup = async () => {
+    setMfaLoading(true);
+    setMfaMsg(null);
+    try {
+      const res = await api.post<{ secret: string; provisioning_uri: string }>('/api/auth/mfa/setup', {});
+      setMfaProvUri(res.provisioning_uri);
+      setMfaSecret(res.secret);
+    } catch {
+      setMfaMsg({ type: 'err', text: 'MFA-Setup fehlgeschlagen' });
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const verifyMfa = async () => {
+    if (mfaCode.length !== 6) { setMfaMsg({ type: 'err', text: 'Bitte 6-stelligen Code eingeben' }); return; }
+    setMfaLoading(true);
+    setMfaMsg(null);
+    try {
+      await api.post('/api/auth/mfa/verify', { code: mfaCode });
+      setMfaEnabled(true);
+      setMfaProvUri(null);
+      setMfaSecret(null);
+      setMfaCode('');
+      setMfaMsg({ type: 'ok', text: 'MFA erfolgreich aktiviert' });
+      setTimeout(() => setMfaMsg(null), 4000);
+    } catch {
+      setMfaMsg({ type: 'err', text: 'Ungültiger Code — bitte erneut versuchen' });
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const disableMfa = async () => {
+    if (mfaCode.length !== 6) { setMfaMsg({ type: 'err', text: 'Bitte aktuellen TOTP-Code eingeben' }); return; }
+    setMfaLoading(true);
+    setMfaMsg(null);
+    try {
+      await api.post('/api/auth/mfa/disable', { code: mfaCode });
+      setMfaEnabled(false);
+      setMfaCode('');
+      setMfaMsg({ type: 'ok', text: 'MFA deaktiviert' });
+      setTimeout(() => setMfaMsg(null), 4000);
+    } catch {
+      setMfaMsg({ type: 'err', text: 'Ungültiger Code' });
+    } finally {
+      setMfaLoading(false);
     }
   };
 
@@ -602,6 +662,115 @@ export function SettingsPage() {
                   </div>
                 </div>
               </section>
+
+              {profile.role === 'owner' && (
+                <section>
+                  <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Zwei-Faktor-Authentifizierung (MFA)</h2>
+
+                  {mfaEnabled && !mfaProvUri && (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 dark:bg-green-950/40">
+                        <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+                        <span className="text-sm font-medium text-green-800 dark:text-green-300">MFA ist aktiv</span>
+                      </div>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Zum Deaktivieren den aktuellen TOTP-Code eingeben:
+                      </p>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={6}
+                        placeholder="6-stelliger Code"
+                        value={mfaCode}
+                        onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
+                        className="w-40 rounded-lg border px-3 py-2 text-center font-mono text-lg tracking-widest dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                      />
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={disableMfa}
+                          disabled={mfaLoading || mfaCode.length !== 6}
+                          className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-40"
+                        >
+                          MFA deaktivieren
+                        </button>
+                        {mfaMsg && (
+                          <p className={`text-sm ${mfaMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{mfaMsg.text}</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {!mfaEnabled && !mfaProvUri && (
+                    <div className="space-y-3">
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Schütze dein Konto mit einer Authenticator-App (Google Authenticator, Authy, 1Password etc.).
+                      </p>
+                      <button
+                        onClick={startMfaSetup}
+                        disabled={mfaLoading}
+                        className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"
+                      >
+                        {mfaLoading ? 'Wird eingerichtet…' : 'MFA aktivieren'}
+                      </button>
+                      {mfaMsg && (
+                        <p className={`text-sm ${mfaMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{mfaMsg.text}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {mfaProvUri && (
+                    <div className="space-y-4">
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Scanne den QR-Code mit deiner Authenticator-App:
+                      </p>
+                      <div className="inline-block rounded-xl border bg-white p-4 shadow-sm dark:border-gray-700">
+                        <QRCodeSVG value={mfaProvUri} size={200} level="M" />
+                      </div>
+                      {mfaSecret && (
+                        <div>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">Oder manuell eingeben:</p>
+                          <code className="mt-1 block select-all rounded bg-gray-100 px-3 py-1.5 font-mono text-sm dark:bg-gray-800">
+                            {mfaSecret}
+                          </code>
+                        </div>
+                      )}
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                          Bestätigungscode aus der App:
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={6}
+                          placeholder="000000"
+                          value={mfaCode}
+                          onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
+                          className="w-40 rounded-lg border px-3 py-2 text-center font-mono text-lg tracking-widest dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                          autoComplete="one-time-code"
+                        />
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={verifyMfa}
+                          disabled={mfaLoading || mfaCode.length !== 6}
+                          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"
+                        >
+                          {mfaLoading ? 'Wird verifiziert…' : 'Code verifizieren & aktivieren'}
+                        </button>
+                        <button
+                          onClick={() => { setMfaProvUri(null); setMfaSecret(null); setMfaCode(''); }}
+                          className="rounded-lg border px-4 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                        >
+                          Abbrechen
+                        </button>
+                      </div>
+                      {mfaMsg && (
+                        <p className={`text-sm ${mfaMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{mfaMsg.text}</p>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
             </>
           )}
 
@@ -1657,7 +1826,7 @@ function LlmSettingsTab() {
             className="mt-1 w-full"
           />
           <div className="flex justify-between text-xs text-gray-400">
-            <span>Praezise (0)</span>
+            <span>Präzise (0)</span>
             <span>Kreativ (1.5)</span>
           </div>
         </div>

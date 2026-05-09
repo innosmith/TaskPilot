@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from PIL import Image
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.models import User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "pipedrive"))
@@ -58,7 +58,7 @@ def _get_pipedrive_client(user: User) -> PipedriveClient:
 # ── Verbindungstest ──────────────────────────────────────
 
 @router.get("/test-connection")
-async def test_connection(user: User = Depends(get_current_user)):
+async def test_connection(user: User = Depends(require_role("owner"))):
     import logging
     logger = logging.getLogger("taskpilot.pipedrive")
     try:
@@ -66,14 +66,14 @@ async def test_connection(user: User = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Pipedrive Client-Erstellung fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=400, detail=f"Client-Fehler: {e}")
+        logger.exception("Pipedrive Client-Erstellung fehlgeschlagen")
+        raise HTTPException(status_code=400, detail="Pipedrive-Client konnte nicht erstellt werden")
     try:
         result = await client.test_connection()
         return result
     except Exception as e:
-        logger.error("Pipedrive Verbindungstest fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=f"Verbindung fehlgeschlagen: {e}")
+        logger.exception("Pipedrive Verbindungstest fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Pipedrive-Verbindungstest fehlgeschlagen")
 
 
 # ── Deals ────────────────────────────────────────────────
@@ -95,7 +95,7 @@ async def list_deals(
     stage_id: int | None = None,
     status: str = "open",
     limit: int = Query(default=20, le=100),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"deals:{pipeline_id}:{stage_id}:{status}:{limit}"
     cached = _list_cache.get(cache_key)
@@ -111,7 +111,7 @@ async def list_deals(
 
 
 @router.get("/deals/{deal_id}")
-async def get_deal(deal_id: int, user: User = Depends(get_current_user)):
+async def get_deal(deal_id: int, user: User = Depends(require_role("owner"))):
     client = _get_pipedrive_client(user)
     return await client.get_deal(deal_id)
 
@@ -133,7 +133,7 @@ class LeadSummary(BaseModel):
 @router.get("/leads", response_model=list[LeadSummary])
 async def list_leads(
     limit: int = Query(default=20, le=100),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"leads:{limit}"
     cached = _list_cache.get(cache_key)
@@ -171,7 +171,7 @@ class PersonSummary(BaseModel):
 @router.get("/persons", response_model=list[PersonSummary])
 async def list_persons(
     limit: int = Query(default=20, le=100),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_pipedrive_client(user)
     persons = await client.list_persons(limit=limit)
@@ -187,7 +187,7 @@ async def list_persons(
 
 
 @router.get("/persons/{person_id}")
-async def get_person(person_id: int, user: User = Depends(get_current_user)):
+async def get_person(person_id: int, user: User = Depends(require_role("owner"))):
     client = _get_pipedrive_client(user)
     return await client.get_person(person_id)
 
@@ -210,7 +210,7 @@ async def list_activities(
     deal_id: int | None = None,
     person_id: int | None = None,
     limit: int = Query(default=20, le=100),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"activities:{done}:{deal_id}:{person_id}:{limit}"
     cached = _list_cache.get(cache_key)
@@ -239,7 +239,7 @@ class StageSummary(BaseModel):
 
 
 @router.get("/pipelines", response_model=list[PipelineSummary])
-async def list_pipelines(user: User = Depends(get_current_user)):
+async def list_pipelines(user: User = Depends(require_role("owner"))):
     cached = _static_cache.get("pipelines")
     if cached is not None:
         return cached
@@ -251,7 +251,7 @@ async def list_pipelines(user: User = Depends(get_current_user)):
 
 
 @router.get("/pipelines/{pipeline_id}/stages", response_model=list[StageSummary])
-async def list_stages(pipeline_id: int, user: User = Depends(get_current_user)):
+async def list_stages(pipeline_id: int, user: User = Depends(require_role("owner"))):
     cache_key = f"stages:{pipeline_id}"
     cached = _static_cache.get(cache_key)
     if cached is not None:
@@ -268,7 +268,7 @@ async def list_stages(pipeline_id: int, user: User = Depends(get_current_user)):
 @router.get("/pipeline-summary")
 async def get_pipeline_summary(
     pipeline_id: int | None = None,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_pipedrive_client(user)
     return await client.get_pipeline_summary(pipeline_id=pipeline_id)
@@ -281,7 +281,7 @@ async def search_crm(
     term: str = Query(min_length=1),
     item_types: str = "deal,person,organization",
     limit: int = Query(default=10, le=50),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_pipedrive_client(user)
     return await client.search_items(term, item_types, limit)
@@ -343,7 +343,7 @@ def _extract_phone(person: dict) -> str:
 async def lookup_email(
     email: str = Query(min_length=3),
     include_deals: bool = Query(default=False),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Person in Pipedrive anhand der E-Mail-Adresse suchen (24h-Cache)."""
     normalized = email.strip().lower()
@@ -464,7 +464,7 @@ class QuickContactResponse(BaseModel):
 @router.post("/quick-contact", response_model=QuickContactResponse)
 async def create_quick_contact(
     body: QuickContactRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Neuen Kontakt in Pipedrive anlegen."""
     client = _get_pipedrive_client(user)
@@ -503,7 +503,7 @@ class BatchLookupItem(BaseModel):
 @router.post("/lookup-emails", response_model=list[BatchLookupItem])
 async def batch_lookup_emails(
     body: BatchLookupRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Mehrere E-Mail-Adressen in einem Request nachschlagen (Cache-aware)."""
     results: list[BatchLookupItem] = []
@@ -617,7 +617,7 @@ class LinkedInLookupResponse(BaseModel):
 @router.post("/linkedin-lookup", response_model=LinkedInLookupResponse)
 async def linkedin_lookup(
     body: LinkedInLookupRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """LinkedIn-Profil in Pipedrive suchen: zuerst per LinkedIn-URL, dann per Name."""
     client = _get_pipedrive_client(user)
@@ -777,7 +777,7 @@ class LinkedInSyncResponse(BaseModel):
 @router.post("/linkedin-sync", response_model=LinkedInSyncResponse)
 async def linkedin_sync(
     body: LinkedInSyncRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """LinkedIn-Kontakt in Pipedrive erstellen oder aktualisieren."""
     client = _get_pipedrive_client(user)
@@ -919,7 +919,7 @@ async def linkedin_sync(
 # ── Cache-Verwaltung ──────────────────────────────────
 
 @router.post("/cache/clear")
-async def clear_cache(user: User = Depends(get_current_user)):
+async def clear_cache(user: User = Depends(require_role("owner"))):
     """Alle Pipedrive-Caches leeren."""
     _person_cache.clear()
     _list_cache.clear()
@@ -929,7 +929,7 @@ async def clear_cache(user: User = Depends(get_current_user)):
 
 
 @router.get("/cache/stats")
-async def cache_stats(user: User = Depends(get_current_user)):
+async def cache_stats(user: User = Depends(require_role("owner"))):
     """Cache-Statistiken anzeigen."""
     return {
         "person_cache": {"size": len(_person_cache), "maxsize": _person_cache.maxsize, "ttl": _person_cache.ttl},

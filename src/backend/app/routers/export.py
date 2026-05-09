@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Literal
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.database import get_db
 from app.models import User
 from app.models.models import LlmMessage
@@ -38,7 +38,7 @@ class ExportRequest(BaseModel):
 async def export_message(
     msg_id: str,
     body: ExportRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
     """Exportiert eine Chat-Nachricht als Markdown, DOCX, PDF oder PPTX."""

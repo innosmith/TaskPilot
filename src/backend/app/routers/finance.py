@@ -16,7 +16,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.models import User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "bexio"))
@@ -509,7 +509,7 @@ class WaterfallResponse(BaseModel):
 # ── Endpoints ────────────────────────────────────────────
 
 @router.get("/overview", response_model=KpiOverview)
-async def get_overview(user: User = Depends(get_current_user)):
+async def get_overview(user: User = Depends(require_role("owner"))):
     """KPI-Uebersicht mit Jahresprognosen, Burn Rate und Runway."""
     cached = _overview_cache.get("overview")
     if cached is not None:
@@ -767,7 +767,7 @@ async def get_overview(user: User = Depends(get_current_user)):
 async def get_cashflow(
     months_back: int = Query(default=6, ge=1, le=24),
     months_forward: int = Query(default=12, ge=1, le=24),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Cashflow nach direkter Methode (Swiss GAAP FER / OR).
 
@@ -911,7 +911,7 @@ async def get_cashflow(
 
 
 @router.get("/yoy", response_model=YoyResponse)
-async def get_year_over_year(user: User = Depends(get_current_user)):
+async def get_year_over_year(user: User = Depends(require_role("owner"))):
     """Vorjahresvergleich: Monatliche Einnahmen/Ausgaben aktuelles vs. Vorjahr."""
     cached = _cashflow_cache.get("yoy")
     if cached is not None:
@@ -980,7 +980,7 @@ async def get_year_over_year(user: User = Depends(get_current_user)):
 @router.get("/pnl-waterfall", response_model=WaterfallResponse)
 async def get_pnl_waterfall(
     period: str = Query(default="ytd", description="'ytd' oder 'YYYY-MM'"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """P&L-Wasserfall: Umsatz -> Aufwandkategorien -> Ergebnis."""
     cache_key = f"pnl_waterfall:{period}"
@@ -1051,7 +1051,7 @@ async def get_pnl_waterfall(
 @router.get("/toggl-summary", response_model=list[TogglProjectSummary])
 async def get_toggl_month_summary(
     month: str = Query(default="", description="YYYY-MM, leer = aktueller Monat"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Toggl-Stunden pro Projekt fuer einen bestimmten Monat."""
     today = date.today()
@@ -1127,7 +1127,7 @@ async def get_toggl_month_summary(
 
 
 @router.get("/expense-categories", response_model=ExpenseCategoryResponse)
-async def get_expense_categories(user: User = Depends(get_current_user)):
+async def get_expense_categories(user: User = Depends(require_role("owner"))):
     """Aufwand-Kategorien mit Durchschnittswerten und tatsaechlichem Zeitraum."""
     cached = _cashflow_cache.get("expense_categories_v2")
     if cached is not None:
@@ -1223,7 +1223,7 @@ class ExpenseMonthlyBreakdownResponse(BaseModel):
 
 
 @router.get("/expense-monthly-breakdown", response_model=ExpenseMonthlyBreakdownResponse)
-async def get_expense_monthly_breakdown(user: User = Depends(get_current_user)):
+async def get_expense_monthly_breakdown(user: User = Depends(require_role("owner"))):
     """Monatliche Kostenverteilung nach KMU-Kategorie, aktuelles Jahr vs. Vorjahr."""
     cached = _cashflow_cache.get("expense_monthly_breakdown")
     if cached is not None:
@@ -1305,7 +1305,7 @@ class MarginTrendResponse(BaseModel):
 
 
 @router.get("/margin-trend", response_model=MarginTrendResponse)
-async def get_margin_trend(user: User = Depends(get_current_user)):
+async def get_margin_trend(user: User = Depends(require_role("owner"))):
     """Gewinnmarge: YTD-kumuliert + 12-Mt-Rolling + Vorjahr als Benchmark."""
     cached = _cashflow_cache.get("margin_trend")
     if cached is not None:
@@ -1375,7 +1375,7 @@ async def get_margin_trend(user: User = Depends(get_current_user)):
 # ── Kreuz-Validierung ────────────────────────────────────
 
 @router.get("/validate/2025")
-async def validate_2025(user: User = Depends(get_current_user)):
+async def validate_2025(user: User = Depends(require_role("owner"))):
     """Vergleiche Dashboard-Werte mit Jahresrechnung 2025."""
     bexio = _get_bexio_client(user)
     accounts_map = await _get_accounts_map(bexio)
@@ -1418,7 +1418,7 @@ async def validate_2025(user: User = Depends(get_current_user)):
 # ── Cache-Verwaltung ─────────────────────────────────────
 
 @router.post("/cache/clear")
-async def clear_cache(user: User = Depends(get_current_user)):
+async def clear_cache(user: User = Depends(require_role("owner"))):
     _overview_cache.clear()
     _cashflow_cache.clear()
     _journal_cache.clear()
@@ -1428,7 +1428,7 @@ async def clear_cache(user: User = Depends(get_current_user)):
 
 
 @router.get("/cache/stats")
-async def cache_stats(user: User = Depends(get_current_user)):
+async def cache_stats(user: User = Depends(require_role("owner"))):
     return {
         "overview_cache": {"size": len(_overview_cache), "maxsize": _overview_cache.maxsize, "ttl": _overview_cache.ttl},
         "cashflow_cache": {"size": len(_cashflow_cache), "maxsize": _cashflow_cache.maxsize, "ttl": _cashflow_cache.ttl},

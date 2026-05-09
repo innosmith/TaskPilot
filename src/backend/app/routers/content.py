@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.models import User
 from app.services import content_converter as cc
 from app.services import mapping_store
@@ -62,7 +62,7 @@ class ExtractResponse(BaseModel):
 @router.post("/anonymize", response_model=AnonymizeResponse)
 async def anonymize_text(
     body: AnonymizeRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Anonymisiert Text mit realistischen Fake-Namen.
 
@@ -77,7 +77,8 @@ async def anonymize_text(
             language=body.language,
         )
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        logger.exception("Anonymisierung fehlgeschlagen")
+        raise HTTPException(status_code=503, detail="Content-Service nicht erreichbar")
 
     if isinstance(result, dict):
         anonymized_text = result.get("anonymized_text", "")
@@ -103,7 +104,7 @@ async def anonymize_file(
     file: UploadFile = File(...),
     entities: str = "PERSON,ORG,LOCATION",
     language: str = "auto",
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Anonymisiert eine hochgeladene Datei (MD, DOCX, PDF)."""
     suffix = Path(file.filename or "upload.txt").suffix
@@ -124,7 +125,8 @@ async def anonymize_file(
             language=language,
         )
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        logger.exception("Datei-Anonymisierung fehlgeschlagen")
+        raise HTTPException(status_code=503, detail="Content-Service nicht erreichbar")
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -153,7 +155,7 @@ async def anonymize_file(
 @router.post("/deanonymize", response_model=DeanonymizeResponse)
 async def deanonymize_text(
     body: DeanonymizeRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Stellt Originalwerte in anonymisiertem Text wieder her.
 
@@ -174,7 +176,8 @@ async def deanonymize_text(
             mapping_keys=keys,
         )
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        logger.exception("De-Anonymisierung fehlgeschlagen")
+        raise HTTPException(status_code=503, detail="Content-Service nicht erreichbar")
 
     return DeanonymizeResponse(
         original_text=result if isinstance(result, str) else str(result),
@@ -187,7 +190,7 @@ async def deanonymize_text(
 @router.get("/mapping-keys/{session_id}/download")
 async def download_mapping_keys(
     session_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Gibt die Mapping-Keys als JSON-Download zurück.
 
@@ -211,7 +214,7 @@ async def download_mapping_keys(
 @router.get("/mapping-keys/{session_id}/diff")
 async def get_diff_pairs(
     session_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Gibt die Diff-Paare für die Frontend-Anzeige zurück."""
     diff = mapping_store.get_diff_pairs(session_id)
@@ -229,7 +232,7 @@ async def get_diff_pairs(
 @router.post("/extract", response_model=ExtractResponse)
 async def extract_content(
     file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Extrahiert Text aus Dokumenten (PDF, DOCX) als Markdown."""
     suffix = Path(file.filename or "upload.txt").suffix
@@ -241,7 +244,8 @@ async def extract_content(
 
         result = await cc.call_tool("extract_content", input_file=str(tmp_path))
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        logger.exception("Text-Extraktion fehlgeschlagen")
+        raise HTTPException(status_code=503, detail="Content-Service nicht erreichbar")
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -255,13 +259,14 @@ async def extract_content(
 
 @router.get("/templates")
 async def list_templates(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Listet alle verfügbaren Word- und PowerPoint-Templates auf."""
     try:
         result = await cc.call_tool("list_templates")
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        logger.exception("Template-Liste konnte nicht geladen werden")
+        raise HTTPException(status_code=503, detail="Content-Service nicht erreichbar")
 
     return result if isinstance(result, list) else []
 
@@ -284,7 +289,7 @@ class ConvertRequest(BaseModel):
 @router.post("/convert")
 async def convert_text(
     body: ConvertRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Konvertiert Markdown-Text direkt in DOCX, PDF oder PPTX."""
     base_name = body.filename or f"export-{date.today().isoformat()}"
@@ -314,7 +319,7 @@ async def convert_file(
     template: str | None = Form(None),
     pptx_template: str | None = Form(None),
     filename: str | None = Form(None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Konvertiert eine hochgeladene Datei (.md, .docx, .pdf) ins Zielformat.
 
@@ -334,7 +339,8 @@ async def convert_file(
             extracted = await cc.call_tool("extract_content", input_file=str(tmp_path))
             text_content = extracted if isinstance(extracted, str) else str(extracted)
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        logger.exception("Datei-Konvertierung fehlgeschlagen")
+        raise HTTPException(status_code=503, detail="Content-Service nicht erreichbar")
     finally:
         tmp_path.unlink(missing_ok=True)
 

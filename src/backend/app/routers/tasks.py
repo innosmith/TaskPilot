@@ -2,6 +2,7 @@ import pathlib
 import uuid
 from datetime import date, datetime, timezone
 
+import bleach
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
@@ -9,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.deps import get_current_user
+from app.auth.deps import MEMBER_RESTRICTED_TASK_FIELDS, check_project_access, get_current_user, require_role
+from app.routers.uploads import _scan_with_clamav
 from app.database import get_db
 from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, ChecklistItem, Project, Task, User
 from app.schemas import (
@@ -24,12 +26,32 @@ from app.schemas import (
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
+def _sanitize_text(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return bleach.clean(text, tags=[], strip=True)
+
+
 @router.post("", response_model=TaskOut, status_code=status.HTTP_201_CREATED)
 async def create_task(
     body: TaskCreate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> TaskOut:
+    col_result = await db.execute(
+        select(BoardColumn.project_id).where(BoardColumn.id == body.board_column_id)
+    )
+    project_id = col_result.scalar_one_or_none()
+    if project_id and not await check_project_access(project_id, user, db):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
+
+    if user.role != "owner":
+        for field in MEMBER_RESTRICTED_TASK_FIELDS:
+            if hasattr(body, field):
+                setattr(body, field, None)
+        if hasattr(body, "assignee") and body.assignee == "agent":
+            raise HTTPException(status_code=403, detail="Agent-Zuweisung ist nicht erlaubt")
+
     if body.board_position is None:
         max_result = await db.execute(
             select(Task.board_position)
@@ -49,6 +71,9 @@ async def create_task(
         )
         max_pos = max_result.scalar_one_or_none() or 0.0
         body.pipeline_position = max_pos + 1.0
+
+    body.title = _sanitize_text(body.title) or body.title
+    body.description = _sanitize_text(body.description)
 
     task = Task(**body.model_dump())
     db.add(task)
@@ -86,7 +111,7 @@ class TaskConfirmBody(BaseModel):
 @router.get("/due-today")
 async def list_due_today(
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ):
     today = date.today()
     stmt = (
@@ -138,7 +163,7 @@ async def list_due_today(
 @router.get("/pending-review", response_model=list[PendingReviewOut])
 async def list_pending_review(
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> list[PendingReviewOut]:
     """Tasks mit needs_review=True laden (auto-erstellte Task-Vorschlaege)."""
     result = await db.execute(
@@ -169,7 +194,7 @@ async def list_pending_review(
 async def get_task(
     task_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> TaskOut:
     result = await db.execute(
         select(Task)
@@ -179,6 +204,8 @@ async def get_task(
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    if not await check_project_access(task.project_id, user, db):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
     return task
 
 
@@ -187,7 +214,7 @@ async def update_task(
     task_id: uuid.UUID,
     body: TaskUpdate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> TaskOut:
     result = await db.execute(
         select(Task)
@@ -198,11 +225,26 @@ async def update_task(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    if not await check_project_access(task.project_id, user, db):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
+
     old_assignee = task.assignee
-    for field, value in body.model_dump(exclude_unset=True).items():
+    update_data = body.model_dump(exclude_unset=True)
+
+    if user.role != "owner":
+        for field in MEMBER_RESTRICTED_TASK_FIELDS:
+            update_data.pop(field, None)
+        if update_data.get("assignee") == "agent":
+            raise HTTPException(status_code=403, detail="Agent-Zuweisung ist nicht erlaubt")
+
+    if "title" in update_data:
+        update_data["title"] = _sanitize_text(update_data["title"]) or update_data["title"]
+    if "description" in update_data:
+        update_data["description"] = _sanitize_text(update_data["description"])
+    for field, value in update_data.items():
         setattr(task, field, value)
 
-    if body.assignee == "agent" and old_assignee != "agent":
+    if body.assignee == "agent" and old_assignee != "agent" and user.role == "owner":
         job = AgentJob(task_id=task.id, llm_model=task.llm_override)
         db.add(job)
 
@@ -213,12 +255,14 @@ async def update_task(
 async def delete_task(
     task_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> None:
     result = await db.execute(select(Task).where(Task.id == task_id))
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    if not await check_project_access(task.project_id, user, db):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
     await db.delete(task)
 
 
@@ -227,7 +271,7 @@ async def confirm_review_task(
     task_id: uuid.UUID,
     body: TaskConfirmBody,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> TaskOut:
     """Task-Vorschlag bestätigen (setzt needs_review=False, erlaubt Änderungen)."""
     result = await db.execute(
@@ -267,7 +311,7 @@ async def confirm_review_task(
 async def dismiss_review_task(
     task_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> None:
     """Task-Vorschlag verwerfen (Task löschen)."""
     result = await db.execute(select(Task).where(Task.id == task_id))
@@ -285,7 +329,7 @@ async def dismiss_review_task(
 async def list_checklist(
     task_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> list[ChecklistItemOut]:
     result = await db.execute(
         select(ChecklistItem)
@@ -300,7 +344,7 @@ async def add_checklist_item(
     task_id: uuid.UUID,
     body: ChecklistItemCreate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> ChecklistItemOut:
     if body.position is None:
         max_result = await db.execute(
@@ -324,7 +368,7 @@ async def update_checklist_item(
     item_id: uuid.UUID,
     body: ChecklistItemUpdate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> ChecklistItemOut:
     result = await db.execute(
         select(ChecklistItem)
@@ -344,7 +388,7 @@ async def delete_checklist_item(
     task_id: uuid.UUID,
     item_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> None:
     result = await db.execute(
         select(ChecklistItem)
@@ -360,7 +404,7 @@ async def delete_checklist_item(
 async def get_recurrence_info(
     task_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> dict:
     """Gibt Wiederholungsinformationen zurück: nächstes Auftreten,
     letzte Instanz und menschenlesbarer Cron-Text."""
@@ -461,7 +505,7 @@ class CommentCreate(BaseModel):
 async def list_activity(
     task_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> list[ActivityLogOut]:
     result = await db.execute(
         select(ActivityLog)
@@ -488,7 +532,7 @@ async def add_comment(
     task_id: uuid.UUID,
     body: CommentCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> ActivityLogOut:
     result = await db.execute(select(Task).where(Task.id == task_id))
     task = result.scalar_one_or_none()
@@ -532,7 +576,7 @@ class AttachmentOut(BaseModel):
 async def list_attachments(
     task_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> list[AttachmentOut]:
     result = await db.execute(
         select(Attachment)
@@ -558,16 +602,21 @@ async def upload_attachment(
     task_id: uuid.UUID,
     file: UploadFile,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> AttachmentOut:
     result = await db.execute(select(Task).where(Task.id == task_id))
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    if not await check_project_access(task.project_id, user, db):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
 
     data = await file.read()
     if len(data) > MAX_ATTACHMENT_SIZE:
         raise HTTPException(status_code=400, detail="Datei zu gross (max 10 MB)")
+
+    if not await _scan_with_clamav(data):
+        raise HTTPException(status_code=422, detail="Datei wurde als schädlich erkannt")
 
     task_dir = TASK_UPLOADS_DIR / str(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -601,7 +650,7 @@ async def delete_attachment(
     task_id: uuid.UUID,
     attachment_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> None:
     result = await db.execute(
         select(Attachment)

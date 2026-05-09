@@ -264,7 +264,8 @@ async def replay_single(
     try:
         msg = await client.get_email(body.message_id)
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"E-Mail nicht gefunden: {e}")
+        logger.exception("E-Mail %s konnte nicht geladen werden", body.message_id)
+        raise HTTPException(status_code=404, detail="E-Mail konnte nicht geladen werden")
 
     from_obj = msg.get("from", {}).get("emailAddress", {})
     subject = msg.get("subject", "(kein Betreff)")

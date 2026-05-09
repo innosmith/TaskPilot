@@ -13,6 +13,9 @@ from app.models import User
 
 router = APIRouter(prefix="/api/sse", tags=["sse"])
 
+OWNER_ONLY_EVENTS = {"agent_jobs_changed", "email_triage_changed", "chat_triage_changed"}
+MEMBER_EVENTS = {"tasks_changed"}
+
 
 async def _get_user_from_token(
     token: str | None = Query(None),
@@ -62,11 +65,17 @@ async def _listen_pg(channels: list[str]):
 
 
 @router.get("/events")
-async def event_stream(_user: User = Depends(_get_user_from_token)):
+async def event_stream(user: User = Depends(_get_user_from_token)):
+    is_owner = user.role == "owner"
+    channels = list(OWNER_ONLY_EVENTS | MEMBER_EVENTS) if is_owner else list(MEMBER_EVENTS)
+
     async def generate():
-        async for msg in _listen_pg(["tasks_changed", "agent_jobs_changed", "email_triage_changed", "chat_triage_changed"]):
+        async for msg in _listen_pg(channels):
+            channel = msg["channel"]
+            if not is_owner and channel in OWNER_ONLY_EVENTS:
+                continue
             yield {
-                "event": msg["channel"],
+                "event": channel,
                 "data": msg["data"],
             }
 

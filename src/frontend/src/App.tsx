@@ -74,10 +74,23 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-function PublicRoute({ children }: { children: ReactNode }) {
-  const { isAuthenticated } = useAuth();
-  if (isAuthenticated) return <Navigate to="/cockpit" replace />;
+function OwnerRoute({ children }: { children: ReactNode }) {
+  const { isAuthenticated, isOwner, user } = useAuth();
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (user && !isOwner) return <Navigate to="/projects" replace />;
   return <>{children}</>;
+}
+
+function PublicRoute({ children }: { children: ReactNode }) {
+  const { isAuthenticated, isOwner } = useAuth();
+  if (isAuthenticated) return <Navigate to={isOwner ? '/cockpit' : '/projects'} replace />;
+  return <>{children}</>;
+}
+
+function DefaultRedirect() {
+  const { isAuthenticated, isOwner } = useAuth();
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  return <Navigate to={isOwner ? '/cockpit' : '/projects'} replace />;
 }
 
 export default function App() {
@@ -94,6 +107,7 @@ export default function App() {
             }
           />
 
+          {/* Member-erlaubte Routen (alle authentifizierten User) */}
           <Route
             element={
               <ProtectedRoute>
@@ -101,25 +115,27 @@ export default function App() {
               </ProtectedRoute>
             }
           >
-            <Route path="/cockpit" element={<CockpitPage />} />
-            <Route path="/pipeline" element={<PipelinePage />} />
-            <Route path="/agenten" element={<AgentQueuePage />} />
-            <Route path="/agenten/chat" element={<Suspense fallback={<SuspenseFallback />}><LazyChatPage /></Suspense>} />
-            <Route path="/agenten/chat/:conversationId" element={<Suspense fallback={<SuspenseFallback />}><LazyChatPage /></Suspense>} />
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/projects/:id" element={<ProjectBoardPage />} />
-            <Route path="/inbox" element={<InboxPage />} />
-            <Route path="/signale" element={<SignalePage />} />
-            <Route path="/finanzen" element={<FinancePage />} />
-            <Route path="/debitoren" element={<DebtorsPage />} />
-            <Route path="/kreditoren" element={<CreditorsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+
+            {/* Owner-only Routen */}
+            <Route path="/cockpit" element={<OwnerRoute><CockpitPage /></OwnerRoute>} />
+            <Route path="/pipeline" element={<OwnerRoute><PipelinePage /></OwnerRoute>} />
+            <Route path="/agenten" element={<OwnerRoute><AgentQueuePage /></OwnerRoute>} />
+            <Route path="/agenten/chat" element={<OwnerRoute><Suspense fallback={<SuspenseFallback />}><LazyChatPage /></Suspense></OwnerRoute>} />
+            <Route path="/agenten/chat/:conversationId" element={<OwnerRoute><Suspense fallback={<SuspenseFallback />}><LazyChatPage /></Suspense></OwnerRoute>} />
+            <Route path="/inbox" element={<OwnerRoute><InboxPage /></OwnerRoute>} />
+            <Route path="/signale" element={<OwnerRoute><SignalePage /></OwnerRoute>} />
+            <Route path="/finanzen" element={<OwnerRoute><FinancePage /></OwnerRoute>} />
+            <Route path="/debitoren" element={<OwnerRoute><DebtorsPage /></OwnerRoute>} />
+            <Route path="/kreditoren" element={<OwnerRoute><CreditorsPage /></OwnerRoute>} />
           </Route>
 
-          {/* Redirects fuer alte Routen und Default */}
+          {/* Redirects */}
           <Route path="/agent-queue" element={<Navigate to="/agenten" replace />} />
           <Route path="/memory" element={<Navigate to="/settings?tab=memory" replace />} />
-          <Route path="*" element={<Navigate to="/cockpit" replace />} />
+          <Route path="*" element={<DefaultRedirect />} />
         </Routes>
       </BrowserRouter>
     </ErrorBoundary>

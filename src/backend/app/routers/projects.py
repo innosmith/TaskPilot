@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -7,9 +7,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.deps import get_current_user
+from app.auth.deps import check_project_access, get_current_user, require_role
 from app.database import get_db
-from app.models import BoardColumn, Project, Task, User
+from app.models import BoardColumn, BoardMember, Project, Task, User
 from app.schemas import (
     BoardColumnCreate,
     BoardColumnOut,
@@ -30,11 +30,17 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 async def list_projects(
     include_archived: bool = Query(False),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> list[ProjectWithColumns]:
     q = select(Project).options(selectinload(Project.board_columns))
     if not include_archived:
         q = q.where(Project.status != "archived")
+    if user.role != "owner":
+        q = q.where(
+            Project.id.in_(
+                select(BoardMember.project_id).where(BoardMember.user_id == user.id)
+            )
+        )
     result = await db.execute(q.order_by(Project.priority.desc(), Project.name))
     return result.scalars().all()
 
@@ -43,7 +49,7 @@ async def list_projects(
 async def create_project(
     body: ProjectCreate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> ProjectOut:
     project = Project(**body.model_dump())
     db.add(project)
@@ -62,8 +68,10 @@ async def create_project(
 async def get_project(
     project_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> ProjectWithColumns:
+    if not await check_project_access(project_id, user, db):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
     result = await db.execute(
         select(Project)
         .options(selectinload(Project.board_columns))
@@ -80,7 +88,7 @@ async def update_project(
     project_id: uuid.UUID,
     body: ProjectUpdate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> ProjectOut:
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
@@ -96,7 +104,7 @@ async def update_project(
 async def delete_project(
     project_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> None:
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
@@ -109,8 +117,10 @@ async def delete_project(
 async def get_board(
     project_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(require_role("member")),
 ) -> BoardOut:
+    if not await check_project_access(project_id, user, db):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
     result = await db.execute(
         select(Project)
         .options(selectinload(Project.board_columns))
@@ -168,7 +178,7 @@ async def create_column(
     project_id: uuid.UUID,
     body: BoardColumnCreate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> BoardColumn:
     result = await db.execute(select(Project).where(Project.id == project_id))
     if result.scalar_one_or_none() is None:
@@ -196,7 +206,7 @@ async def update_column(
     col_id: uuid.UUID,
     body: BoardColumnUpdate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> BoardColumn:
     result = await db.execute(
         select(BoardColumn).where(BoardColumn.id == col_id, BoardColumn.project_id == project_id)
@@ -214,7 +224,7 @@ async def delete_column(
     project_id: uuid.UUID,
     col_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> None:
     result = await db.execute(
         select(BoardColumn).where(BoardColumn.id == col_id, BoardColumn.project_id == project_id)
@@ -242,7 +252,7 @@ class ProjectMetrics(BaseModel):
 @router.get("/overview/metrics", response_model=list[ProjectMetrics])
 async def project_metrics(
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> list[ProjectMetrics]:
     projects = (
         await db.execute(
@@ -278,3 +288,67 @@ async def project_metrics(
             )
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Mitglieder-Verwaltung
+# ---------------------------------------------------------------------------
+
+
+class MemberOut(BaseModel):
+    user_id: uuid.UUID
+    email: str
+    display_name: str
+    role: str
+    invited_at: datetime | None = None
+
+
+@router.get("/{project_id}/members", response_model=list[MemberOut])
+async def list_members(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("member")),
+) -> list[MemberOut]:
+    if not await check_project_access(project_id, user, db):
+        raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
+
+    result = await db.execute(
+        select(BoardMember, User)
+        .join(User, BoardMember.user_id == User.id)
+        .where(BoardMember.project_id == project_id)
+        .order_by(User.display_name)
+    )
+    rows = result.all()
+    return [
+        MemberOut(
+            user_id=u.id,
+            email=u.email,
+            display_name=u.display_name,
+            role=bm.role,
+            invited_at=bm.invited_at,
+        )
+        for bm, u in rows
+    ]
+
+
+@router.delete(
+    "/{project_id}/members/{member_user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_member(
+    project_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> None:
+    result = await db.execute(
+        select(BoardMember).where(
+            BoardMember.project_id == project_id,
+            BoardMember.user_id == member_user_id,
+        )
+    )
+    bm = result.scalar_one_or_none()
+    if bm is None:
+        raise HTTPException(status_code=404, detail="Mitglied nicht gefunden")
+
+    await db.delete(bm)

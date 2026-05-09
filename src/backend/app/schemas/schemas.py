@@ -214,11 +214,14 @@ class PipelineOut(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+    mfa_code: str | None = None
 
 
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    requires_mfa: bool = False
+    mfa_token: str | None = None
 
 
 class UserOut(BaseModel):
@@ -228,6 +231,7 @@ class UserOut(BaseModel):
     display_name: str
     role: str
     avatar_url: str | None = None
+    mfa_enabled: bool = False
 
 
 # --- Board Column Management ---

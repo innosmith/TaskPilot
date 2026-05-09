@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
 from app.models import User
 
@@ -73,7 +73,7 @@ def _item_to_drive_item(item: dict) -> DriveItem:
 async def list_files(
     path: str = Query("/", description="OneDrive-Ordnerpfad"),
     top: int = Query(50, ge=1, le=200),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ):
     """Listet Dateien und Ordner in einem OneDrive-Verzeichnis auf."""
     client = _get_graph_client()
@@ -86,15 +86,15 @@ async def list_files(
         drive_items.sort(key=lambda x: (not x.is_folder, x.name.lower()))
         return DriveListResponse(items=drive_items, path=path)
     except Exception as e:
-        logger.error("OneDrive list_files fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("OneDrive list_files fehlgeschlagen")
+        raise HTTPException(status_code=500, detail="OneDrive-Dateien konnten nicht geladen werden")
 
 
 @router.get("/search", response_model=DriveSearchResponse)
 async def search_files(
     q: str = Query(..., min_length=1, description="Suchbegriff"),
     top: int = Query(20, ge=1, le=50),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ):
     """Volltextsuche über OneDrive-Dateien."""
     client = _get_graph_client()
@@ -106,14 +106,14 @@ async def search_files(
         drive_items = [_item_to_drive_item(item) for item in items]
         return DriveSearchResponse(items=drive_items, query=q)
     except Exception as e:
-        logger.error("OneDrive search fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("OneDrive search fehlgeschlagen")
+        raise HTTPException(status_code=500, detail="OneDrive-Suche fehlgeschlagen")
 
 
 @router.get("/metadata")
 async def get_metadata(
     item_id: str = Query(..., description="OneDrive Item-ID"),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ):
     """Metadaten einer OneDrive-Datei lesen."""
     client = _get_graph_client()
@@ -124,5 +124,5 @@ async def get_metadata(
         item = await client.get_drive_item(item_id)
         return _item_to_drive_item(item)
     except Exception as e:
-        logger.error("OneDrive metadata fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("OneDrive metadata fehlgeschlagen")
+        raise HTTPException(status_code=500, detail="OneDrive-Metadaten konnten nicht geladen werden")

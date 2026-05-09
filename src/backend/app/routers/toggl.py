@@ -8,7 +8,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.models import User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "toggl"))
@@ -46,20 +46,20 @@ def _get_toggl_client(user: User) -> TogglClient:
 # ── Verbindungstest ──────────────────────────────────────
 
 @router.get("/test-connection")
-async def test_connection(user: User = Depends(get_current_user)):
+async def test_connection(user: User = Depends(require_role("owner"))):
     try:
         client = _get_toggl_client(user)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Toggl Client-Erstellung fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=400, detail=f"Client-Fehler: {e}")
+        logger.exception("Toggl Client-Erstellung fehlgeschlagen")
+        raise HTTPException(status_code=400, detail="Toggl-Client konnte nicht erstellt werden")
     try:
         result = await client.test_connection()
         return result
     except Exception as e:
-        logger.error("Toggl Verbindungstest fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=f"Verbindung fehlgeschlagen: {e}")
+        logger.exception("Toggl Verbindungstest fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Toggl-Verbindungstest fehlgeschlagen")
 
 
 # ── Workspaces ───────────────────────────────────────────
@@ -70,7 +70,7 @@ class WorkspaceSummary(BaseModel):
 
 
 @router.get("/workspaces", response_model=list[WorkspaceSummary])
-async def list_workspaces(user: User = Depends(get_current_user)):
+async def list_workspaces(user: User = Depends(require_role("owner"))):
     cached = _static_cache.get("workspaces")
     if cached is not None:
         return cached
@@ -90,7 +90,7 @@ class ClientSummary(BaseModel):
 
 
 @router.get("/clients", response_model=list[ClientSummary])
-async def list_clients(user: User = Depends(get_current_user)):
+async def list_clients(user: User = Depends(require_role("owner"))):
     cached = _static_cache.get("clients")
     if cached is not None:
         return cached
@@ -116,7 +116,7 @@ class ProjectSummary(BaseModel):
 @router.get("/projects", response_model=list[ProjectSummary])
 async def list_projects(
     active: bool = True,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"projects:{active}"
     cached = _project_cache.get(cache_key)
@@ -141,7 +141,7 @@ async def list_projects(
 @router.get("/projects/{project_id}")
 async def get_project_with_rate(
     project_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"project:{project_id}"
     cached = _project_cache.get(cache_key)
@@ -159,7 +159,7 @@ async def get_project_with_rate(
 async def get_projects_summary(
     start_date: str = Query(...),
     end_date: str = Query(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"proj_summary:{start_date}:{end_date}"
     cached = _summary_cache.get(cache_key)
@@ -176,7 +176,7 @@ async def get_summary_by_project(
     start_date: str = Query(...),
     end_date: str = Query(...),
     billable: bool = Query(default=True),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     cache_key = f"summary_proj:{start_date}:{end_date}:{billable}"
     cached = _summary_cache.get(cache_key)
@@ -193,7 +193,7 @@ async def get_summary_by_project(
 @router.get("/search")
 async def search_toggl(
     q: str = Query(min_length=1),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_toggl_client(user)
     clients = await client.search_clients(q)
@@ -207,7 +207,7 @@ async def search_toggl(
 # ── Cache-Verwaltung ─────────────────────────────────────
 
 @router.post("/cache/clear")
-async def clear_cache(user: User = Depends(get_current_user)):
+async def clear_cache(user: User = Depends(require_role("owner"))):
     _project_cache.clear()
     _summary_cache.clear()
     _entry_cache.clear()
@@ -217,7 +217,7 @@ async def clear_cache(user: User = Depends(get_current_user)):
 
 
 @router.get("/cache/stats")
-async def cache_stats(user: User = Depends(get_current_user)):
+async def cache_stats(user: User = Depends(require_role("owner"))):
     return {
         "project_cache": {"size": len(_project_cache), "maxsize": _project_cache.maxsize, "ttl": _project_cache.ttl},
         "summary_cache": {"size": len(_summary_cache), "maxsize": _summary_cache.maxsize, "ttl": _summary_cache.ttl},

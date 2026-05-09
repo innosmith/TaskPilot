@@ -79,6 +79,34 @@ Endpoint: `GET /api/sse/events`
 | `agent_jobs_changed` | Agent-Job-Status geändert |
 | `email_triage_changed` | Neue Triage-Ergebnisse |
 
+## Rollen-Modell (Security)
+
+| Rolle | Wer | MFA | Token-TTL | Zugriff |
+|-------|-----|-----|-----------|---------|
+| `owner` | Anthony | TOTP | 1h Access + 24h Refresh | Alles (Cockpit ist Owner-Heiligtum) |
+| `member` | Kunde | Nein (Cloudflare ZT) | 1h Access + 4h Refresh | NUR zugewiesene Projekte via `board_members` |
+
+**Whitelist-RBAC:** Default = Owner-only. Nur 5 Endpoint-Gruppen fuer Member:
+- `GET/POST/PATCH /api/tasks` (projektbezogen, ohne Agent-Felder)
+- `GET /api/projects/{id}` + `/board` (nur via board_members)
+- `GET/POST /api/uploads` (mit ClamAV-Scan)
+- `GET /api/tags` (read-only)
+- `GET/PATCH /api/auth/me` (eigenes Profil)
+
+**Member-Restriktionen im Task-Detail:** Kein `autonomy_level`, `llm_override`, `data_class`, `pipeline_column_id`, `email_message_id`, `calendar_event_id`. Kein `assignee='agent'`.
+
+## Security-Stack
+
+- **Auth:** JWT (HS256) + bcrypt, MFA (TOTP via pyotp) fuer Owner
+- **Token:** Access 1h, Refresh 24h/4h als HttpOnly-Cookie
+- **Rate-Limiting:** slowapi (200/min global), Login (10/5min)
+- **Input-Sanitization:** bleach (Tasks), Pydantic-Schemas
+- **Upload-Scan:** ClamAV via aioclamd (`clamav/clamav-debian:unstable`, ARM64-kompatibel)
+- **Security-Headers:** X-Frame-Options, HSTS, CSP, Referrer-Policy
+- **Docker:** Non-root User, kein docker.sock in Prod, no-new-privileges
+- **Audit-Log:** `audit_log`-Tabelle fuer sicherheitsrelevante Aktionen
+- **DB-Migrationen:** Alembic (autogenerate + manuelle Bereinigung)
+
 ## Env-Variablen
 - Backend: `TP_`-Prefix (via Pydantic `env_prefix`), geladen aus `.env.dev`
 - MCP-Server/GraphClient: ohne Prefix (`GRAPH_TENANT_ID`, `TP_DB_HOST` etc.)

@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.database import get_db
 from app.models import User
 
@@ -49,7 +49,7 @@ SETTINGS_FIELDS = [
 
 @router.get("", response_model=UserSettings)
 async def get_settings(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ) -> UserSettings:
     s = user.settings or {}
     return UserSettings(**{f: s.get(f) for f in SETTINGS_FIELDS})
@@ -58,7 +58,7 @@ async def get_settings(
 @router.patch("", response_model=UserSettings)
 async def update_settings(
     body: UserSettings,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ) -> UserSettings:
     current = dict(user.settings or {})
@@ -87,7 +87,7 @@ TRIAGE_FIELDS = ["triage_prompt", "triage_interval_seconds", "triage_enabled", "
 
 @router.get("/triage", response_model=TriageSettings)
 async def get_triage_settings(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ) -> TriageSettings:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
@@ -98,7 +98,7 @@ async def get_triage_settings(
 @router.put("/triage", response_model=TriageSettings)
 async def update_triage_settings(
     body: TriageSettings,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ) -> TriageSettings:
     if user.role != "owner":
@@ -136,7 +136,7 @@ def _mask_token(token: str) -> str:
 
 @router.get("/integrations", response_model=IntegrationSettings)
 async def get_integration_settings(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ) -> IntegrationSettings:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
@@ -153,7 +153,7 @@ async def get_integration_settings(
 @router.put("/integrations", response_model=IntegrationSettings)
 async def update_integration_settings(
     body: IntegrationSettings,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ) -> IntegrationSettings:
     if user.role != "owner":
@@ -199,7 +199,7 @@ LLM_FIELDS = ["llm_providers", "llm_default_model", "llm_default_local_model", "
 
 @router.get("/llm", response_model=LlmSettingsPayload)
 async def get_llm_settings(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ) -> LlmSettingsPayload:
     s = user.settings or {}
     raw_providers = s.get("llm_providers")
@@ -220,7 +220,7 @@ async def get_llm_settings(
 @router.put("/llm", response_model=LlmSettingsPayload)
 async def update_llm_settings(
     body: LlmSettingsPayload,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ) -> LlmSettingsPayload:
     current = dict(user.settings or {})
@@ -273,7 +273,7 @@ class ApiKeyStatus(BaseModel):
 
 @router.get("/extension-api-key", response_model=ApiKeyStatus)
 async def get_api_key_status(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ) -> ApiKeyStatus:
     """Pruefen ob ein Extension-API-Key existiert."""
     if user.role != "owner":
@@ -288,7 +288,7 @@ async def get_api_key_status(
 
 @router.post("/extension-api-key", response_model=ApiKeyResponse)
 async def generate_api_key(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ) -> ApiKeyResponse:
     """Neuen Extension-API-Key generieren (invalidiert vorherigen)."""
@@ -313,7 +313,7 @@ async def generate_api_key(
 
 @router.delete("/extension-api-key")
 async def revoke_api_key(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Extension-API-Key widerrufen."""

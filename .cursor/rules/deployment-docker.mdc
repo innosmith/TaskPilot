@@ -13,23 +13,24 @@ alwaysApply: false
 | `src/frontend/package.json` | Alle Node-Dependencies |
 | `docker/Dockerfile.backend` | Backend-Image (Python 3.12-slim + System-Deps) |
 | `docker/Dockerfile.frontend` | Frontend-Image (Node 20 → Nginx) |
-| `docker/docker-compose.dev.yml` | Dev: nur PostgreSQL + LiteLLM |
-| `docker/docker-compose.prod.yml` | Prod: PostgreSQL + Backend + Frontend |
+| `docker/docker-compose.yml` | Shared Infra: Postgres + LiteLLM + ClamAV (Dev/Int) |
+| `docker/docker-compose.integration.yml` | Integration: Backend + Frontend (Images) |
+| `docker/docker-compose.prod.yml` | Prod: Standalone (eigene DB + ClamAV) |
 
-## Neue Dependencies hinzufügen
+## Neue Dependencies hinzufuegen
 
 1. **Python-Package:** In `requirements.txt` eintragen UND im venv installieren
-2. **System-Package (apt):** In `Dockerfile.backend` im `RUN apt-get` Block ergänzen
+2. **System-Package (apt):** In `Dockerfile.backend` im `RUN apt-get` Block ergaenzen
 3. **npm-Package:** `cd src/frontend && npm install <package>`
-4. **Pandoc:** Kommt via `pypandoc_binary` (Python-Package), nicht via apt. Symlink in venv nötig.
+4. **Pandoc:** Kommt via `pypandoc_binary` (Python-Package), nicht via apt. Symlink in venv noetig.
 
 ## Private Packages (mdconverter, md2powerpoint)
 
-Diese Repos sind privat und dürfen nicht in öffentliche Images/Registries:
+Diese Repos sind privat und duerfen nicht in oeffentliche Images/Registries:
 
 - Lokal installieren: `pip install -e /home/innosmith/dev/github/mdConverter`
 - Docker-Build: `docker/build.sh` kopiert sie nach `src/backend/vendor/` (ohne `.git`)
-- `vendor/` ist in `.gitignore` — nie committen
+- `vendor/` ist in `.gitignore` -- nie committen
 
 ```bash
 # Build vorbereiten + Image bauen
@@ -43,10 +44,80 @@ docker compose -f docker/docker-compose.prod.yml build
 |---------|-------|
 | `libpq-dev` + `gcc` | PostgreSQL-Client (asyncpg/psycopg) |
 | `libreoffice-writer` | DOCX→PDF-Konvertierung |
-| `fonts-liberation` | Standard-Fonts für LibreOffice |
+| `fonts-liberation` | Standard-Fonts fuer LibreOffice |
+
+## Security-Dependencies (Python)
+
+| Package | Zweck |
+|---------|-------|
+| `pyotp` | TOTP/MFA fuer Owner-Authentifizierung |
+| `slowapi` | Rate-Limiting (Starlette-Middleware) |
+| `bleach` | HTML-Sanitization (Task-Titel/Beschreibungen) |
+| `aioclamd` | Async ClamAV-Client fuer Upload-Virenscans |
+
+## Security-Dependencies (Frontend)
+
+| Package | Zweck |
+|---------|-------|
+| `qrcode.react` | QR-Code-Anzeige fuer MFA-Setup |
+
+## Docker-Container
+
+| Container | Image | Zweck | Port |
+|-----------|-------|-------|------|
+| `taskpilot-clamav-dev` | `clamav/clamav-debian:unstable` | Dev/Int Virenscanner | 127.0.0.1:3310 |
+| `taskpilot-clamav` | `clamav/clamav-debian:unstable` | Prod Virenscanner | intern |
+
+**Wichtig:** Das offizielle `clamav/clamav` Image unterstuetzt kein ARM64 (aarch64).
+Stattdessen `clamav/clamav-debian:unstable` verwenden (Multi-Arch: amd64 + arm64).
+
+## ClamAV starten (Dev)
+
+```bash
+# ClamAV laeuft hinter einem Docker-Profile, muss explizit gestartet werden:
+docker compose -f docker/docker-compose.yml --profile clamav up -d clamav
+
+# Freshclam aktualisiert Signaturen automatisch alle 2h.
+# Erster Start dauert ~2 Min (Signatur-Download).
+```
+
+## Docker-Sicherheit (Produktion)
+- Backend laeuft als Non-root User (`taskpilot`)
+- Kein docker.sock-Mount in Prod/Int
+- `no-new-privileges` Security-Option auf Backend
+- ClamAV im internen Netzwerk (nicht extern erreichbar in Prod)
+
+## DB-Migrationen (Alembic)
+
+Schema-Aenderungen werden via **Alembic** verwaltet (nicht manuelles SQL):
+
+```bash
+cd src/backend
+source ../../.venv/bin/activate
+
+# Neue Migration generieren (nach Model-Aenderungen):
+PYTHONPATH=. alembic revision --autogenerate -m "beschreibung"
+
+# WICHTIG: Autogenerate-Output pruefen und bereinigen!
+# Alembic erkennt oft falsche Diffs (NOT NULL, Index-Drops) bei bestehenden DBs.
+# Nur gewollte Aenderungen behalten, Rest loeschen.
+
+# Migration auf Dev-DB ausfuehren:
+PYTHONPATH=. alembic upgrade head
+
+# Status pruefen:
+PYTHONPATH=. alembic current
+
+# Int/Prod: Migration laeuft im Container-Startup oder manuell:
+# docker exec taskpilot-backend-int alembic upgrade head
+```
+
+Konfiguration: `src/backend/alembic.ini` + `src/backend/migrations/env.py`
+Migrations-Dateien: `src/backend/migrations/versions/`
 
 ## Wichtig
 
-- **Keine `sudo apt install` als Lösung** — alles muss über requirements.txt oder Dockerfile reproduzierbar sein
+- **Keine `sudo apt install` als Loesung** -- alles muss ueber requirements.txt oder Dockerfile reproduzierbar sein
 - Bei neuen System-Dependencies immer requirements.txt + Dockerfile gleichzeitig aktualisieren
-- Vor Merge prüfen: `pip install -r requirements.txt` in frischem venv muss funktionieren
+- Vor Merge pruefen: `pip install -r requirements.txt` in frischem venv muss funktionieren
+- Schema-Aenderungen immer als Alembic-Migration, nie manuell in der DB

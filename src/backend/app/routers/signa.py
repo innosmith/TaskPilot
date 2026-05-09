@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.models import User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "signa"))
@@ -61,15 +61,15 @@ def _get_signa_client() -> SignaClient:
 # ── Test ──────────────────────────────────────────────
 
 @router.get("/test-connection")
-async def test_connection(user: User = Depends(get_current_user)):
+async def test_connection(user: User = Depends(require_role("owner"))):
     try:
         client = _get_signa_client()
         return await client.test_connection()
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("SIGNA Verbindungstest fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=f"Verbindung fehlgeschlagen: {e}")
+        logger.exception("SIGNA Verbindungstest fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="SIGNA-Verbindungstest fehlgeschlagen")
 
 
 # ── Signals ───────────────────────────────────────────
@@ -110,7 +110,7 @@ async def list_signals(
     since: str | None = None,
     status: str | None = Query(default="relevant"),
     search: str | None = None,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     resolved_since = _resolve_since(since)
     client = _get_signa_client()
@@ -130,7 +130,7 @@ async def list_signals(
 
 
 @router.get("/signals/{signal_id}")
-async def get_signal(signal_id: int, user: User = Depends(get_current_user)):
+async def get_signal(signal_id: int, user: User = Depends(require_role("owner"))):
     client = _get_signa_client()
     signal = await client.get_signal(signal_id)
     if not signal:
@@ -146,7 +146,7 @@ async def get_signal(signal_id: int, user: User = Depends(get_current_user)):
 @router.get("/briefings")
 async def list_briefings(
     limit: int = Query(default=20, le=100),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_signa_client()
     raw = await client.list_briefings(limit)
@@ -154,7 +154,7 @@ async def list_briefings(
 
 
 @router.get("/briefings/{briefing_id}")
-async def get_briefing(briefing_id: int, user: User = Depends(get_current_user)):
+async def get_briefing(briefing_id: int, user: User = Depends(require_role("owner"))):
     client = _get_signa_client()
     b = await client.get_briefing(briefing_id)
     if not b:
@@ -171,7 +171,7 @@ async def get_briefing(briefing_id: int, user: User = Depends(get_current_user))
 async def list_deep_dives(
     persona: str | None = None,
     limit: int = Query(default=20, le=100),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_signa_client()
     raw = await client.list_deep_dives(persona=persona, limit=limit)
@@ -179,7 +179,7 @@ async def list_deep_dives(
 
 
 @router.get("/deep-dives/{dd_id}")
-async def get_deep_dive(dd_id: int, user: User = Depends(get_current_user)):
+async def get_deep_dive(dd_id: int, user: User = Depends(require_role("owner"))):
     client = _get_signa_client()
     dd = await client.get_deep_dive(dd_id)
     if not dd:
@@ -193,14 +193,14 @@ async def get_deep_dive(dd_id: int, user: User = Depends(get_current_user)):
 # ── Stammdaten ───────────────────────────────────────
 
 @router.get("/personas")
-async def list_personas(user: User = Depends(get_current_user)):
+async def list_personas(user: User = Depends(require_role("owner"))):
     client = _get_signa_client()
     raw = await client.list_personas()
     return [_serialize(p) for p in raw]
 
 
 @router.get("/topics")
-async def list_topics(user: User = Depends(get_current_user)):
+async def list_topics(user: User = Depends(require_role("owner"))):
     client = _get_signa_client()
     raw = await client.list_topics()
     return [_serialize(t) for t in raw]
@@ -209,7 +209,7 @@ async def list_topics(user: User = Depends(get_current_user)):
 # ── Stats ────────────────────────────────────────────
 
 @router.get("/stats")
-async def get_stats(user: User = Depends(get_current_user)):
+async def get_stats(user: User = Depends(require_role("owner"))):
     client = _get_signa_client()
     raw = await client.get_stats()
     return _serialize(raw)

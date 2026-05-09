@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.database import get_db
 from app.models import Tag, Task, TaskTag, User
 from app.schemas import TagOut
@@ -26,7 +26,7 @@ class TagUpdateBody(BaseModel):
 @router.get("", response_model=list[TagOut])
 async def list_tags(
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> list[TagOut]:
     result = await db.execute(select(Tag).order_by(Tag.name))
     return result.scalars().all()
@@ -36,7 +36,7 @@ async def list_tags(
 async def create_tag(
     body: TagCreateBody,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> TagOut:
     existing = await db.execute(select(Tag).where(Tag.name == body.name))
     if existing.scalar_one_or_none():
@@ -52,7 +52,7 @@ async def update_tag(
     tag_id: uuid.UUID,
     body: TagUpdateBody,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> TagOut:
     result = await db.execute(select(Tag).where(Tag.id == tag_id))
     tag = result.scalar_one_or_none()
@@ -67,7 +67,7 @@ async def update_tag(
 async def delete_tag(
     tag_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("owner")),
 ) -> None:
     result = await db.execute(select(Tag).where(Tag.id == tag_id))
     if result.scalar_one_or_none() is None:
@@ -80,7 +80,7 @@ async def add_tag_to_task(
     task_id: uuid.UUID,
     tag_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> None:
     if (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -99,7 +99,7 @@ async def remove_tag_from_task(
     task_id: uuid.UUID,
     tag_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_role("member")),
 ) -> None:
     await db.execute(
         delete(TaskTag).where(TaskTag.task_id == task_id, TaskTag.tag_id == tag_id)

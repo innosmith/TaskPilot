@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
 from app.models import User
 from app.services.invoiceinsight_client import InvoiceInsightClient
@@ -78,7 +78,7 @@ async def get_dashboard(
     year_from: int | None = Query(default=None),
     year_to: int | None = Query(default=None),
     categories: str | None = Query(default=None, description="Kommaseparierte Kategorien"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Aggregierte Dashboard-Sicht: KPIs + Kostenverteilung + Metadata."""
     client = _get_client(user)
@@ -97,7 +97,7 @@ async def search_invoices(
     year: int | None = Query(default=None),
     category: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     args: dict[str, Any] = {"query": query, "limit": limit}
@@ -117,7 +117,7 @@ async def get_filtered_invoices(
     min_amount: float | None = Query(default=None),
     max_amount: float | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     args: dict[str, Any] = {"limit": limit}
@@ -139,7 +139,7 @@ async def get_filtered_invoices(
 @router.get("/invoice/{invoice_id}")
 async def get_invoice_detail(
     invoice_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     return await client.call_tool("get_invoice_details", {"invoice_id": invoice_id})
@@ -149,7 +149,7 @@ async def get_invoice_detail(
 async def get_top_vendors(
     top_n: int = Query(default=15, ge=1, le=50),
     year: int | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     args: dict[str, Any] = {"top_n": top_n}
@@ -161,7 +161,7 @@ async def get_top_vendors(
 @router.get("/vendor/{vendor_name}")
 async def get_vendor_detail(
     vendor_name: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     return await client.call_tool("get_vendor_details", {"vendor_name": vendor_name})
@@ -174,7 +174,7 @@ async def get_monthly_trend(
     year_to: int | None = Query(default=None),
     category: str | None = Query(default=None),
     categories: str | None = Query(default=None, description="Kommaseparierte Kategorien (Alias)"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     args: dict[str, Any] = {}
@@ -196,7 +196,7 @@ async def get_category_trend(
     years: int = Query(default=3, ge=1, le=10),
     year_from: int | None = Query(default=None),
     year_to: int | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     args: dict[str, Any] = {"years": years}
@@ -213,7 +213,7 @@ async def get_category_trend(
 async def get_renewal_calendar(
     vendors: str | None = Query(default=None, description="Kommaseparierte Kreditoren"),
     months_ahead: int | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Erneuerungskalender, gruppiert nach Dringlichkeit."""
     client = _get_client(user)
@@ -241,14 +241,14 @@ async def get_renewal_calendar(
 @router.get("/upcoming")
 async def get_upcoming_payments(
     n: int = Query(default=10, ge=1, le=50),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     return await client.call_tool("get_upcoming_payments", {"n": n})
 
 
 @router.get("/cashflow-forecast")
-async def get_cashflow_forecast(user: User = Depends(get_current_user)):
+async def get_cashflow_forecast(user: User = Depends(require_role("owner"))):
     client = _get_client(user)
     return await client.get_cashflow_forecast()
 
@@ -257,7 +257,7 @@ async def get_cashflow_forecast(user: User = Depends(get_current_user)):
 async def get_recurring_vs_onetime(
     year_from: int | None = Query(default=None),
     year_to: int | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Aufschlüsselung in wiederkehrende vs. einmalige Kosten."""
     client = _get_client(user)
@@ -285,7 +285,7 @@ async def get_recurring_vs_onetime(
 async def get_anomalies(
     year_from: int | None = Query(default=None),
     year_to: int | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Anomalien, gruppiert nach Schweregrad."""
     client = _get_client(user)
@@ -307,7 +307,7 @@ async def get_anomalies(
 async def get_yoy_comparison(
     year_from: int | None = Query(default=None),
     year_to: int | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Jahresvergleich der Kosten nach Kategorien."""
     client = _get_client(user)
@@ -341,7 +341,7 @@ async def get_yoy_comparison(
 @router.get("/vat")
 async def get_vat_summary(
     year: int | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     client = _get_client(user)
     args: dict[str, Any] = {}
@@ -351,19 +351,19 @@ async def get_vat_summary(
 
 
 @router.get("/data-quality")
-async def get_data_quality(user: User = Depends(get_current_user)):
+async def get_data_quality(user: User = Depends(require_role("owner"))):
     client = _get_client(user)
     return await client.get_data_quality()
 
 
 @router.get("/vendor-overview")
-async def get_vendor_overview(user: User = Depends(get_current_user)):
+async def get_vendor_overview(user: User = Depends(require_role("owner"))):
     client = _get_client(user)
     return await client.get_vendor_overview()
 
 
 @router.post("/deep-research")
-async def generate_research_prompt(user: User = Depends(get_current_user)):
+async def generate_research_prompt(user: User = Depends(require_role("owner"))):
     client = _get_client(user)
     return await client.call_tool("generate_research_prompt")
 
@@ -371,7 +371,7 @@ async def generate_research_prompt(user: User = Depends(get_current_user)):
 @router.get("/invoice/{invoice_id}/pdf")
 async def get_invoice_pdf(
     invoice_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Proxy fuer PDF-Dateipfade aus InvoiceInsight."""
     client = _get_client(user)
@@ -386,13 +386,14 @@ async def get_invoice_pdf(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Kreditoren-PDF-Pfad konnte nicht geladen werden für Rechnung %s", invoice_id)
+        raise HTTPException(status_code=500, detail="Kreditoren-Rechnungs-PDF konnte nicht geladen werden")
 
 
 @router.get("/invoice/{invoice_id}/pdf/view")
 async def view_invoice_pdf(
     invoice_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("owner")),
 ):
     """Liefert das PDF einer Kreditoren-Rechnung als Binary-Response."""
     client = _get_client(user)
@@ -414,11 +415,12 @@ async def view_invoice_pdf(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Kreditoren-PDF konnte nicht angezeigt werden für Rechnung %s", invoice_id)
+        raise HTTPException(status_code=500, detail="Kreditoren-Rechnungs-PDF konnte nicht angezeigt werden")
 
 
 @router.post("/cache/clear")
-async def clear_cache(user: User = Depends(get_current_user)):
+async def clear_cache(user: User = Depends(require_role("owner"))):
     client = _get_client(user)
     client.invalidate_cache()
     try:

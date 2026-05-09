@@ -5,9 +5,12 @@ import { useAuth } from '../contexts/AuthContext';
 export function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [requiresMfa, setRequiresMfa] = useState(false);
+  const [_mfaToken, setMfaToken] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const { login, isOwner } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: FormEvent) => {
@@ -15,10 +18,26 @@ export function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      await login({ email, password });
-      navigate('/pipeline');
+      const result = await login({
+        email,
+        password,
+        ...(requiresMfa ? { mfa_code: mfaCode } : {}),
+      });
+
+      if (result.requires_mfa) {
+        setRequiresMfa(true);
+        setMfaToken(result.mfa_token || '');
+        setLoading(false);
+        return;
+      }
+
+      navigate(isOwner ? '/cockpit' : '/projects');
     } catch {
-      setError('Anmeldung fehlgeschlagen. Bitte prüfe deine Zugangsdaten.');
+      if (requiresMfa) {
+        setError('Ungültiger MFA-Code. Bitte erneut versuchen.');
+      } else {
+        setError('Anmeldung fehlgeschlagen. Bitte prüfe deine Zugangsdaten.');
+      }
     } finally {
       setLoading(false);
     }
@@ -35,7 +54,7 @@ export function LoginPage() {
             TaskPilot Cockpit
           </h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            Melde dich an, um fortzufahren
+            {requiresMfa ? 'Authentifizierungscode eingeben' : 'Melde dich an, um fortzufahren'}
           </p>
         </div>
 
@@ -49,44 +68,73 @@ export function LoginPage() {
             </div>
           )}
 
-          <div className="space-y-4">
-            <div>
-              <label
-                htmlFor="email"
-                className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                E-Mail
-              </label>
-              <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                autoFocus
-                placeholder="name@beispiel.de"
-                className="w-full rounded-lg border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-900 outline-none transition-colors placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-gray-700 dark:text-white dark:placeholder:text-gray-600 dark:focus:border-indigo-400"
-              />
-            </div>
+          {!requiresMfa ? (
+            <div className="space-y-4">
+              <div>
+                <label
+                  htmlFor="email"
+                  className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  E-Mail
+                </label>
+                <input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  autoFocus
+                  placeholder="name@beispiel.de"
+                  className="w-full rounded-lg border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-900 outline-none transition-colors placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-gray-700 dark:text-white dark:placeholder:text-gray-600 dark:focus:border-indigo-400"
+                />
+              </div>
 
-            <div>
-              <label
-                htmlFor="password"
-                className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                Passwort
-              </label>
-              <input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                placeholder="••••••••"
-                className="w-full rounded-lg border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-900 outline-none transition-colors placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-gray-700 dark:text-white dark:placeholder:text-gray-600 dark:focus:border-indigo-400"
-              />
+              <div>
+                <label
+                  htmlFor="password"
+                  className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  Passwort
+                </label>
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  placeholder="••••••••"
+                  className="w-full rounded-lg border border-gray-300 bg-transparent px-4 py-2.5 text-sm text-gray-900 outline-none transition-colors placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-gray-700 dark:text-white dark:placeholder:text-gray-600 dark:focus:border-indigo-400"
+                />
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-indigo-50 px-4 py-3 text-sm text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">
+                Öffne deine Authenticator-App und gib den 6-stelligen Code ein.
+              </div>
+              <div>
+                <label
+                  htmlFor="mfa-code"
+                  className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  Authentifizierungscode
+                </label>
+                <input
+                  id="mfa-code"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
+                  required
+                  autoFocus
+                  placeholder="000000"
+                  className="w-full rounded-lg border border-gray-300 bg-transparent px-4 py-2.5 text-center text-lg font-mono tracking-[0.5em] text-gray-900 outline-none transition-colors placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-gray-700 dark:text-white dark:placeholder:text-gray-600 dark:focus:border-indigo-400"
+                />
+              </div>
+            </div>
+          )}
 
           <button
             type="submit"
@@ -95,10 +143,27 @@ export function LoginPage() {
           >
             {loading ? (
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+            ) : requiresMfa ? (
+              'Bestätigen'
             ) : (
               'Anmelden'
             )}
           </button>
+
+          {requiresMfa && (
+            <button
+              type="button"
+              onClick={() => {
+                setRequiresMfa(false);
+                setMfaCode('');
+                setMfaToken('');
+                setError('');
+              }}
+              className="mt-3 w-full text-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
+            >
+              Zurück zur Anmeldung
+            </button>
+          )}
         </form>
       </div>
     </div>

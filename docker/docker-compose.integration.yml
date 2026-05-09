@@ -1,8 +1,8 @@
 # Integration Environment: Backend + Frontend (gebaute Images)
-# Nutzt shared Postgres + LiteLLM aus docker-compose.yml
+# Nutzt shared Postgres + LiteLLM + ClamAV aus docker-compose.yml
 #
 # Starten mit:
-#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.integration.yml up -d
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.integration.yml --profile clamav up -d
 #
 # Oder via Makefile: make int
 
@@ -19,11 +19,13 @@ services:
       TP_DB_HOST: postgres
       TP_DB_PORT: "5432"
       TP_LITELLM_BASE_URL: http://litellm:4000
+      TP_CLAMAV_HOST: taskpilot-clamav-dev
     volumes:
       - int-uploads:/app/uploads
       - int-exports:/tmp/taskpilot-exports
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${HOME}/.nanobot/workspace:/root/.nanobot/workspace:ro
+      - ${HOME}/.nanobot/workspace:/home/taskpilot/.nanobot/workspace:ro
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       postgres:
         condition: service_healthy

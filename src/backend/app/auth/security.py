@@ -28,3 +28,24 @@ def decode_access_token(token: str) -> dict | None:
         return jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
     except JWTError:
         return None
+
+
+def create_refresh_token(data: dict, role: str = "owner") -> str:
+    """Erstellt Refresh-Token mit rollenabhaengiger TTL (24h Owner, 4h Member)."""
+    to_encode = data.copy()
+    hours = settings.refresh_token_expire_hours if role == "owner" else 4
+    expire = datetime.now(timezone.utc) + timedelta(hours=hours)
+    to_encode["exp"] = expire
+    to_encode["type"] = "refresh"
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+
+
+def decode_refresh_token(token: str) -> dict | None:
+    """Dekodiert Refresh-Token und prueft, dass type == 'refresh'."""
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        if payload.get("type") != "refresh":
+            return None
+        return payload
+    except JWTError:
+        return None

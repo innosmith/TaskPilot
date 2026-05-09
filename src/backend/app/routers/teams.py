@@ -75,10 +75,11 @@ async def list_chats(
             })
         return result
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Teams list_chats: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf Teams-Chats verweigert")
     except Exception as e:
-        logger.error("list_chats fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("list_chats fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Teams-Chats konnten nicht geladen werden")
 
 
 @router.get("/chats/{chat_id}/messages")
@@ -108,10 +109,11 @@ async def list_chat_messages(
             })
         return result
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Teams list_chat_messages: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf Teams-Nachrichten verweigert")
     except Exception as e:
-        logger.error("list_chat_messages fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("list_chat_messages fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Teams-Nachrichten konnten nicht geladen werden")
 
 
 @router.get("/chats/{chat_id}/members")
@@ -134,8 +136,8 @@ async def list_chat_members(
             for m in members
         ]
     except Exception as e:
-        logger.error("list_chat_members fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("list_chat_members fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Teams-Mitglieder konnten nicht geladen werden")
 
 
 @router.get("/meetings/recent")
@@ -168,10 +170,11 @@ async def list_recent_meetings(
             })
         return result
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        logger.warning("Teams list_recent_meetings: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf Teams-Meetings verweigert")
     except Exception as e:
-        logger.error("list_recent_meetings fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("list_recent_meetings fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Teams-Meetings konnten nicht geladen werden")
 
 
 @router.get("/meetings/{meeting_id}/transcript")
@@ -193,5 +196,5 @@ async def get_meeting_transcript(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("get_meeting_transcript fehlgeschlagen: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.exception("get_meeting_transcript fehlgeschlagen")
+        raise HTTPException(status_code=502, detail="Meeting-Transkript konnte nicht geladen werden")

@@ -5,7 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy import text
 
 from app.config import get_settings
@@ -97,19 +99,41 @@ async def lifespan(app: FastAPI):
     await stop_content_converter()
 
 
+_docs_kwargs: dict = {}
+if not app_settings.debug:
+    _docs_kwargs = {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
 app = FastAPI(
     title=app_settings.app_name,
     version="0.2.0",
     lifespan=lifespan,
+    **_docs_kwargs,
 )
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if not app_settings.debug:
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=app_settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(auth.router)
 app.include_router(projects.router)
@@ -145,7 +169,8 @@ app.include_router(teams.router)
 app.include_router(planner.router)
 app.include_router(web_search.router)
 
-app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+# StaticFiles-Mount fuer /uploads/ entfernt -- stattdessen Auth-geschuetzter Endpoint
+# in uploads.py (GET /api/uploads/{subfolder}/{filename})
 
 
 @app.get("/api/health")
