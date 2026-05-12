@@ -5,7 +5,7 @@ COMPOSE_SHARED = docker compose -f docker/docker-compose.yml
 COMPOSE_INT    = $(COMPOSE_SHARED) -f docker/docker-compose.integration.yml --profile clamav
 COMPOSE_PROD   = docker compose --env-file .env.prod -f docker/docker-compose.prod.yml
 
-.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox
+.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all
 
 help: ## Zeigt diese Hilfe
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -108,6 +108,26 @@ health: ## Health-Checks ausfuehren
 	@echo "=== Ollama ==="
 	@curl -sf http://localhost:11434/api/tags 2>/dev/null | head -c 100 || echo "  nicht erreichbar"
 	@echo ""
+
+# ── Tests ─────────────────────────────────────────────────
+
+test: ## Backend Unit-Tests (pytest, Schicht 1)
+	cd src/backend && ../../.venv/bin/python -m pytest tests/ -v --ignore=tests/e2e
+
+test-smoke: ## Smoke-Tests gegen Integration (Schicht 2)
+	.venv/bin/python -m pytest tests/smoke/ -v
+
+test-contract: ## OpenAPI-Contract-Guard (Frontend vs. Backend)
+	.venv/bin/python -m pytest tests/contract/ -v
+
+test-e2e: ## Playwright E2E-Tests gegen Integration (Schicht 3)
+	cd tests/e2e && ../../.venv/bin/python -m pytest . -v
+
+test-explore: ## AI-Explorations-Audit mit browser-use (Schicht 4)
+	.venv/bin/python tests/ai-audit/run_audit.py
+
+test-all: test test-smoke test-contract ## Alle automatisierten Tests (Schicht 1-2 + Contract)
+	@echo "Alle Tests bestanden."
 
 # ── DB-Migration (Alembic) ──────────────────────────────
 

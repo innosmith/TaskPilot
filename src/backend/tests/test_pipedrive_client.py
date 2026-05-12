@@ -27,7 +27,7 @@ def pd_client():
 
 
 @pytest.fixture
-def base_url():
+def pipedrive_base_url():
     return "https://testcompany.pipedrive.com/api"
 
 
@@ -35,8 +35,8 @@ def base_url():
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_connection_success(pd_client, base_url):
-    respx.get(f"{base_url}/v1/users/me").mock(
+async def test_connection_success(pd_client, pipedrive_base_url):
+    respx.get(f"{pipedrive_base_url}/v1/users/me").mock(
         return_value=httpx.Response(200, json={
             "success": True,
             "data": {
@@ -59,8 +59,8 @@ async def test_connection_success(pd_client, base_url):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_connection_failure(pd_client, base_url):
-    respx.get(f"{base_url}/v1/users/me").mock(
+async def test_connection_failure(pd_client, pipedrive_base_url):
+    respx.get(f"{pipedrive_base_url}/v1/users/me").mock(
         return_value=httpx.Response(401, json={"success": False, "error": "Unauthorized"})
     )
 
@@ -72,8 +72,8 @@ async def test_connection_failure(pd_client, base_url):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_list_deals(pd_client, base_url):
-    respx.get(f"{base_url}/v2/deals").mock(
+async def test_list_deals(pd_client, pipedrive_base_url):
+    respx.get(f"{pipedrive_base_url}/v2/deals").mock(
         return_value=httpx.Response(200, json={
             "success": True,
             "data": [
@@ -92,8 +92,8 @@ async def test_list_deals(pd_client, base_url):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_create_deal(pd_client, base_url):
-    respx.post(f"{base_url}/v2/deals").mock(
+async def test_create_deal(pd_client, pipedrive_base_url):
+    respx.post(f"{pipedrive_base_url}/v2/deals").mock(
         return_value=httpx.Response(201, json={
             "success": True,
             "data": {"id": 42, "title": "Neuer Deal", "status": "open"},
@@ -110,8 +110,8 @@ async def test_create_deal(pd_client, base_url):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_list_persons(pd_client, base_url):
-    respx.get(f"{base_url}/v2/persons").mock(
+async def test_list_persons(pd_client, pipedrive_base_url):
+    respx.get(f"{pipedrive_base_url}/v2/persons").mock(
         return_value=httpx.Response(200, json={
             "success": True,
             "data": [
@@ -130,8 +130,8 @@ async def test_list_persons(pd_client, base_url):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_list_activities(pd_client, base_url):
-    respx.get(f"{base_url}/v2/activities").mock(
+async def test_list_activities(pd_client, pipedrive_base_url):
+    respx.get(f"{pipedrive_base_url}/v2/activities").mock(
         return_value=httpx.Response(200, json={
             "success": True,
             "data": [
@@ -149,8 +149,8 @@ async def test_list_activities(pd_client, base_url):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_mark_activity_done(pd_client, base_url):
-    respx.patch(f"{base_url}/v2/activities/100").mock(
+async def test_mark_activity_done(pd_client, pipedrive_base_url):
+    respx.patch(f"{pipedrive_base_url}/v2/activities/100").mock(
         return_value=httpx.Response(200, json={
             "success": True,
             "data": {"id": 100, "done": True},
@@ -166,9 +166,9 @@ async def test_mark_activity_done(pd_client, base_url):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_rate_limit_retry(pd_client, base_url):
+async def test_rate_limit_retry(pd_client, pipedrive_base_url):
     """429 wird automatisch wiederholt, beim zweiten Mal klappt es."""
-    route = respx.get(f"{base_url}/v2/pipelines")
+    route = respx.get(f"{pipedrive_base_url}/v2/pipelines")
     route.side_effect = [
         httpx.Response(429, json={"error": "Rate limit"}),
         httpx.Response(200, json={"success": True, "data": [{"id": 1, "name": "Sales"}]}),
@@ -185,8 +185,8 @@ async def test_rate_limit_retry(pd_client, base_url):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_search_items(pd_client, base_url):
-    respx.get(f"{base_url}/v2/itemSearch").mock(
+async def test_search_items(pd_client, pipedrive_base_url):
+    respx.get(f"{pipedrive_base_url}/v2/itemSearch").mock(
         return_value=httpx.Response(200, json={
             "success": True,
             "data": {

@@ -1,0 +1,102 @@
+---
+description: Testkonventionen für TaskPilot (Backend, E2E, AI-Audit)
+globs: "**/test_*.py,**/tests/**,**/e2e/**,**/conftest.py"
+alwaysApply: false
+---
+
+# Testing-Konventionen
+
+## 4-Schichten-Modell
+
+| Schicht | Tool | Ausfuehrung | Zweck |
+|---------|------|-------------|-------|
+| 1 | pytest + respx + httpx | `make test` | Backend Unit/Integration (Router-Contracts, Services) |
+| 2 | pytest + httpx | `make test-smoke` | Multi-Container Smoke nach `make int` |
+| 3 | Playwright (Python) | `make test-e2e` | Kunden-kritische UI-Flows |
+| 4 | browser-use + Qwen 3.5 | `make test-explore` | AI-Explorations-Audit (informativ) |
+
+## Credential-Sicherheit — Eiserne Regel
+
+- **pytest-Tests** laden `.env.test` — sie enthaelt **keine externen API-Keys**
+- **Playwright/browser-use** laufen gegen Integration (hat echte Keys), greifen aber nur ueber die UI zu
+- **NIEMALS** Passwoerter, API-Keys oder Tokens hardcoded in Testdateien
+- Credentials kommen aus Umgebungsvariablen oder `.env.test`
+- Fehlende Credentials = sofortiger Testabbruch mit klarer Meldung (`assert`), kein stiller Fallback
+
+```python
+# RICHTIG
+import os
+TEST_PASS = os.environ.get("TP_TEST_PASSWORD")
+assert TEST_PASS, "TP_TEST_PASSWORD muss gesetzt sein"
+
+# FALSCH
+TEST_PASS = "changeme"  # Nie hardcoden!
+```
+
+## Backend-Tests (Schicht 1)
+
+### Verzeichnis
+Tests in `src/backend/tests/`. Ausfuehrung: `make test` oder `cd src/backend && python -m pytest tests/ -v`
+
+### DB-Tests
+- Gegen PostgreSQL (Port 5435, Schema `taskpilot_test`) — kein SQLite
+- Fixture in `conftest.py` erstellt/loescht Test-Schema
+- Tests nutzen `httpx.AsyncClient` mit FastAPI `TestClient` und Dependency-Overrides
+
+### Auth in Tests
+- `get_current_user` wird per Dependency-Override ersetzt
+- Zwei Standard-Fixtures: `owner_user` und `member_user`
+- Kein echter JWT noetig in Unit-Tests
+
+### Externe APIs
+- **Immer** mit `respx` gemockt — kein echter Call gegen Graph, Pipedrive, Bexio, Toggl
+- Einzige Ausnahme: `@pytest.mark.integration` fuer bewusste manuelle Laeufe
+
+### Kein LLM in Tests
+- Prompt-Strings pruefen, nicht LLM-Output
+- LLM-Aufrufe mocken oder ueberspringen
+
+### Wann Tests schreiben
+- Router mit Geschaeftslogik (Auth, RBAC, Member-Restriktionen, Positionen)
+- Services mit nicht-trivialer Logik (Path-Traversal, Cron, Job-Lifecycle)
+- Externe API-Integrationen (immer gemockt)
+- Sicherheitskritische Funktionen
+- **NICHT** fuer reine CRUD-Wrapper, Boilerplate-Endpoints, oder UI-Helper
+
+## Frontend: `data-testid`-Pflicht
+
+Jede neue interaktive Komponente (Button, Form, Dialog, Kanban-Spalte) bekommt ein `data-testid`-Attribut:
+
+```tsx
+// RICHTIG
+<button data-testid="task-create-submit" onClick={handleSubmit}>Erstellen</button>
+<div data-testid="board-column-focus" className="...">
+
+// FALSCH — kein testid bei interaktivem Element
+<button onClick={handleSubmit}>Erstellen</button>
+```
+
+Namenskonvention: `kebab-case`, beschreibend: `{kontext}-{element}-{aktion}`
+Beispiele: `task-detail-dialog`, `agenda-column-this-week`, `login-submit`, `member-invite-button`
+
+## Playwright E2E (Schicht 3)
+
+- Tests in `tests/e2e/`
+- Laufen gegen Integration-Umgebung (Ports 8100/3100)
+- Selektoren bevorzugt via `data-testid` (`page.get_by_test_id(...)`)
+- Login-Credentials aus Umgebungsvariablen (`TP_TEST_EMAIL`, `TP_TEST_PASSWORD`)
+- Neuer kundensichtbarer Flow = neuer Playwright-Test
+
+## browser-use AI-Audit (Schicht 4)
+
+- Tests in `tests/ai-audit/`
+- Nutzt Qwen 3.5 35B (multimodal) via Ollama
+- Ergebnis: Markdown-Report, kein Pass/Fail-Gate
+- Laufzeit: 5-15 Min pro Audit (akzeptabel fuer wochenweises Audit)
+
+## Kein Test-Creep
+
+- Keine 100% Coverage anstreben
+- Keine Frontend-Unit-Tests (Vitest/Jest) — Playwright deckt kritische Flows ab
+- Tests die bei jeder kleinen Aenderung brechen, sind schlecht geschrieben — fixen oder loeschen
+- Kosten vs. Nutzen muss stimmen

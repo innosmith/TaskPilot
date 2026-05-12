@@ -73,5 +73,10 @@ src/backend/vendor/
 *.local.md
 scratch/
 
+# Test-Artefakte
+tests/ai-audit/reports/*.md
+test-results/
+playwright-report/
+
 # Nanobot Runtime (User-spezifisch)
 .nanobot/

@@ -68,11 +68,16 @@ alwaysApply: false
 ### Werkzeuge
 - **pytest** + **pytest-asyncio** für async Tests
 - **respx** für HTTP-Mocking (httpx-kompatibel, ersetzt Graph-API-Calls)
+- **httpx AsyncClient** + **Dependency-Overrides** für Router-Contract-Tests
+- **Playwright** (Python) für E2E-Tests — siehe `testing-konventionen.mdc`
 
 ### Verzeichnis und Ausführung
 ```bash
-cd /home/innosmith/dev/github/TaskPilot/src/backend
-python -m pytest tests/ -v
+make test           # Backend Unit/Integration-Tests (Schicht 1)
+make test-smoke     # Smoke-Tests gegen Integration (Schicht 2)
+make test-contract  # OpenAPI-Contract-Guard
+make test-e2e       # Playwright E2E (Schicht 3)
+make test-explore   # AI-Audit mit browser-use (Schicht 4)
 ```
 
 Tests liegen in `src/backend/tests/`. Aktuell existieren:
@@ -83,24 +88,25 @@ Tests liegen in `src/backend/tests/`. Aktuell existieren:
 | `test_mcp_handlers.py` | MCP-Email-Kontextaufbereitung (HTML→Text, Thread-Limits) |
 | `test_triage_prompt.py` | Nanobot-Prompt (PFLICHT-Aufrufe, Umlaute, Felder) |
 | `test_pipedrive_client.py` | Pipedrive-Client (Search, Deals, Activities) |
+| `test_bexio_client.py` | Bexio-Client (Kontakte, Rechnungen) |
+| `test_toggl_client.py` | Toggl-Client (Workspaces, Projekte, Time Entries) |
+| `test_linkedin_extract.py` | LinkedIn-Profil-Extraktion |
+| `test_auth_router.py` | Auth-Router: /me, Anonymous-Rejection |
+| `test_tasks_router.py` | Task-Router: RBAC, Schema-Validierung |
+| `test_projects_router.py` | Projects-Router: Owner-only, Anonymous |
+| `test_task_helpers.py` | Isolierte Helpers: Assignee-Auflösung, Sanitize, Cron |
 
 ### Prinzipien
-- **Kein Graph-API** in Tests -- alle HTTP-Calls mit `respx` gemockt
-- **Kein LLM** in Tests -- nur Prompt-Strings prüfen, nicht LLM-Output
-- **Kein DB** in Tests -- kein `async_session()`, nur isolierte Funktionen
-- Tests nur für **neuralgische Punkte** (Kontextaufbereitung, Prompt-Qualität, API-Fallbacks)
-- `conftest.py` setzt `sys.path` für Imports aus `src/email-graph/` und `src/mcp-graph/`
+- **Kein Graph-API** in Tests — alle HTTP-Calls mit `respx` gemockt
+- **Kein LLM** in Tests — nur Prompt-Strings prüfen, nicht LLM-Output
+- **DB-Tests** mit `@pytest.mark.db` markieren — werden standardmässig übersprungen
+- **Credentials** nur aus `.env.test` oder Umgebungsvariablen — nie hardcoded
+- `conftest.py` stellt `FakeUser`, `client_as_owner`, `client_as_member`, `client_anonymous` bereit
+- Tests nur für **neuralgische Punkte** (Auth, RBAC, API-Contracts, Sicherheit)
 
 ### Wann Tests schreiben
-- Neue Router mit Geschäftslogik (Markdown-Vorformatierung, Kontext-Auflösung)
+- Router mit Geschäftslogik (Auth, RBAC, Member-Restriktionen)
 - Externe API-Integrationen (Graph, Pipedrive, Bexio) — immer gemockt
-- Sicherheitskritische Funktionen (Path-Traversal-Schutz, Allowlists)
-- **Nicht** für reine CRUD-Endpoints oder UI-Wrapper
-
-### Tests ausführen
-```bash
-cd /home/innosmith/dev/github/TaskPilot/src/backend
-python -m pytest tests/ -v                    # alle Tests
-python -m pytest tests/test_export.py -v      # einzelne Datei
-python -m pytest tests/ -k "graph" -v         # nach Keyword
-```
+- Sicherheitskritische Funktionen (Path-Traversal-Schutz, Allowlists, Sanitize)
+- Isolierte Helper-Funktionen mit nicht-trivialer Logik
+- **Nicht** für reine CRUD-Wrapper, Boilerplate-Endpoints oder UI-Helper
