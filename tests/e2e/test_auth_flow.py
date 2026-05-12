@@ -30,7 +30,7 @@ class TestLoginFlow:
 
     def test_successful_login_redirects(self, owner_page: Page):
         """Erfolgreicher Login leitet zum Cockpit oder zur Hauptseite weiter."""
-        owner_page.goto("/")
+        owner_page.goto("/cockpit")
         owner_page.wait_for_timeout(2000)
         assert "/login" not in owner_page.url
 
@@ -39,12 +39,12 @@ class TestProtectedRoutes:
     """Geschuetzte Seiten erfordern Login."""
 
     @pytest.mark.parametrize("route", [
-        "/",
+        "/cockpit",
         "/pipeline",
         "/projects",
         "/inbox",
         "/agenten",
-        "/einstellungen",
+        "/settings",
     ])
     def test_protected_routes_redirect_to_login(self, anon_page: Page, route: str):
         """Nicht-eingeloggte User werden zu /login weitergeleitet."""
@@ -58,7 +58,7 @@ class TestOwnerNavigation:
 
     def test_owner_sees_sidebar_navigation(self, owner_page: Page):
         """Owner sieht Cockpit, Pipeline, Projekte, Inbox, Agenten, Einstellungen."""
-        owner_page.goto("/")
+        owner_page.goto("/cockpit")
         owner_page.wait_for_timeout(2000)
         sidebar = owner_page.locator("aside").first
         expect(sidebar).to_be_visible(timeout=10000)

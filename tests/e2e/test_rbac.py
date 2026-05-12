@@ -55,12 +55,12 @@ class TestOwnerAccess:
     """Owner hat Zugriff auf alle Seiten (nutzt owner_page Fixture mit interaktivem Passwort)."""
 
     @pytest.mark.parametrize("route", [
-        "/",
+        "/cockpit",
         "/pipeline",
         "/projects",
         "/inbox",
         "/agenten",
-        "/einstellungen",
+        "/settings",
     ])
     def test_owner_can_access_all_routes(self, owner_page: Page, route: str):
         """Owner kann jede Route aufrufen ohne Redirect."""
