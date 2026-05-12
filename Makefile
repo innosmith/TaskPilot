@@ -5,7 +5,7 @@ COMPOSE_SHARED = docker compose -f docker/docker-compose.yml
 COMPOSE_INT    = $(COMPOSE_SHARED) -f docker/docker-compose.integration.yml --profile clamav
 COMPOSE_PROD   = docker compose --env-file .env.prod -f docker/docker-compose.prod.yml
 
-.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all schema-int
+.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all schema-int seed-int
 
 help: ## Zeigt diese Hilfe
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -136,6 +136,10 @@ test-all: test test-smoke ## Alle automatisierten Tests (Schicht 1-2 + Contract 
 schema-int: ## Schema direkt auf taskpilot_int anwenden (frische DB)
 	docker exec -i taskpilot-postgres psql -U taskpilot -d taskpilot_int < db/schema.sql
 	@echo "Schema auf taskpilot_int angewendet."
+
+seed-int: ## Seed-Daten in INT-DB einspielen (idempotent, ON CONFLICT DO NOTHING)
+	docker exec -i taskpilot-postgres psql -U taskpilot -d taskpilot_int < db/seed.sql
+	@echo "Seed-Daten in taskpilot_int eingespielt."
 
 migrate-dev: ## Alembic-Migration auf Dev-DB ausfuehren
 	cd src/backend && PYTHONPATH=. ../../.venv/bin/alembic upgrade head

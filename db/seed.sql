@@ -1,4 +1,5 @@
--- TaskPilot Seed-Daten fuer Dev-Umgebung
+-- TaskPilot Seed-Daten (Dev + Integration)
+-- Idempotent: ON CONFLICT DO NOTHING bei allen INSERTs
 
 -- Pipeline-Spalten (Agenda-Zeithorizonte)
 INSERT INTO pipeline_columns (id, name, position, column_type) VALUES
@@ -8,7 +9,8 @@ INSERT INTO pipeline_columns (id, name, position, column_type) VALUES
     ('a0000000-0000-0000-0000-000000000004', 'Waiting for Feedback', 4.0, 'parked'),
     ('a0000000-0000-0000-0000-000000000005', 'This Month',           5.0, 'planned'),
     ('a0000000-0000-0000-0000-000000000006', 'Next Month',           6.0, 'planned'),
-    ('a0000000-0000-0000-0000-000000000007', 'Beyond',               7.0, 'horizon');
+    ('a0000000-0000-0000-0000-000000000007', 'Beyond',               7.0, 'horizon')
+ON CONFLICT DO NOTHING;
 
 -- Tags
 INSERT INTO tags (id, name, color) VALUES
@@ -17,7 +19,8 @@ INSERT INTO tags (id, name, color) VALUES
     ('b0000000-0000-0000-0000-000000000003', 'Quick Win',  '#10B981'),
     ('b0000000-0000-0000-0000-000000000004', 'Research',   '#6366F1'),
     ('b0000000-0000-0000-0000-000000000005', 'Admin',      '#8B5CF6'),
-    ('b0000000-0000-0000-0000-000000000006', 'Kunde',      '#3B82F6');
+    ('b0000000-0000-0000-0000-000000000006', 'Kunde',      '#3B82F6')
+ON CONFLICT DO NOTHING;
 
 -- Projekt 1: TaskPilot Development
 INSERT INTO projects (id, name, color, description, background_url, status) VALUES
@@ -26,13 +29,15 @@ INSERT INTO projects (id, name, color, description, background_url, status) VALU
      '#6366F1',
      'Entwicklung des TaskPilot AI-Agenten-Systems',
      'https://images.unsplash.com/photo-1518770660439-4636190af475?w=1920',
-     'active');
+     'active')
+ON CONFLICT DO NOTHING;
 
 INSERT INTO board_columns (id, project_id, name, color, position, is_archive) VALUES
     ('d0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', 'Backlog',     '#6B7280', 1.0, false),
     ('d0000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000001', 'In Progress', '#3B82F6', 2.0, false),
     ('d0000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000001', 'Review',      '#F59E0B', 3.0, false),
-    ('d0000000-0000-0000-0000-000000000004', 'c0000000-0000-0000-0000-000000000001', 'Done',        '#10B981', 4.0, true);
+    ('d0000000-0000-0000-0000-000000000004', 'c0000000-0000-0000-0000-000000000001', 'Done',        '#10B981', 4.0, true)
+ON CONFLICT DO NOTHING;
 
 -- Projekt 2: Kunde Alpha
 INSERT INTO projects (id, name, color, description, background_url, status) VALUES
@@ -41,13 +46,15 @@ INSERT INTO projects (id, name, color, description, background_url, status) VALU
      '#3B82F6',
      'Strategieberatung und Digitalisierung',
      'https://images.unsplash.com/photo-1497366216548-37526070297c?w=1920',
-     'active');
+     'active')
+ON CONFLICT DO NOTHING;
 
 INSERT INTO board_columns (id, project_id, name, color, position, is_archive) VALUES
     ('d0000000-0000-0000-0000-000000000010', 'c0000000-0000-0000-0000-000000000002', 'Open',         '#6B7280', 1.0, false),
     ('d0000000-0000-0000-0000-000000000011', 'c0000000-0000-0000-0000-000000000002', 'In Arbeit',    '#3B82F6', 2.0, false),
     ('d0000000-0000-0000-0000-000000000012', 'c0000000-0000-0000-0000-000000000002', 'Warten auf FB','#F59E0B', 3.0, false),
-    ('d0000000-0000-0000-0000-000000000013', 'c0000000-0000-0000-0000-000000000002', 'Erledigt',     '#10B981', 4.0, true);
+    ('d0000000-0000-0000-0000-000000000013', 'c0000000-0000-0000-0000-000000000002', 'Erledigt',     '#10B981', 4.0, true)
+ON CONFLICT DO NOTHING;
 
 -- Projekt 3: Admin & Recurring
 INSERT INTO projects (id, name, color, description, status) VALUES
@@ -55,12 +62,14 @@ INSERT INTO projects (id, name, color, description, status) VALUES
      'Admin & Recurring',
      '#8B5CF6',
      'Wiederkehrende administrative Aufgaben',
-     'active');
+     'active')
+ON CONFLICT DO NOTHING;
 
 INSERT INTO board_columns (id, project_id, name, color, position, is_archive) VALUES
     ('d0000000-0000-0000-0000-000000000020', 'c0000000-0000-0000-0000-000000000003', 'Todo',     '#6B7280', 1.0, false),
     ('d0000000-0000-0000-0000-000000000021', 'c0000000-0000-0000-0000-000000000003', 'Doing',    '#3B82F6', 2.0, false),
-    ('d0000000-0000-0000-0000-000000000022', 'c0000000-0000-0000-0000-000000000003', 'Archiv',   '#10B981', 3.0, true);
+    ('d0000000-0000-0000-0000-000000000022', 'c0000000-0000-0000-0000-000000000003', 'Archiv',   '#10B981', 3.0, true)
+ON CONFLICT DO NOTHING;
 
 -- Tasks fuer TaskPilot Development
 INSERT INTO tasks (id, title, description, project_id, board_column_id, board_position, pipeline_column_id, pipeline_position, assignee) VALUES
@@ -83,7 +92,8 @@ INSERT INTO tasks (id, title, description, project_id, board_column_id, board_po
      'PostgreSQL Backup-Cronjob einrichten',
      'Taeglich pg_dump + GPG-Verschluesselung auf separates Volume.',
      'c0000000-0000-0000-0000-000000000001', 'd0000000-0000-0000-0000-000000000001', 2.0,
-     'a0000000-0000-0000-0000-000000000005', 1.0, 'me');
+     'a0000000-0000-0000-0000-000000000005', 1.0, 'me')
+ON CONFLICT DO NOTHING;
 
 -- Tasks fuer Kunde Alpha
 INSERT INTO tasks (id, title, description, project_id, board_column_id, board_position, pipeline_column_id, pipeline_position, assignee) VALUES
@@ -101,7 +111,8 @@ INSERT INTO tasks (id, title, description, project_id, board_column_id, board_po
      'Offerte fuer Phase 2 versenden',
      'Basierend auf Workshop-Ergebnissen Offerte erstellen und an Kunde senden.',
      'c0000000-0000-0000-0000-000000000002', 'd0000000-0000-0000-0000-000000000012', 1.0,
-     'a0000000-0000-0000-0000-000000000004', 1.0, 'me');
+     'a0000000-0000-0000-0000-000000000004', 1.0, 'me')
+ON CONFLICT DO NOTHING;
 
 -- Tasks fuer Admin & Recurring
 INSERT INTO tasks (id, title, description, project_id, board_column_id, board_position, pipeline_column_id, pipeline_position, assignee, recurrence_rule) VALUES
@@ -114,7 +125,8 @@ INSERT INTO tasks (id, title, description, project_id, board_column_id, board_po
      'Monatsabschluss: Rechnungen + Rapporte',
      'Leistungsrapporte generieren, Rechnungen in Bexio erstellen, PDFs exportieren, E-Mails vorbereiten.',
      'c0000000-0000-0000-0000-000000000003', 'd0000000-0000-0000-0000-000000000020', 2.0,
-     'a0000000-0000-0000-0000-000000000006', 1.0, 'me', '0 8 1 * *');
+     'a0000000-0000-0000-0000-000000000006', 1.0, 'me', '0 8 1 * *')
+ON CONFLICT DO NOTHING;
 
 -- Checklisten
 INSERT INTO checklist_items (task_id, text, is_checked, position) VALUES
@@ -126,7 +138,8 @@ INSERT INTO checklist_items (task_id, text, is_checked, position) VALUES
     ('e0000000-0000-0000-0000-000000000021', 'Leistungsrapporte als PDF generieren', false, 2.0),
     ('e0000000-0000-0000-0000-000000000021', 'Rechnungen in Bexio erstellen', false, 3.0),
     ('e0000000-0000-0000-0000-000000000021', 'PDFs exportieren und pruefen', false, 4.0),
-    ('e0000000-0000-0000-0000-000000000021', 'E-Mails mit Rechnungen vorbereiten', false, 5.0);
+    ('e0000000-0000-0000-0000-000000000021', 'E-Mails mit Rechnungen vorbereiten', false, 5.0)
+ON CONFLICT DO NOTHING;
 
 -- Task-Tags
 INSERT INTO task_tags (task_id, tag_id) VALUES
@@ -137,4 +150,5 @@ INSERT INTO task_tags (task_id, tag_id) VALUES
     ('e0000000-0000-0000-0000-000000000012', 'b0000000-0000-0000-0000-000000000006'),
     ('e0000000-0000-0000-0000-000000000012', 'b0000000-0000-0000-0000-000000000002'),
     ('e0000000-0000-0000-0000-000000000020', 'b0000000-0000-0000-0000-000000000005'),
-    ('e0000000-0000-0000-0000-000000000021', 'b0000000-0000-0000-0000-000000000005');
+    ('e0000000-0000-0000-0000-000000000021', 'b0000000-0000-0000-0000-000000000005')
+ON CONFLICT DO NOTHING;

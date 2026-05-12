@@ -9,3 +9,6 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'taskpilot_int')\gexec
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+\i /docker-entrypoint-initdb.d/01-schema.sql
+\i /docker-entrypoint-initdb.d/02-seed.sql

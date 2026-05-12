@@ -16,31 +16,27 @@ class TestTaskCRUD:
         owner_page.goto("/projects")
         owner_page.wait_for_timeout(2000)
 
-        project_link = owner_page.locator("a[href*='/project/']").first
-        if project_link.count() == 0:
+        project_row = owner_page.locator("tr[class*='cursor-pointer']").first
+        if project_row.count() == 0:
             pytest.skip("Kein Projekt vorhanden — Seed-Daten fehlen")
 
-        project_link.click()
+        project_row.click()
         owner_page.wait_for_timeout(2000)
-        assert "/project/" in owner_page.url
+        assert "/projects/" in owner_page.url
 
     def test_task_create_dialog_opens(self, owner_page: Page):
         """Task-Erstellungs-Dialog oeffnet sich."""
         owner_page.goto("/projects")
         owner_page.wait_for_timeout(2000)
 
-        project_link = owner_page.locator("a[href*='/project/']").first
-        if project_link.count() == 0:
+        project_row = owner_page.locator("tr[class*='cursor-pointer']").first
+        if project_row.count() == 0:
             pytest.skip("Kein Projekt vorhanden")
 
-        project_link.click()
+        project_row.click()
         owner_page.wait_for_timeout(2000)
 
-        add_btn = owner_page.locator(
-            "button:has-text('Task'), "
-            "button:has-text('Aufgabe'), "
-            "button:has-text('+')"
-        ).first
+        add_btn = owner_page.locator("button[title='Neue Aufgabe']").first
         if add_btn.count() == 0:
             pytest.skip("Task-Add-Button nicht gefunden — UI-Struktur weicht ab")
 
