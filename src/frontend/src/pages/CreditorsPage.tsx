@@ -188,8 +188,8 @@ function CreditorsPageInner() {
   return (
     <div className="relative flex h-full flex-col" style={hasBg ? bgStyle : undefined}>
       {!hasBg && <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-amber-50/20 dark:from-gray-950 dark:via-gray-900 dark:to-amber-950/10" />}
-      {hasBg && !isGradient && <div className="absolute inset-0 bg-black/25 dark:bg-black/40" />}
-      {isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/25" />}
+      {hasBg && !isGradient && <div className="pointer-events-none absolute inset-0 bg-black/25 dark:bg-black/40" />}
+      {isGradient && <div className="pointer-events-none absolute inset-0 bg-black/10 dark:bg-black/25" />}
 
       <div className="relative z-10 flex h-full flex-col overflow-hidden">
         {/* Header */}

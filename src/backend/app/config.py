@@ -67,6 +67,7 @@ class Settings(BaseSettings):
 
     # LiteLLM Gateway
     litellm_base_url: str = "http://localhost:4000"
+    ollama_base_url: str = "http://localhost:11434"
     triage_model: str = "ollama/qwen3.6:latest"  # Legacy — wird durch llm_default_local_model ersetzt
 
     # Pipedrive CRM

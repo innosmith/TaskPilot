@@ -229,7 +229,9 @@ export function KanbanColumn({
           ) : (
             <h3
               className={`cursor-pointer truncate text-sm font-semibold ${textClasses}`}
-              onDoubleClick={() => {
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
                 if (onRenameColumn) {
                   setEditValue(title);
                   setEditing(true);

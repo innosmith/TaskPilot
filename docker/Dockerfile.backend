@@ -32,6 +32,10 @@ RUN if [ -d /opt/vendor/contentconverter ]; then \
 # Backend-Quellcode
 COPY src/backend/app/ /app/app/
 
+# Alembic (DB-Migrationen muessen im Container ausfuehrbar sein)
+COPY src/backend/alembic.ini /app/
+COPY src/backend/migrations/ /app/migrations/
+
 # MCP-Server
 COPY src/mcp-taskpilot/ /app/mcp-taskpilot/
 COPY src/mcp-graph/ /app/mcp-graph/
@@ -61,11 +65,12 @@ RUN chmod +x /app/entrypoint.sh
 ENV TP_CONTENTCONVERTER_PATH=/opt/vendor/contentconverter
 ENV TP_CONTENTCONVERTER_CCONV_BIN=/usr/local/bin/cconv
 
-RUN useradd -r -m -d /home/taskpilot -s /usr/sbin/nologin taskpilot && \
-    mkdir -p /app/uploads /tmp/taskpilot-exports /home/taskpilot/.nanobot && \
-    chown -R taskpilot:taskpilot /app /tmp/taskpilot-exports /home/taskpilot
+RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
 
-USER taskpilot
+RUN useradd -m -d /home/taskpilot -u 1000 -s /usr/sbin/nologin taskpilot && \
+    mkdir -p /app/uploads/avatars /app/uploads/tasks /app/uploads/backgrounds /app/uploads/projects \
+             /tmp/taskpilot-exports /home/taskpilot/.nanobot && \
+    chown -R taskpilot:taskpilot /app /tmp/taskpilot-exports /home/taskpilot
 
 EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]

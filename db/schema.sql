@@ -84,6 +84,8 @@ CREATE TABLE tasks (
     calendar_duration_minutes INT,
     calendar_preferred_time TEXT,
     needs_review    BOOLEAN DEFAULT false,
+    pipedrive_deal_id   INT,
+    pipedrive_person_id INT,
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now()
 );

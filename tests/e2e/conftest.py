@@ -16,8 +16,9 @@ from playwright.sync_api import Page, BrowserContext
 BASE_URL = os.environ.get("TP_E2E_BASE_URL", "http://localhost:3100")
 BACKEND_URL = os.environ.get("TP_E2E_BACKEND_URL", "http://localhost:8100")
 
-# E-Mail-Adressen koennen als Env-Var oder Default gesetzt werden (nicht sensitiv)
-OWNER_EMAIL = os.environ.get("TP_TEST_EMAIL", "admin@innosmith.ai")
+OWNER_EMAIL = os.environ.get("TP_TEST_EMAIL") or os.environ.get("TP_OWNER_EMAIL", "")
+if not OWNER_EMAIL:
+    raise RuntimeError("TP_TEST_EMAIL oder TP_OWNER_EMAIL muss gesetzt sein")
 MEMBER_EMAIL = os.environ.get("TP_TEST_MEMBER_EMAIL", "")
 
 # Passwoerter: werden INTERAKTIV abgefragt, nie aus Dateien gelesen

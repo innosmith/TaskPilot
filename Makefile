@@ -117,7 +117,7 @@ test: ## Backend Unit-Tests (pytest, Schicht 1)
 test-smoke: ## Smoke-Tests gegen Integration (Schicht 2)
 	.venv/bin/python -m pytest tests/smoke/ -v
 
-test-contract: ## OpenAPI-Contract-Guard (Frontend vs. Backend)
+test-contract: ## OpenAPI-Contract-Guard (gegen laufendes Backend, Default: Dev)
 	.venv/bin/python -m pytest tests/contract/ -v
 
 test-e2e: ## Playwright E2E-Tests gegen Integration (Schicht 3)
@@ -126,7 +126,9 @@ test-e2e: ## Playwright E2E-Tests gegen Integration (Schicht 3)
 test-explore: ## AI-Explorations-Audit mit browser-use (Schicht 4)
 	.venv/bin/python tests/ai-audit/run_audit.py
 
-test-all: test test-smoke test-contract ## Alle automatisierten Tests (Schicht 1-2 + Contract)
+test-all: test test-smoke ## Alle automatisierten Tests (Schicht 1-2 + Contract gegen INT)
+	TP_SMOKE_BACKEND_URL=$${TP_SMOKE_BACKEND_URL:-http://localhost:8100} \
+	.venv/bin/python -m pytest tests/contract/ -v
 	@echo "Alle Tests bestanden."
 
 # ── DB-Schema & Migration ────────────────────────────────

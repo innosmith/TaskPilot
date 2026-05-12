@@ -56,6 +56,9 @@ cd src/backend && python -m pytest tests/ -k "sanitize" -v
 - Health-Checks: Backend (`/api/health`), Frontend (HTTP 200), OpenAPI-Schema
 - Auth-Roundtrip: Login → Token → geschuetzter Endpoint
 - Kritische Endpoints: `/api/projects`, `/api/pipeline`, `/api/tags`, SSE
+- LLM-Gateway: `/api/models/available` (Ollama/LiteLLM erreichbar?)
+- InvoiceInsight: `/api/creditors/dashboard` (MCP-Konnektivitaet)
+- Docker-Integration: Upload-Volumes beschreibbar, Alembic im Image, Nginx body-size, Pipeline-Struktur
 
 **Voraussetzungen:**
 - Integration-Umgebung laeuft (`make int`)
@@ -124,7 +127,7 @@ Beim Start erscheint ein interaktiver Prompt:
   Ziel: http://localhost:3100
 ============================================================
 
-  Owner-Email: admin@innosmith.ai
+  Owner-Email: (aus TP_OWNER_EMAIL)
   Owner-Passwort: ********      ← Eingabe nicht sichtbar
 
   Kein TP_TEST_MEMBER_EMAIL gesetzt — Member-Tests uebersprungen.

@@ -75,7 +75,7 @@ async def _generate_code(
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.2,
-        api_base="http://localhost:11434" if model.startswith("ollama/") else None,
+        api_base=get_settings().ollama_base_url if model.startswith("ollama/") else None,
     )
 
     code = response.choices[0].message.content.strip()
@@ -123,7 +123,7 @@ async def _generate_code_streaming(
             ],
             temperature=0.2,
             stream=True,
-            api_base="http://localhost:11434" if model.startswith("ollama/") else None,
+            api_base=get_settings().ollama_base_url if model.startswith("ollama/") else None,
         ),
         timeout=120,
     )

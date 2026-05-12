@@ -61,7 +61,8 @@ def _get_client(user: User) -> InvoiceInsightClient:
         url = url or cfg.invoiceinsight_url
     if not api_key:
         raise HTTPException(status_code=400, detail="InvoiceInsight API-Key nicht konfiguriert")
-    url = url or "http://127.0.0.1:8055/mcp"
+    if not url:
+        raise HTTPException(status_code=503, detail="InvoiceInsight-URL nicht konfiguriert")
     return InvoiceInsightClient(url=url, api_key=api_key)
 
 

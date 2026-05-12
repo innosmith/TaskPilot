@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -24,6 +25,7 @@ import type {
 } from '../types';
 
 export function PipelinePage() {
+  const navigate = useNavigate();
   const [columns, setColumns] = useState<
     Array<{ id: string; name: string; color: string | null; icon_emoji: string | null; tasks: TaskCardType[] }>
   >([]);
@@ -36,6 +38,7 @@ export function PipelinePage() {
   const [userAvatarUrl, setUserAvatarUrl] = useState<string | null>(null);
   const [showColCount, setShowColCount] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -59,22 +62,24 @@ export function PipelinePage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [pipelineData, projectData, settingsData, userData] = await Promise.all([
+      const [pipelineData, projectData] = await Promise.all([
         api.get<PipelineData>('/api/pipeline'),
         api.get<Project[]>('/api/projects'),
-        api.get<{ agenda_background_url: string | null; show_column_count: boolean | null }>('/api/settings'),
-        api.get<{ avatar_url: string | null }>('/api/auth/me'),
       ]);
       setColumns(pipelineData.columns);
       setProjects(projectData);
-      setAgendaBg(settingsData.agenda_background_url);
-      setShowColCount(settingsData.show_column_count ?? false);
-      setUserAvatarUrl(userData.avatar_url);
     } catch {
-      /* handled by api client */
-    } finally {
-      setLoading(false);
+      /* Pipeline + Projekte sind kritisch -- Fehler wird vom api-Client geloggt */
     }
+
+    api.get<{ agenda_background_url: string | null; show_column_count: boolean | null }>('/api/settings')
+      .then((s) => { setAgendaBg(s.agenda_background_url); setShowColCount(s.show_column_count ?? false); })
+      .catch(() => {});
+    api.get<{ avatar_url: string | null }>('/api/auth/me')
+      .then((u) => setUserAvatarUrl(u.avatar_url))
+      .catch(() => {});
+
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -83,17 +88,28 @@ export function PipelinePage() {
 
   const handleCreateTask = useCallback(
     async (pipelineColumnId: string, title: string) => {
-      if (projects.length === 0) return;
+      if (projects.length === 0) {
+        setCreateError('Erstelle zuerst ein Projekt, bevor du Tasks hinzufügst.');
+        return;
+      }
       const defaultProject = projects[0];
       const firstCol = defaultProject.board_columns?.[0];
-      if (!firstCol) return;
-      await api.post<TaskCardType>('/api/tasks', {
-        title,
-        project_id: defaultProject.id,
-        board_column_id: firstCol.id,
-        pipeline_column_id: pipelineColumnId,
-      } satisfies TaskCreatePayload);
-      fetchData();
+      if (!firstCol) {
+        setCreateError(`Projekt "${defaultProject.name}" hat keine Board-Spalten.`);
+        return;
+      }
+      try {
+        await api.post<TaskCardType>('/api/tasks', {
+          title,
+          project_id: defaultProject.id,
+          board_column_id: firstCol.id,
+          pipeline_column_id: pipelineColumnId,
+        } satisfies TaskCreatePayload);
+        setCreateError(null);
+        fetchData();
+      } catch {
+        setCreateError('Task konnte nicht erstellt werden.');
+      }
     },
     [projects, fetchData],
   );
@@ -236,10 +252,10 @@ export function PipelinePage() {
 
   return (
     <div className="relative flex h-full flex-col" style={bgStyle}>
-      {hasBg && !isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/30" />}
-      {isGradient && <div className="absolute inset-0 bg-black/5 dark:bg-black/20" />}
+      {hasBg && !isGradient && <div className="pointer-events-none absolute inset-0 bg-black/10 dark:bg-black/30" />}
+      {isGradient && <div className="pointer-events-none absolute inset-0 bg-black/5 dark:bg-black/20" />}
 
-      <div className={`relative z-10 border-b px-4 py-4 sm:px-6 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 dark:border-gray-800'}`}>
+      <div className={`relative z-20 border-b px-4 py-4 sm:px-6 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 dark:border-gray-800'}`}>
         <div className="flex items-center justify-between">
           <div>
             <h1 className={`text-xl font-bold ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>
@@ -277,6 +293,34 @@ export function PipelinePage() {
       </div>
 
       <div className="relative z-10 flex-1 overflow-x-auto p-4 sm:p-6">
+        {!loading && projects.length === 0 && (
+          <div className={`relative z-20 mb-4 flex items-center gap-3 rounded-xl border px-4 py-3 ${
+            hasBg
+              ? 'border-white/20 bg-white/10 text-white backdrop-blur-sm'
+              : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-200'
+          }`}>
+            <InfoIcon className="h-5 w-5 shrink-0" />
+            <span className="text-sm">Erstelle zuerst ein Projekt, um Tasks in der Agenda zu planen.</span>
+            <button
+              onClick={() => navigate('/projects')}
+              className="ml-auto shrink-0 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-700"
+            >
+              Projekt erstellen
+            </button>
+          </div>
+        )}
+
+        {createError && (
+          <div className={`relative z-20 mb-4 flex items-center gap-3 rounded-xl border px-4 py-3 ${
+            hasBg
+              ? 'border-red-400/30 bg-red-500/10 text-white backdrop-blur-sm'
+              : 'border-red-200 bg-red-50 text-red-800 dark:border-red-700/50 dark:bg-red-900/20 dark:text-red-200'
+          }`}>
+            <span className="text-sm">{createError}</span>
+            <button onClick={() => setCreateError(null)} className="ml-auto text-sm opacity-60 hover:opacity-100">✕</button>
+          </div>
+        )}
+
         <DndContext
           sensors={sensors}
           collisionDetection={closestCorners}
@@ -303,7 +347,7 @@ export function PipelinePage() {
                   columnColor={col.color}
                   columnIcon={col.icon_emoji}
                   onTaskClick={(task) => setSelectedTaskId(task.id)}
-                  onCreateTask={handleCreateTask}
+                  onCreateTask={projects.length > 0 ? handleCreateTask : undefined}
                   onRenameColumn={async (colId, name) => {
                     await api.patch(`/api/pipeline/columns/${colId}`, { name });
                     fetchData();
@@ -369,6 +413,14 @@ export function PipelinePage() {
         onSelect={(url) => handleBgSelect(url)}
       />
     </div>
+  );
+}
+
+function InfoIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
+    </svg>
   );
 }
 

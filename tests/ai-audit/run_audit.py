@@ -41,7 +41,10 @@ def check_dependencies():
 
 
 BASE_URL = os.environ.get("TP_E2E_BASE_URL", "http://localhost:3100")
-LOGIN_EMAIL = os.environ.get("TP_TEST_EMAIL", "admin@innosmith.ai")
+LOGIN_EMAIL = os.environ.get("TP_TEST_EMAIL") or os.environ.get("TP_OWNER_EMAIL")
+if not LOGIN_EMAIL:
+    print("FEHLER: TP_TEST_EMAIL oder TP_OWNER_EMAIL muss gesetzt sein")
+    sys.exit(1)
 LOGIN_PASSWORD = os.environ.get("TP_TEST_PASSWORD")
 AUDIT_MODEL = os.environ.get("TP_AUDIT_MODEL", "qwen3.5:latest")
 

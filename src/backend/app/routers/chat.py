@@ -434,7 +434,7 @@ async def send_message(
                 messages=messages_for_llm,
                 temperature=temperature if not extra_params.get("thinking") else 1.0,
                 stream=True,
-                api_base="http://localhost:11434" if model.startswith("ollama/") else None,
+                api_base=get_settings().ollama_base_url if model.startswith("ollama/") else None,
                 **extra_params,
             )
 
@@ -876,10 +876,6 @@ async def send_agent_message(
     }
 
 
-OLLAMA_API_BASE = "http://localhost:11434/v1"
-LITELLM_API_BASE = "http://localhost:4000/v1"
-
-
 def _apply_model_routing(bot, selected_model: str) -> None:
     """Setzt Modell und Provider-Endpoint basierend auf User-Wahl.
 
@@ -889,12 +885,13 @@ def _apply_model_routing(bot, selected_model: str) -> None:
     if not selected_model or selected_model == "nanobot":
         return
 
+    s = get_settings()
     if selected_model.startswith("ollama/"):
         bot._loop.model = selected_model.removeprefix("ollama/")
-        bot._loop.provider.api_base = OLLAMA_API_BASE
+        bot._loop.provider.api_base = f"{s.ollama_base_url}/v1"
     else:
         bot._loop.model = selected_model
-        bot._loop.provider.api_base = LITELLM_API_BASE
+        bot._loop.provider.api_base = f"{s.litellm_base_url}/v1"
 
 
 async def _run_agent_background(

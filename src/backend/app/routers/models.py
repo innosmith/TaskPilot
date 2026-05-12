@@ -17,9 +17,6 @@ router = APIRouter(prefix="/api/models", tags=["models"])
 _cache: dict = {"data": None, "expires_at": 0.0}
 _litellm_caps_cache: dict = {"data": None, "expires_at": 0.0}
 CACHE_TTL_SECONDS = 300
-LITELLM_PROXY_BASE = "http://localhost:4000"
-
-OLLAMA_BASE = "http://localhost:11434"
 
 
 KNOWN_PERPLEXITY_MODELS = [
@@ -44,7 +41,7 @@ async def _fetch_litellm_capabilities() -> dict[str, dict]:
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{LITELLM_PROXY_BASE}/v1/model/info")
+            resp = await client.get(f"{get_settings().litellm_base_url}/v1/model/info")
             if resp.status_code == 200:
                 data = resp.json()
                 caps = {}
@@ -109,7 +106,7 @@ async def _fetch_ollama_models(litellm_caps: dict | None = None) -> list[dict]:
     """Alle lokal verfuegbaren Ollama-Modelle abfragen."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+            resp = await client.get(f"{get_settings().ollama_base_url}/api/tags")
             if resp.status_code == 200:
                 data = resp.json()
                 models = []

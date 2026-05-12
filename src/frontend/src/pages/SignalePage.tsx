@@ -336,8 +336,8 @@ export function SignalePage() {
     <SignaleErrorBoundary>
     <div className="relative flex h-full flex-col" style={!hasBg ? undefined : bgStyle}>
       {!hasBg && <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-indigo-50/30 dark:from-gray-950 dark:via-gray-900 dark:to-indigo-950/20" />}
-      {hasBg && !isGradient && <div className="absolute inset-0 bg-black/30 dark:bg-black/45" />}
-      {isGradient && <div className="absolute inset-0 bg-black/10 dark:bg-black/25" />}
+      {hasBg && !isGradient && <div className="pointer-events-none absolute inset-0 bg-black/30 dark:bg-black/45" />}
+      {isGradient && <div className="pointer-events-none absolute inset-0 bg-black/10 dark:bg-black/25" />}
 
       <div className="relative z-10 flex h-full flex-col">
         {/* Header (desktop only) */}

@@ -330,10 +330,10 @@ export function ProjectBoardPage() {
   return (
     <div className="relative flex h-full flex-col" style={bgStyle}>
       {hasBg && !isGradient && (
-        <div className="absolute inset-0 bg-black/10 dark:bg-black/30" />
+        <div className="pointer-events-none absolute inset-0 bg-black/10 dark:bg-black/30" />
       )}
       {isGradient && (
-        <div className="absolute inset-0 bg-black/5 dark:bg-black/20" />
+        <div className="pointer-events-none absolute inset-0 bg-black/5 dark:bg-black/20" />
       )}
 
       <div
@@ -490,13 +490,19 @@ export function ProjectBoardPage() {
                           headers: { Authorization: `Bearer ${token}` },
                           body: form,
                         });
-                        if (!res.ok) return;
+                        if (!res.ok) {
+                          const err = await res.text().catch(() => '');
+                          alert(`Icon-Upload fehlgeschlagen: ${res.status} ${err || res.statusText}`);
+                          return;
+                        }
                         const { url } = await res.json();
                         await api.patch(`/api/projects/${id}`, { icon_url: url, icon_emoji: null });
                         fetchBoard();
                         refreshSidebar();
                         setIconMenuOpen(false);
-                      } catch { /* */ }
+                      } catch (e) {
+                        alert(`Icon-Upload fehlgeschlagen: ${e instanceof Error ? e.message : 'Unbekannter Fehler'}`);
+                      }
                     }}
                   />
                 </div>

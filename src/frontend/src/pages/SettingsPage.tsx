@@ -250,11 +250,17 @@ export function SettingsPage() {
         headers: { Authorization: `Bearer ${localStorage.getItem('taskpilot_token')}` },
         body: form,
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const err = await res.text().catch(() => '');
+        alert(`Avatar-Upload fehlgeschlagen: ${res.status} ${err || res.statusText}`);
+        return;
+      }
       const { url } = await res.json();
       const updated = await api.patch<UserProfile>('/api/auth/me', { avatar_url: url });
       setProfile(updated);
-    } catch { /* */ }
+    } catch (e) {
+      alert(`Avatar-Upload fehlgeschlagen: ${e instanceof Error ? e.message : 'Unbekannter Fehler'}`);
+    }
   };
 
   const changePassword = async () => {
@@ -833,10 +839,16 @@ export function SettingsPage() {
                           headers: { Authorization: `Bearer ${localStorage.getItem('taskpilot_token')}` },
                           body: form,
                         });
-                        if (!res.ok) return;
+                        if (!res.ok) {
+                          const err = await res.text().catch(() => '');
+                          alert(`Upload fehlgeschlagen: ${res.status} ${err || res.statusText}`);
+                          return;
+                        }
                         const { url } = await res.json();
                         await updateSetting('app_logo_url', url);
-                      } catch { /* */ }
+                      } catch (e) {
+                        alert(`Upload fehlgeschlagen: ${e instanceof Error ? e.message : 'Unbekannter Fehler'}`);
+                      }
                     }} />
                     <div className="flex flex-col gap-1">
                       <button

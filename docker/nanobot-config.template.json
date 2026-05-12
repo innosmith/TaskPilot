@@ -1,7 +1,7 @@
 {
   "agents": {
     "defaults": {
-      "workspace": "/root/.nanobot/workspace",
+      "workspace": "/home/taskpilot/.nanobot/workspace",
       "model": "qwen3.5:35b",
       "provider": "ollama",
       "maxTokens": 4096,
@@ -172,7 +172,7 @@
         "command": "python3",
         "args": ["/app/mcp-scripts/server.py"],
         "env": {
-          "TP_SECRETS_DIR": "/root/.secrets/taskpilot",
+          "TP_SECRETS_DIR": "/home/taskpilot/.secrets/taskpilot",
           "TP_SCRIPTS_OUTPUT_DIR": "/tmp/taskpilot-scripts-output",
           "PYTHONPATH": "/app"
         }
