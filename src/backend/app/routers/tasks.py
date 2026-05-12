@@ -50,13 +50,18 @@ def _resolve_assignee_input(assignee: str | None, user: User) -> str | None:
 async def _validate_assignee(
     assignee: str, project_id: uuid.UUID, db: AsyncSession,
 ) -> None:
-    """Stellt sicher, dass ein UUID-Assignee BoardMember des Projekts ist."""
+    """Stellt sicher, dass ein UUID-Assignee BoardMember oder Owner ist."""
     if assignee in ("agent", "me"):
         return
     try:
         uid = uuid.UUID(assignee)
     except ValueError:
         raise HTTPException(status_code=400, detail="Ungültiger Assignee-Wert")
+    owner_result = await db.execute(
+        select(User).where(User.id == uid, User.role == "owner")
+    )
+    if owner_result.scalar_one_or_none() is not None:
+        return
     result = await db.execute(
         select(BoardMember).where(
             BoardMember.project_id == project_id,
@@ -561,6 +566,9 @@ class ActivityLogOut(BaseModel):
 class CommentCreate(BaseModel):
     text: str
 
+class CommentUpdate(BaseModel):
+    text: str
+
 @router.get("/{task_id}/activity", response_model=list[ActivityLogOut])
 async def list_activity(
     task_id: uuid.UUID,
@@ -615,6 +623,73 @@ async def add_comment(
         details=log.details,
         created_at=log.created_at.isoformat(),
     )
+
+
+@router.patch("/{task_id}/activity/{activity_id}", response_model=ActivityLogOut)
+async def update_comment(
+    task_id: uuid.UUID,
+    activity_id: uuid.UUID,
+    body: CommentUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("member")),
+) -> ActivityLogOut:
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(
+        select(ActivityLog).where(
+            ActivityLog.id == activity_id,
+            ActivityLog.task_id == task_id,
+        )
+    )
+    log = result.scalar_one_or_none()
+    if log is None:
+        raise HTTPException(status_code=404, detail="Aktivitätseintrag nicht gefunden")
+    if log.event_type != "comment":
+        raise HTTPException(status_code=400, detail="Nur Kommentare können bearbeitet werden")
+    if user.role != "owner" and log.actor != user.email:
+        raise HTTPException(status_code=403, detail="Nur der Autor oder Owner darf Kommentare bearbeiten")
+
+    sanitized = _sanitize_text(body.text) or body.text
+    log.details = {"text": sanitized}
+    return ActivityLogOut(
+        id=str(log.id),
+        task_id=str(log.task_id),
+        event_type=log.event_type,
+        actor=log.actor,
+        details=log.details,
+        created_at=log.created_at.isoformat(),
+    )
+
+
+@router.delete("/{task_id}/activity/{activity_id}")
+async def delete_comment(
+    task_id: uuid.UUID,
+    activity_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("member")),
+) -> dict:
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(
+        select(ActivityLog).where(
+            ActivityLog.id == activity_id,
+            ActivityLog.task_id == task_id,
+        )
+    )
+    log = result.scalar_one_or_none()
+    if log is None:
+        raise HTTPException(status_code=404, detail="Aktivitätseintrag nicht gefunden")
+    if log.event_type != "comment":
+        raise HTTPException(status_code=400, detail="Nur Kommentare können gelöscht werden")
+    if user.role != "owner" and log.actor != user.email:
+        raise HTTPException(status_code=403, detail="Nur der Autor oder Owner darf Kommentare löschen")
+
+    await db.delete(log)
+    return {"ok": True}
 
 
 # --- Attachments ---

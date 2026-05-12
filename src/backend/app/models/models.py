@@ -104,6 +104,8 @@ class Task(Base):
     is_completed: Mapped[bool] = mapped_column(Boolean, server_default="false")
     is_pinned: Mapped[bool] = mapped_column(Boolean, server_default="false")
     recurrence_rule: Mapped[str | None] = mapped_column(Text)
+    recurrence_end_date: Mapped[datetime | None] = mapped_column(Date)
+    recurrence_max_instances: Mapped[int | None] = mapped_column(Integer)
     template_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id"))
     email_message_id: Mapped[str | None] = mapped_column(Text)
     calendar_event_id: Mapped[str | None] = mapped_column(Text)

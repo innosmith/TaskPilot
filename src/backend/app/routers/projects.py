@@ -138,6 +138,8 @@ async def get_board(
     all_users = (await db.execute(select(User))).scalars().all()
     for u in all_users:
         user_cache[str(u.id)] = AssigneeUser(id=u.id, display_name=u.display_name, avatar_url=u.avatar_url)
+        if u.role == "owner":
+            user_cache["me"] = user_cache[str(u.id)]
 
     columns_out = []
     for col in sorted(project.board_columns, key=lambda c: c.position):

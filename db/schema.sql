@@ -78,6 +78,8 @@ CREATE TABLE tasks (
     is_completed    BOOLEAN DEFAULT false,
     is_pinned       BOOLEAN DEFAULT false,
     recurrence_rule TEXT,
+    recurrence_end_date DATE,
+    recurrence_max_instances INT,
     template_id     UUID REFERENCES tasks(id),
     email_message_id TEXT,
     calendar_event_id TEXT,

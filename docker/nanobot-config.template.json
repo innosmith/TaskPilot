@@ -12,7 +12,7 @@
       "maxToolResultChars": 16000,
       "providerRetryMode": "standard",
       "reasoningEffort": null,
-      "timezone": "UTC",
+      "timezone": "Europe/Zurich",
       "unifiedSession": false,
       "disabledSkills": [],
       "idleCompactAfterMinutes": 0,

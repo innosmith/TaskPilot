@@ -531,7 +531,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     "location": (ev.get("location") or {}).get("displayName"),
                     "bodyPreview": ev.get("bodyPreview", "")[:200],
                 })
-            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+            output = {
+                "timezone": "Europe/Zurich",
+                "events": result,
+            }
+            return [TextContent(type="text", text=json.dumps(output, indent=2, ensure_ascii=False))]
 
         elif name == "get_calendar_event":
             ev = await client.get_event(arguments["event_id"])
@@ -552,6 +556,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "subject": ev.get("subject"),
                 "start": ev.get("start", {}).get("dateTime"),
                 "end": ev.get("end", {}).get("dateTime"),
+                "timezone": "Europe/Zurich",
                 "status": "event_created",
             }, indent=2, ensure_ascii=False))]
 

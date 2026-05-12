@@ -20,6 +20,7 @@
     "@tiptap/react": "^3.22.5",
     "@tiptap/starter-kit": "^3.22.5",
     "lucide-react": "^1.11.0",
+    "marked": "^18.0.3",
     "mermaid": "^11.14.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.5",

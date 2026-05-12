@@ -27,6 +27,7 @@ services:
       - int-uploads:/app/uploads
       - int-exports:/tmp/taskpilot-exports
       - ${HOME}/.nanobot/workspace:/home/taskpilot/.nanobot/workspace
+      - ${HOME}/OneDrive/Finanzen/Kreditoren:${HOME}/OneDrive/Finanzen/Kreditoren:ro
     # no-new-privileges deaktiviert: Kernel 6.17-nvidia blockt jede exec mit diesem Flag
     # Security durch non-root User (taskpilot) + Cloudflare Zero Trust gewährleistet
     depends_on:

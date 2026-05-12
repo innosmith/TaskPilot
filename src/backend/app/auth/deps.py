@@ -136,5 +136,6 @@ MEMBER_RESTRICTED_TASK_FIELDS = {
     "autonomy_level", "llm_override", "data_class",
     "email_message_id", "calendar_event_id",
     "calendar_duration_minutes", "calendar_preferred_time",
+    "recurrence_end_date", "recurrence_max_instances",
     "pipeline_column_id", "pipeline_position",
 }

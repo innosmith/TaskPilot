@@ -101,12 +101,16 @@ export function ProjectBoardPage() {
   const handleCreateTask = useCallback(
     async (boardColumnId: string, title: string) => {
       if (!id) return;
-      await api.post<TaskCardType>('/api/tasks', {
-        title,
-        project_id: id,
-        board_column_id: boardColumnId,
-      } satisfies TaskCreatePayload);
-      fetchBoard();
+      try {
+        await api.post<TaskCardType>('/api/tasks', {
+          title,
+          project_id: id,
+          board_column_id: boardColumnId,
+        } satisfies TaskCreatePayload);
+        fetchBoard();
+      } catch {
+        /* API-Fehler: Input trotzdem schliessen */
+      }
     },
     [id, fetchBoard],
   );

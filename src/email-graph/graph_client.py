@@ -95,9 +95,17 @@ class GraphClient:
         token = await self._get_token()
         return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    async def _get(self, path: str, params: dict | None = None) -> dict:
+    async def _calendar_headers(self) -> dict[str, str]:
+        """Headers mit Prefer-Timezone für Kalender-Requests (Europe/Zurich)."""
+        headers = await self._headers()
+        headers["Prefer"] = 'outlook.timezone="Europe/Zurich"'
+        return headers
+
+    async def _get(self, path: str, params: dict | None = None, extra_headers: dict | None = None) -> dict:
         client = await self._ensure_client()
         headers = await self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
         resp = await client.get(f"{GRAPH_BASE}{path}", headers=headers, params=params)
         if resp.status_code == 403:
             detail = ""
@@ -468,7 +476,11 @@ class GraphClient:
         end: str,
         top: int = 50,
     ) -> list[dict]:
-        """Termine in einem Zeitraum (ISO 8601 datetime strings)."""
+        """Termine in einem Zeitraum (ISO 8601 datetime strings).
+
+        Zeiten werden in Europe/Zurich zurückgegeben (Prefer-Header).
+        """
+        tz_header = {"Prefer": 'outlook.timezone="Europe/Zurich"'}
         data = await self._get(
             f"{self._user_path}/calendarView",
             {
@@ -480,17 +492,20 @@ class GraphClient:
                            "organizer,attendees,bodyPreview,showAs,importance,"
                            "categories,sensitivity,isOrganizer",
             },
+            extra_headers=tz_header,
         )
         return data.get("value", [])
 
     async def get_event(self, event_id: str) -> dict:
-        """Einzelnen Kalender-Eintrag laden."""
+        """Einzelnen Kalender-Eintrag laden (Zeiten in Europe/Zurich)."""
+        tz_header = {"Prefer": 'outlook.timezone="Europe/Zurich"'}
         return await self._get(
             f"{self._user_path}/events/{event_id}",
             {
                 "$select": "id,subject,start,end,location,body,isAllDay,"
                            "organizer,attendees,showAs,importance,recurrence",
             },
+            extra_headers=tz_header,
         )
 
     async def create_event(
@@ -541,14 +556,31 @@ class GraphClient:
         """Termin löschen."""
         await self._delete(f"{self._user_path}/events/{event_id}")
 
+    @staticmethod
+    def _parse_dt(s: str) -> "datetime":
+        """ISO-8601-String parsen — naive und UTC-Zeiten als Europe/Zurich behandeln.
+
+        Mit Prefer-Header liefert Graph naive Strings in Zurich-Zeit.
+        Ohne Header käme "Z"-Suffix (UTC). Beides wird zu naiven Datetimes
+        normalisiert, da alle Zeiten konsistent in Europe/Zurich sind.
+        """
+        from datetime import datetime as dt
+        clean = s.replace("Z", "").rstrip("0").rstrip(".")
+        if "+" in clean[10:] or clean.endswith(("-00:00", "-01:00", "-02:00")):
+            clean = clean.rsplit("+", 1)[0].rsplit("-", 1)[0]
+        return dt.fromisoformat(clean)
+
     async def find_free_slots(
         self,
         start: str,
         end: str,
         duration_minutes: int = 60,
     ) -> list[dict]:
-        """Freie Zeitfenster berechnen (vereinfacht: Lücken zwischen Terminen)."""
-        from datetime import datetime as dt, timedelta
+        """Freie Zeitfenster berechnen (Lücken zwischen Terminen).
+
+        Alle Zeiten in Europe/Zurich (via Prefer-Header in list_events).
+        """
+        from datetime import timedelta
         events = await self.list_events(start, end, top=100)
         busy = []
         for ev in events:
@@ -557,12 +589,11 @@ class GraphClient:
             s = ev.get("start", {}).get("dateTime", "")
             e = ev.get("end", {}).get("dateTime", "")
             if s and e:
-                busy.append((dt.fromisoformat(s.replace("Z", "+00:00")),
-                             dt.fromisoformat(e.replace("Z", "+00:00"))))
+                busy.append((self._parse_dt(s), self._parse_dt(e)))
         busy.sort()
 
-        range_start = dt.fromisoformat(start.replace("Z", "+00:00"))
-        range_end = dt.fromisoformat(end.replace("Z", "+00:00"))
+        range_start = self._parse_dt(start)
+        range_end = self._parse_dt(end)
         duration = timedelta(minutes=duration_minutes)
 
         free = []
@@ -573,6 +604,7 @@ class GraphClient:
                     "start": cursor.isoformat(),
                     "end": bs.isoformat(),
                     "duration_minutes": int((bs - cursor).total_seconds() / 60),
+                    "timezone": "Europe/Zurich",
                 })
             cursor = max(cursor, be)
         if cursor + duration <= range_end:
@@ -580,6 +612,7 @@ class GraphClient:
                 "start": cursor.isoformat(),
                 "end": range_end.isoformat(),
                 "duration_minutes": int((range_end - cursor).total_seconds() / 60),
+                "timezone": "Europe/Zurich",
             })
         return free
 

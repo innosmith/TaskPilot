@@ -107,6 +107,8 @@ class TaskBase(BaseModel):
     autonomy_level: str = "L1"
     is_pinned: bool = False
     recurrence_rule: str | None = None
+    recurrence_end_date: date | None = None
+    recurrence_max_instances: int | None = None
 
 
 class TaskCreate(TaskBase):
@@ -138,6 +140,9 @@ class TaskUpdate(BaseModel):
     is_completed: bool | None = None
     is_pinned: bool | None = None
     recurrence_rule: str | None = None
+    recurrence_end_date: date | None = None
+    recurrence_max_instances: int | None = None
+    calendar_event_id: str | None = None
     calendar_duration_minutes: int | None = None
     calendar_preferred_time: str | None = None
     pipedrive_deal_id: int | None = None
@@ -165,6 +170,8 @@ class TaskOut(TaskBase):
     calendar_preferred_time: str | None = None
     needs_review: bool = False
     template_id: uuid.UUID | None = None
+    recurrence_end_date: date | None = None
+    recurrence_max_instances: int | None = None
     pipedrive_deal_id: int | None = None
     pipedrive_person_id: int | None = None
     assignee_user: AssigneeUser | None = None

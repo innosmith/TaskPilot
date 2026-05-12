@@ -152,3 +152,9 @@ INSERT INTO task_tags (task_id, tag_id) VALUES
     ('e0000000-0000-0000-0000-000000000020', 'b0000000-0000-0000-0000-000000000005'),
     ('e0000000-0000-0000-0000-000000000021', 'b0000000-0000-0000-0000-000000000005')
 ON CONFLICT DO NOTHING;
+
+-- Legacy "me"-Assignees auf Owner-UUID auflösen (idempotent, greift nur wenn Owner existiert)
+UPDATE tasks
+SET assignee = (SELECT id::text FROM users WHERE role = 'owner' LIMIT 1)
+WHERE assignee = 'me'
+  AND EXISTS (SELECT 1 FROM users WHERE role = 'owner');

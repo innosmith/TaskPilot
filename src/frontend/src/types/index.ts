@@ -55,7 +55,11 @@ export interface TaskDetail {
   llm_override: string | null;
   autonomy_level: string;
   recurrence_rule: string | null;
+  recurrence_end_date: string | null;
+  recurrence_max_instances: number | null;
   template_id: string | null;
+  email_message_id: string | null;
+  calendar_event_id: string | null;
   calendar_duration_minutes: number | null;
   calendar_preferred_time: string | null;
   needs_review: boolean;
@@ -144,6 +148,9 @@ export interface TaskUpdatePayload {
   llm_override?: string;
   autonomy_level?: string;
   recurrence_rule?: string | null;
+  recurrence_end_date?: string | null;
+  recurrence_max_instances?: number | null;
+  calendar_event_id?: string | null;
   calendar_duration_minutes?: number | null;
   calendar_preferred_time?: string | null;
 }

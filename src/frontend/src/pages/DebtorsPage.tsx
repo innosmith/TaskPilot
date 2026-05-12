@@ -306,7 +306,7 @@ function KpiStrip({ toggl, data, hasBg, textMuted: _textMuted }: { toggl: TogglM
       <KpiCard label="Stunden gesamt" value={formatHours(toggl.total_hours)}
         sublabel={`Ø ${toggl.avg_daily_hours}h/Tag · ${toggl.working_days_elapsed}/${toggl.working_days_total} AT`}
         icon={<ClockIcon />} status="neutral" hasBg={hasBg} />
-      <KpiCard label="Billable-Quote" value={formatPct(toggl.billable_ratio)}
+      <KpiCard label="Verrechenbar-Quote" value={formatPct(toggl.billable_ratio)}
         sublabel={`${formatHours(toggl.billable_hours)} von ${formatHours(toggl.total_hours)}`}
         icon={<TargetIcon />} status={toggl.billable_ratio >= 75 ? 'green' : toggl.billable_ratio >= 50 ? 'yellow' : 'red'} hasBg={hasBg} />
       <KpiCard label="Lfd. Umsatz (Toggl)" value={formatCHF(toggl.total_amount)}
@@ -365,8 +365,8 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
           <p className={`text-xs ${textMuted}`}>{new Date().toLocaleDateString('de-CH', { month: 'long', year: 'numeric' })} &middot; {monthProgress}% der Arbeitstage</p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-green-500" /><span className={`text-xs ${textSecondary}`}>Billable</span></div>
-          <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-rose-400" /><span className={`text-xs ${textSecondary}`}>Non-billable</span></div>
+          <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-green-500" /><span className={`text-xs ${textSecondary}`}>Verrechenbar</span></div>
+          <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-rose-400" /><span className={`text-xs ${textSecondary}`}>Nicht verrechenbar</span></div>
         </div>
       </div>
 
@@ -383,10 +383,10 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
 
       {/* KPI summary */}
       <div className={`mb-6 grid grid-cols-2 gap-3 rounded-xl p-3 sm:grid-cols-4 ${hasBg ? 'bg-white/5' : 'bg-gray-50 dark:bg-gray-800/50'}`}>
-        <SummaryCell label="Total Hours" value={formatHoursHM(toggl.total_hours)} textPrimary={textPrimary} textMuted={textMuted} />
-        <SummaryCell label="Billable Hours" value={`${formatHoursHM(toggl.billable_hours)} (${formatPct(toggl.billable_ratio)})`} textPrimary="text-green-500" textMuted={textMuted} />
-        <SummaryCell label="Amount" value={formatCHF(toggl.total_amount)} textPrimary={textPrimary} textMuted={textMuted} />
-        <SummaryCell label="Average Daily Hours" value={`${toggl.avg_daily_hours.toFixed(2)} Hours`} textPrimary={textPrimary} textMuted={textMuted} />
+        <SummaryCell label="Stunden gesamt" value={formatHoursHM(toggl.total_hours)} textPrimary={textPrimary} textMuted={textMuted} />
+        <SummaryCell label="Verrechenbare Stunden" value={`${formatHoursHM(toggl.billable_hours)} (${formatPct(toggl.billable_ratio)})`} textPrimary="text-green-500" textMuted={textMuted} />
+        <SummaryCell label="Betrag" value={formatCHF(toggl.total_amount)} textPrimary={textPrimary} textMuted={textMuted} />
+        <SummaryCell label="Ø Stunden/Tag" value={`${toggl.avg_daily_hours.toFixed(2)} Stunden`} textPrimary={textPrimary} textMuted={textMuted} />
       </div>
 
       {/* Charts: Duration by day + Project distribution (Toggl-Layout) */}
@@ -394,8 +394,8 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
         {/* Duration by day — nimmt 2/3 der Breite */}
         <div className="lg:col-span-2">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className={`text-sm font-semibold ${textPrimary}`}>Duration by day</h3>
-            <span className={`rounded-md px-2 py-0.5 text-[11px] ${hasBg ? 'bg-white/10 text-white/60' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>Stack by: Billable</span>
+            <h3 className={`text-sm font-semibold ${textPrimary}`}>Dauer pro Tag</h3>
+            <span className={`rounded-md px-2 py-0.5 text-[11px] ${hasBg ? 'bg-white/10 text-white/60' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>Gruppiert: Verrechenbar</span>
           </div>
           {dailyChartData.length > 0 ? (
             <ResponsiveContainer width="100%" height={220}>
@@ -426,7 +426,7 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
                 <Tooltip
                   cursor={CURSOR_STYLE}
                   contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }}
-                  formatter={(v: unknown, name: unknown) => [`${Number(v).toFixed(2)}h`, String(name) === 'billable' ? 'Billable' : 'Non-billable']}
+                  formatter={(v: unknown, name: unknown) => [`${Number(v).toFixed(2)}h`, String(name) === 'billable' ? 'Verrechenbar' : 'Nicht verrechenbar']}
                 />
                 <Bar dataKey="non_billable" stackId="a" fill="#fb7185" radius={[0, 0, 0, 0]} name="non_billable" />
                 <Bar dataKey="billable" stackId="a" fill="#22c55e" radius={[2, 2, 0, 0]} name="billable" />
@@ -436,16 +436,16 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
             <div className={`flex h-[220px] items-center justify-center text-sm ${textMuted}`}>Lade tägliche Daten...</div>
           )}
           <div className="mt-2 flex items-center justify-center gap-4 text-xs">
-            <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded bg-rose-400" /><span className={textSecondary}>Non-billable</span></div>
-            <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded bg-green-500" /><span className={textSecondary}>Billable</span></div>
+            <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded bg-rose-400" /><span className={textSecondary}>Nicht verrechenbar</span></div>
+            <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded bg-green-500" /><span className={textSecondary}>Verrechenbar</span></div>
           </div>
         </div>
 
         {/* Project distribution — nimmt 1/3 der Breite */}
         <div className="lg:col-span-1">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className={`text-sm font-semibold ${textPrimary}`}>Project distribution</h3>
-            <span className={`rounded-md px-2 py-0.5 text-[11px] ${hasBg ? 'bg-white/10 text-white/60' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>Slice by: Projects</span>
+            <h3 className={`text-sm font-semibold ${textPrimary}`}>Projektverteilung</h3>
+            <span className={`rounded-md px-2 py-0.5 text-[11px] ${hasBg ? 'bg-white/10 text-white/60' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>Aufgeteilt: Projekte</span>
           </div>
           <div className="flex flex-col items-center gap-3">
             <div className="relative">
@@ -462,7 +462,7 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
                 <span className={`text-sm font-bold ${textPrimary}`}>{formatHoursHM(toggl.total_hours)}</span>
-                <span className={`text-[9px] uppercase tracking-wider ${textMuted}`}>Project</span>
+                <span className={`text-[9px] uppercase tracking-wider ${textMuted}`}>Projekt</span>
               </div>
             </div>
             <div className="w-full space-y-1.5">
@@ -482,16 +482,16 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
       {/* Project and description breakdown — Desktop */}
       <div className="hidden sm:block">
         <div className="mb-3">
-          <h3 className={`text-sm font-semibold ${textPrimary}`}>Project and description breakdown</h3>
+          <h3 className={`text-sm font-semibold ${textPrimary}`}>Projekt-Aufschlüsselung</h3>
         </div>
         <table className="w-full max-w-3xl">
           <thead>
             <tr className={`border-b text-left text-[11px] font-medium uppercase tracking-wider ${hasBg ? 'border-white/10 text-white/40' : 'border-gray-100 text-gray-400 dark:border-gray-700 dark:text-gray-500'}`}>
               <th className="w-8 py-2" />
-              <th className="py-2 pr-2">Project / Description</th>
-              <th className="w-[90px] px-2 py-2 text-right">Duration</th>
-              <th className="w-[70px] px-2 py-2 text-right">Duration %</th>
-              <th className="w-[100px] py-2 pl-2 text-right">Amount</th>
+              <th className="py-2 pr-2">Projekt / Beschreibung</th>
+              <th className="w-[90px] px-2 py-2 text-right">Dauer</th>
+              <th className="w-[70px] px-2 py-2 text-right">Dauer %</th>
+              <th className="w-[100px] py-2 pl-2 text-right">Betrag</th>
             </tr>
           </thead>
           <tbody>
@@ -522,7 +522,7 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
                     <td />
                     <td colSpan={4} className="py-2 pr-2">
                       <div className={`flex items-center gap-4 text-xs ${textSecondary}`}>
-                        <span>Billable: <strong className="text-green-500">{formatHours(p.billable_hours)}</strong></span>
+                        <span>Verrechenbar: <strong className="text-green-500">{formatHours(p.billable_hours)}</strong></span>
                         <span>Rate: <strong>{p.rate_per_hour > 0 ? `CHF ${p.rate_per_hour}/h` : '–'}</strong></span>
                         {p.budget_hours != null && (
                           <span>Budget: <strong>{formatHours(p.hours)} / {formatHours(p.budget_hours)}</strong>

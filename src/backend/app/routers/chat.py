@@ -751,7 +751,13 @@ def _get_configured_mcp_servers() -> dict:
 
 def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
     """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Nanobot SDK via MCP."""
+    from datetime import datetime, timezone as tz
+    from zoneinfo import ZoneInfo
+
     skills_text = _load_agent_skills()
+
+    now_zurich = datetime.now(ZoneInfo("Europe/Zurich"))
+    date_context = now_zurich.strftime("%A, %d. %B %Y, %H:%M Uhr")
 
     history_lines = []
     for msg in conversation_messages[-10:]:
@@ -763,13 +769,20 @@ def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
 Du hast direkten Zugriff auf Firmendaten über deine MCP-Tools (siehst du in deiner Tool-Liste).
 Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
 
-Regeln:
+## Aktuell
+
+- Datum/Uhrzeit: {date_context} (Europe/Zurich)
+- User: Anthony Smith (du sprichst direkt mit ihm)
+
+## Regeln
+
 - Bei Fragen zu Firmendaten: Sofort passende Tools aufrufen
 - Dateien: search_files → download_file
 - Buchhaltung: list_accounts, get_journal, list_invoices, search_invoices
 - Mehrstufige Aufgaben: Schritt für Schritt, Tool-Ergebnisse auswerten
 - Sprache: Deutsch (Schweizer Hochdeutsch, ss statt ß, korrekte Umlaute ä/ö/ü)
-- Zeitzone: Europe/Zurich
+- Zeitzone: IMMER Europe/Zurich — alle Kalenderzeiten sind in dieser Zeitzone
+- Kalender: Du verwaltest Anthonys Outlook-Kalender direkt. Bei Terminwünschen IMMER zuerst mit list_calendar_events oder find_free_slots prüfen ob der Slot frei ist, dann mit create_calendar_event buchen. Verweise NICHT auf externe Buchungstools — du bist das Buchungstool.
 
 ## Skills
 

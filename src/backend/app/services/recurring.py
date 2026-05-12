@@ -143,16 +143,22 @@ async def _create_calendar_blocker(instance: Task, template: Task) -> None:
         now = datetime.now(timezone.utc)
         target_date = instance.due_date or now.date()
 
-        preferred = template.calendar_preferred_time or "morning_after_1030"
-        if preferred == "morning_after_1030":
-            search_start = datetime.combine(target_date, datetime.min.time()).replace(hour=10, minute=30, tzinfo=timezone.utc)
-            search_end = datetime.combine(target_date, datetime.min.time()).replace(hour=13, minute=0, tzinfo=timezone.utc)
-        elif preferred == "afternoon":
-            search_start = datetime.combine(target_date, datetime.min.time()).replace(hour=13, minute=0, tzinfo=timezone.utc)
-            search_end = datetime.combine(target_date, datetime.min.time()).replace(hour=18, minute=0, tzinfo=timezone.utc)
-        else:
-            search_start = datetime.combine(target_date, datetime.min.time()).replace(hour=8, minute=0, tzinfo=timezone.utc)
-            search_end = datetime.combine(target_date, datetime.min.time()).replace(hour=18, minute=0, tzinfo=timezone.utc)
+        # Hybrid-Konzept: Cron-Zeit = Kalender-Startzeit.
+        # Stunde/Minute aus der Recurrence-Rule extrahieren.
+        cron = croniter(template.recurrence_rule)
+        cron_next = cron.get_next(datetime)
+        cron_hour = cron_next.hour
+        cron_minute = cron_next.minute
+
+        search_start = datetime.combine(
+            target_date, datetime.min.time()
+        ).replace(hour=cron_hour, minute=cron_minute, tzinfo=timezone.utc)
+        search_end = datetime.combine(
+            target_date, datetime.min.time()
+        ).replace(hour=20, minute=0, tzinfo=timezone.utc)
+
+        if search_start >= search_end:
+            search_start = search_start.replace(hour=7, minute=0)
 
         slots = await client.find_free_slots(
             start=search_start.isoformat(),
@@ -161,8 +167,12 @@ async def _create_calendar_blocker(instance: Task, template: Task) -> None:
         )
 
         if not slots:
-            next_day_start = search_start + timedelta(days=1)
-            next_day_end = search_end + timedelta(days=1)
+            next_day_start = datetime.combine(
+                target_date + timedelta(days=1), datetime.min.time()
+            ).replace(hour=cron_hour, minute=cron_minute, tzinfo=timezone.utc)
+            next_day_end = datetime.combine(
+                target_date + timedelta(days=1), datetime.min.time()
+            ).replace(hour=20, minute=0, tzinfo=timezone.utc)
             slots = await client.find_free_slots(
                 start=next_day_start.isoformat(),
                 end=next_day_end.isoformat(),
@@ -176,7 +186,7 @@ async def _create_calendar_blocker(instance: Task, template: Task) -> None:
             end_dt = start_dt + timedelta(minutes=duration)
 
             event = await client.create_event(
-                subject=f"[TaskPilot] {instance.title}",
+                subject=instance.title,
                 start=start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
                 end=end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
                 body=instance.description or "",
@@ -211,6 +221,16 @@ async def _check_and_spawn(db: AsyncSession) -> int:
 
             if await _has_active_instance(db, tmpl.id):
                 continue
+
+            if tmpl.recurrence_end_date and now.date() > tmpl.recurrence_end_date:
+                continue
+
+            if tmpl.recurrence_max_instances:
+                count_result = await db.execute(
+                    select(func.count()).where(Task.template_id == tmpl.id)
+                )
+                if (count_result.scalar_one() or 0) >= tmpl.recurrence_max_instances:
+                    continue
 
             last_ts = await _latest_instance_time(db, tmpl.id)
             base_time = last_ts or tmpl.created_at
