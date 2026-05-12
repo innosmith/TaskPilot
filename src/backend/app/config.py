@@ -3,7 +3,10 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+try:
+    _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+except IndexError:
+    _PROJECT_ROOT = Path("/app")
 
 
 class Settings(BaseSettings):

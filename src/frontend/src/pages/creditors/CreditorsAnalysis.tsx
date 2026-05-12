@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend, ComposedChart, Line,
+  ResponsiveContainer, Legend,
 } from 'recharts';
 import { api } from '../../api/client';
 import type { CreditorsFilter, StyleCtx } from './creditors-types';
 import {
   formatCHF, formatK, TOOLTIP_STYLE, CURSOR_STYLE,
-  getCategoryColor, FALLBACK_COLORS, buildFilterParams, Skeleton,
+  getCategoryColor, buildFilterParams, Skeleton,
 } from './creditors-helpers';
 
 interface Props {
@@ -179,7 +179,7 @@ export function CreditorsAnalysis({ filter, styleCtx }: Props) {
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
               <XAxis dataKey="month" tick={{ fontSize: 10 }} stroke="#9ca3af" angle={-35} textAnchor="end" height={50} />
               <YAxis tickFormatter={v => formatK(v)} tick={{ fontSize: 11 }} stroke="#9ca3af" />
-              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE} formatter={(v: number) => formatCHF(v)} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE} formatter={(v: unknown) => formatCHF(Number(v))} />
               <Bar dataKey="total_chf" name="Volumen CHF" fill="#8b5cf6" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -281,7 +281,7 @@ export function CreditorsAnalysis({ filter, styleCtx }: Props) {
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
               <XAxis dataKey="name" tick={{ fontSize: 11 }} stroke="#9ca3af" />
               <YAxis tickFormatter={v => formatK(v)} tick={{ fontSize: 11 }} stroke="#9ca3af" />
-              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE} formatter={(v: number) => formatCHF(v)} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE} formatter={(v: unknown) => formatCHF(Number(v))} />
               <Legend wrapperStyle={{ fontSize: '11px' }} />
               {yoy.years.map((yr, i) => (
                 <Bar

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { X, ExternalLink } from 'lucide-react';
+import { X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { CreditorsFilter, StyleCtx, VendorRow, InvoiceRow } from './creditors-types';
 import { formatCHF, normalizeVendor, buildFilterParams, Skeleton } from './creditors-helpers';

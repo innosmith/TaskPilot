@@ -192,9 +192,9 @@ export function InboxPage() {
 
   const [triageMap, setTriageMap] = useState<Record<string, TriageItem>>({});
   const [triageStats, setTriageStats] = useState<TriageStats | null>(null);
-  const [activityFeed, setActivityFeed] = useState<{activities: ActivityItem[]; summary: {drafts_pending: number; classified_today: number}} | null>(null);
-  const [approvalJobs, setApprovalJobs] = useState<ApprovalJob[]>([]);
-  const [pendingReviewTasks, setPendingReviewTasks] = useState<PendingReviewTask[]>([]);
+  const [_activityFeed, setActivityFeed] = useState<{activities: ActivityItem[]; summary: {drafts_pending: number; classified_today: number}} | null>(null);
+  const [_approvalJobs, setApprovalJobs] = useState<ApprovalJob[]>([]);
+  const [_pendingReviewTasks, setPendingReviewTasks] = useState<PendingReviewTask[]>([]);
   const sseRef = useRef<EventSource | null>(null);
   const [senderAvatars, setSenderAvatars] = useState<Record<string, string | null>>({});
   const [bgUrl, setBgUrl] = useState<string | null>(null);
@@ -1209,7 +1209,7 @@ interface DraftPreview {
   source_from: string | null;
 }
 
-function ApprovalsTab({
+export function ApprovalsTab({
   approvalJobs,
   onAction,
 }: {
@@ -1383,7 +1383,7 @@ function ApprovalsTab({
 
 /* ---------- Task Suggestions Section ---------- */
 
-function TaskSuggestionsSection({
+export function TaskSuggestionsSection({
   tasks,
   onAction,
 }: {

@@ -21,7 +21,7 @@ export function useScrollDirection(
 
     const onScroll = (e: Event) => {
       const target = e.target as HTMLElement;
-      if (!target || target === document) return;
+      if (!target || target === document.documentElement) return;
 
       if (ticking.current) return;
       ticking.current = true;

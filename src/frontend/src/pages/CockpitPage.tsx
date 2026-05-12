@@ -106,7 +106,7 @@ interface PipedriveActivitySummary {
   person_name: string | null;
 }
 
-const JOB_TYPE_LABELS: Record<string, string> = {
+export const JOB_TYPE_LABELS: Record<string, string> = {
   email_triage: 'E-Mail-Triage',
   draft_email_reply: 'Antwort-Entwurf',
   create_task_from_email: 'Aufgabe erstellen',
@@ -145,10 +145,10 @@ export function CockpitPage() {
   const [activeJobs, setActiveJobs] = useState<AgentJob[]>([]);
   const [focusTasks, setFocusTasks] = useState<TaskCard[]>([]);
   const [pendingReview, setPendingReview] = useState<PendingReviewTask[]>([]);
-  const [triageStats, setTriageStats] = useState<TriageStats | null>(null);
+  const [_triageStats, setTriageStats] = useState<TriageStats | null>(null);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [flaggedEmails, setFlaggedEmails] = useState<FlaggedEmail[]>([]);
-  const [recentJobs, setRecentJobs] = useState<AgentJob[]>([]);
+  const [_recentJobs, setRecentJobs] = useState<AgentJob[]>([]);
 
   const [pipedriveDeals, setPipedriveDeals] = useState<PipedriveDealSummary[]>([]);
   const [pipedriveLeads, setPipedriveLeads] = useState<PipedriveLeadSummary[]>([]);

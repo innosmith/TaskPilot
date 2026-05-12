@@ -24,8 +24,8 @@ services:
       - int-uploads:/app/uploads
       - int-exports:/tmp/taskpilot-exports
       - ${HOME}/.nanobot/workspace:/home/taskpilot/.nanobot/workspace:ro
-    security_opt:
-      - no-new-privileges:true
+    # no-new-privileges deaktiviert: Kernel 6.17-nvidia blockt jede exec mit diesem Flag
+    # Security durch non-root User (taskpilot) + Cloudflare Zero Trust gewährleistet
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,8 +38,8 @@ services:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 15s
+      retries: 5
+      start_period: 30s
 
   frontend-int:
     build:

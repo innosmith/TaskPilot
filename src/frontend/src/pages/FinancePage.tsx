@@ -273,7 +273,7 @@ export function FinancePage() {
     if (!expenseBreakdown) return { data: [], keys: [] as string[], labels: {} as Record<string, string> };
     const labels = expenseBreakdown.category_labels;
     const allKeys = new Set<string>();
-    const combined: Record<string, number>[] = [];
+    const combined: Record<string, number | string>[] = [];
     for (let m = 0; m < 12; m++) {
       const cur = expenseBreakdown.months_current[m];
       const prior = expenseBreakdown.months_prior[m];
@@ -283,7 +283,7 @@ export function FinancePage() {
       Object.keys(curCats).forEach(k => allKeys.add(k));
       Object.keys(priorCats).forEach(k => allKeys.add(k));
 
-      const row: Record<string, number> = {
+      const row: Record<string, number | string> = {
         month: m,
         _label_cur: cur?.month ? `${cur.month} ${String(expenseBreakdown.current_year).slice(2)}` : '',
         _label_prior: prior?.month ? `${prior.month} ${String(expenseBreakdown.prior_year).slice(2)}` : '',
@@ -581,7 +581,7 @@ export function FinancePage() {
                     position="top"
                     fontSize={9}
                     fill="#16a34a"
-                    formatter={(v: number) => v > 0 ? formatK(v) : ''}
+                    formatter={(v: unknown) => Number(v) > 0 ? formatK(Number(v)) : ''}
                   />
                 </Bar>
                 <Bar dataKey="opNeg" name="opNeg" stackId="out" radius={[0, 0, 0, 0]}>
@@ -639,12 +639,13 @@ export function FinancePage() {
                   <XAxis dataKey="month_label" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => formatK(v)} />
                   <Tooltip
-                    formatter={(value: number, name: string) => {
+                    formatter={(value: unknown, name: unknown) => {
+                      const n = String(name);
                       const labels: Record<string, string> = {
                         revenue_current: `Umsatz ${yoy.current_year} (brutto)`,
                         revenue_prior: `Umsatz ${yoy.prior_year} (brutto)`,
                       };
-                      return [formatCHF(value), labels[name] || name];
+                      return [formatCHF(Number(value)), labels[n] || n];
                     }}
                     contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE}
                   />
@@ -821,9 +822,9 @@ export function FinancePage() {
                   <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-30} textAnchor="end" height={60} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => formatK(v)} />
                   <Tooltip
-                    formatter={(value: number, name: string) => {
-                      if (name === 'base') return [null, null];
-                      return [formatCHF(value), 'Betrag'];
+                    formatter={(value: unknown, name: unknown) => {
+                      if (String(name) === 'base') return [null, null];
+                      return [formatCHF(Number(value)), 'Betrag'];
                     }}
                     contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE}
                   />
@@ -839,7 +840,7 @@ export function FinancePage() {
                       dataKey="value"
                       position="top"
                       fontSize={9}
-                      formatter={(v: number) => formatK(v)}
+                      formatter={(v: unknown) => formatK(Number(v))}
                       fill="#6b7280"
                     />
                   </Bar>
@@ -871,14 +872,15 @@ export function FinancePage() {
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${v}%`} domain={['auto', 'auto']} />
                   <Tooltip
-                    formatter={(value: number | null, name: string) => {
+                    formatter={(value: unknown, name: unknown) => {
                       if (value == null) return ['–', ''];
+                      const n = String(name);
                       const labels: Record<string, string> = {
                         ytd_margin: `YTD ${marginTrend.current_year}`,
                         ytd_margin_prior: `YTD ${marginTrend.prior_year}`,
                         rolling_12m_margin: '12-Mt. Rolling',
                       };
-                      return [`${value}%`, labels[name] || name];
+                      return [`${Number(value)}%`, labels[n] || n];
                     }}
                     contentStyle={TOOLTIP_STYLE} cursor={CURSOR_STYLE}
                   />

@@ -18,7 +18,6 @@ export function TaskCard({
   projectColor,
   showProjectIndicator = false,
   hasBg = false,
-  userAvatarUrl,
   onClick,
   onArchive,
 }: TaskCardProps) {

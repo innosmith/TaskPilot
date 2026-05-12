@@ -247,7 +247,7 @@ export default function DebtorsPage() {
               <BarChart data={agingData} layout="vertical" barSize={16}>
                 <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={(v: number) => formatCHF(v).replace('CHF', '').trim()} />
                 <YAxis type="category" dataKey="range" tick={{ fontSize: 11 }} width={40} />
-                <Tooltip cursor={CURSOR_STYLE} contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }} formatter={(v: number) => [formatCHF(v), 'Betrag']} />
+                <Tooltip cursor={CURSOR_STYLE} contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }} formatter={(v: unknown) => [formatCHF(Number(v)), 'Betrag']} />
                 <Bar dataKey="amount" radius={[0, 4, 4, 0]}>{agingData.map((entry, idx) => <Cell key={idx} fill={entry.fill} />)}</Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -269,7 +269,7 @@ export default function DebtorsPage() {
                 <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                 <XAxis dataKey="month" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toFixed(0)} />
-                <Tooltip cursor={CURSOR_STYLE} contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }} formatter={(v: number) => [formatCHF(v), '']} />
+                <Tooltip cursor={CURSOR_STYLE} contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }} formatter={(v: unknown) => [formatCHF(Number(v)), '']} />
                 <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
                 {data.revenue_trend.map((t, idx) => (
                   <Line key={t.contact_id} type="monotone" dataKey={t.contact_name} stroke={TREND_COLORS[idx % TREND_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
@@ -300,7 +300,7 @@ export default function DebtorsPage() {
   );
 }
 
-function KpiStrip({ toggl, data, hasBg, textMuted }: { toggl: TogglMonthSummary; data: DebtorsResponse; hasBg: boolean; textMuted: string }) {
+function KpiStrip({ toggl, data, hasBg, textMuted: _textMuted }: { toggl: TogglMonthSummary; data: DebtorsResponse; hasBg: boolean; textMuted: string }) {
   return (
     <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
       <KpiCard label="Stunden gesamt" value={formatHours(toggl.total_hours)}
@@ -426,7 +426,7 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
                 <Tooltip
                   cursor={CURSOR_STYLE}
                   contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }}
-                  formatter={(v: number, name: string) => [`${v.toFixed(2)}h`, name === 'billable' ? 'Billable' : 'Non-billable']}
+                  formatter={(v: unknown, name: unknown) => [`${Number(v).toFixed(2)}h`, String(name) === 'billable' ? 'Billable' : 'Non-billable']}
                 />
                 <Bar dataKey="non_billable" stackId="a" fill="#fb7185" radius={[0, 0, 0, 0]} name="non_billable" />
                 <Bar dataKey="billable" stackId="a" fill="#22c55e" radius={[2, 2, 0, 0]} name="billable" />
@@ -456,7 +456,7 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
                   </Pie>
                   <Tooltip
                     contentStyle={{ borderRadius: '0.5rem', fontSize: 12, background: '#1f2937', color: '#f9fafb', border: 'none' }}
-                    formatter={(v: number, name: string) => [`${v.toFixed(1)}h`, name]}
+                    formatter={(v: unknown, name: unknown) => [`${Number(v).toFixed(1)}h`, String(name)]}
                   />
                 </PieChart>
               </ResponsiveContainer>

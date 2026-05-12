@@ -185,7 +185,7 @@ export function SignalePage() {
   const [personaFilter, setPersonaFilter] = useState(saved.personaFilter);
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const searchTimer = useRef<ReturnType<typeof setTimeout>>();
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [expandedSignal, setExpandedSignal] = useState<Signal | null>(null);

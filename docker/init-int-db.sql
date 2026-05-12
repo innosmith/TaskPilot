@@ -6,5 +6,6 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'taskpilot_int')\gexec
 
 \connect taskpilot_int
 
--- pgvector Extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

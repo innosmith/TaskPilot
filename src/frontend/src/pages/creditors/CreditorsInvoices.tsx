@@ -434,7 +434,7 @@ function ModalContent({
             {confScore != null && (
               <span className="flex items-center gap-1 rounded-full bg-gray-100 dark:bg-gray-800 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300">
                 <span className={`h-1.5 w-1.5 rounded-full ${confidenceDisplay(confScore).color}`} />
-                Confidence {confScore}%
+                Confidence {String(confScore)}%
               </span>
             )}
           </div>

@@ -1,12 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { Sidebar } from '../components/Sidebar';
 import { MobileHeader } from '../components/MobileHeader';
-import { BottomTabBar } from '../components/BottomTabBar';
 import { SearchDialog } from '../components/SearchDialog';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { useBadgeData, BadgeProvider } from '../hooks/useBadges';
-import { useScrollDirection } from '../hooks/useScrollDirection';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';

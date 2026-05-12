@@ -48,8 +48,9 @@ COPY src/email-graph/ /app/email-graph/
 COPY src/pipedrive/ /app/pipedrive/
 COPY src/bexio/ /app/bexio/
 COPY src/toggl/ /app/toggl/
+COPY src/signa/ /app/signa/
 
-ENV PYTHONPATH=/app:/app/email-graph:/app/pipedrive:/app/bexio:/app/toggl
+ENV PYTHONPATH=/app:/app/email-graph:/app/pipedrive:/app/bexio:/app/toggl:/app/signa
 
 # Nanobot-Config Template + Entrypoint
 COPY docker/nanobot-config.template.json /app/
@@ -60,9 +61,9 @@ RUN chmod +x /app/entrypoint.sh
 ENV TP_CONTENTCONVERTER_PATH=/opt/vendor/contentconverter
 ENV TP_CONTENTCONVERTER_CCONV_BIN=/usr/local/bin/cconv
 
-RUN useradd -r -s /usr/sbin/nologin taskpilot && \
-    mkdir -p /app/uploads /tmp/taskpilot-exports && \
-    chown -R taskpilot:taskpilot /app /tmp/taskpilot-exports
+RUN useradd -r -m -d /home/taskpilot -s /usr/sbin/nologin taskpilot && \
+    mkdir -p /app/uploads /tmp/taskpilot-exports /home/taskpilot/.nanobot && \
+    chown -R taskpilot:taskpilot /app /tmp/taskpilot-exports /home/taskpilot
 
 USER taskpilot
 

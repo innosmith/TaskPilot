@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   PieChart, Pie, Cell,
-  ComposedChart, Bar, Line,
+  ComposedChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
 } from 'recharts';
@@ -90,7 +90,7 @@ function AiGauge({ pct }: { pct: number }) {
 }
 
 export function CreditorsOverview({ filter, styleCtx }: Props) {
-  const { hasBg, cardClass, sectionClass, textPrimary, textSecondary, textMuted } = styleCtx;
+  const { hasBg, cardClass: _cardClass, sectionClass: _sectionClass, textPrimary, textSecondary, textMuted } = styleCtx;
 
   const card = `rounded-xl p-3 sm:p-4 ${
     hasBg
@@ -219,7 +219,7 @@ export function CreditorsOverview({ filter, styleCtx }: Props) {
               <YAxis tickFormatter={v => formatK(v)} tick={{ fontSize: 11 }} stroke="#9ca3af" />
               <Tooltip
                 contentStyle={TOOLTIP_STYLE}
-                formatter={(v: number) => formatCHF(v)}
+                formatter={(v: unknown) => formatCHF(Number(v))}
                 cursor={CURSOR_STYLE}
               />
               <Legend wrapperStyle={{ fontSize: '11px' }} />
@@ -317,13 +317,13 @@ export function CreditorsOverview({ filter, styleCtx }: Props) {
                 innerRadius={50}
                 outerRadius={80}
                 paddingAngle={2}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                label={({ name, percent }: { name?: string; percent?: number }) => `${name ?? ''} ${((percent ?? 0) * 100).toFixed(0)}%`}
               >
                 {currencyPie.map((entry, i) => (
                   <Cell key={entry.name} fill={FALLBACK_COLORS[i % FALLBACK_COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => formatCHF(v)} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: unknown) => formatCHF(Number(v))} />
             </PieChart>
           </ResponsiveContainer>
         </div>

@@ -41,7 +41,7 @@ const SECTIONS = [
   },
 ] as const;
 
-export function CreditorsResearch({ filter, styleCtx }: Props) {
+export function CreditorsResearch({ filter: _filter, styleCtx }: Props) {
   const { hasBg, textPrimary, textSecondary, textMuted } = styleCtx;
 
   const card = `rounded-xl p-4 sm:p-5 ${
