@@ -121,7 +121,7 @@ test-contract: ## OpenAPI-Contract-Guard (gegen laufendes Backend, Default: Dev)
 	.venv/bin/python -m pytest tests/contract/ -v
 
 test-e2e: ## Playwright E2E-Tests gegen Integration (Schicht 3)
-	cd tests/e2e && ../../.venv/bin/python -m pytest . -v
+	.venv/bin/python -m pytest tests/e2e/ -v
 
 test-explore: ## AI-Explorations-Audit mit browser-use (Schicht 4)
 	.venv/bin/python tests/ai-audit/run_audit.py

@@ -51,12 +51,8 @@ class TestMemberRestrictions:
         assert "/projects" in member_page.url
 
 
-@pytest.mark.skipif(
-    not os.environ.get("TP_TEST_PASSWORD"),
-    reason="TP_TEST_PASSWORD nicht gesetzt",
-)
 class TestOwnerAccess:
-    """Owner hat Zugriff auf alle Seiten."""
+    """Owner hat Zugriff auf alle Seiten (nutzt owner_page Fixture mit interaktivem Passwort)."""
 
     @pytest.mark.parametrize("route", [
         "/",
