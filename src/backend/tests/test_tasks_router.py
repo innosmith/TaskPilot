@@ -8,18 +8,17 @@ import uuid
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
+from conftest import TEST_PROJECT_ID, TEST_COLUMN_BACKLOG_ID
 
-FAKE_PROJECT_ID = str(uuid.uuid4())
-FAKE_COLUMN_ID = str(uuid.uuid4())
+pytestmark = pytest.mark.asyncio
 
 
 def _minimal_task_body(**overrides) -> dict:
-    """Erzeugt einen minimalen TaskCreate-Body."""
+    """Erzeugt einen minimalen TaskCreate-Body mit echten Test-DB-UUIDs."""
     base = {
         "title": "Test-Aufgabe",
-        "project_id": FAKE_PROJECT_ID,
-        "board_column_id": FAKE_COLUMN_ID,
+        "project_id": str(TEST_PROJECT_ID),
+        "board_column_id": str(TEST_COLUMN_BACKLOG_ID),
     }
     base.update(overrides)
     return base
@@ -30,7 +29,6 @@ def _minimal_task_body(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.db
 async def test_member_cannot_assign_agent(client_as_member):
     """POST /api/tasks mit assignee='agent' als Member wird abgelehnt."""
     body = _minimal_task_body(assignee="agent")
@@ -55,9 +53,10 @@ async def test_member_restricted_fields_stripped(client_as_member):
         data_class="confidential",
     )
     resp = await client_as_member.post("/api/tasks", json=body)
-    # Entweder 201 (Felder entfernt) oder ein anderer DB-Fehler —
-    # nicht 403 (das wäre nur bei assignee='agent')
-    assert resp.status_code != 403 or "Agent" in resp.json().get("detail", "")
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["autonomy_level"] != "L3"
+    assert data["llm_override"] is None
 
 
 # ---------------------------------------------------------------------------

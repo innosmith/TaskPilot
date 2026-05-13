@@ -90,19 +90,19 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_role("member")),
 ) -> TaskOut:
+    if user.role != "owner":
+        if hasattr(body, "assignee") and body.assignee == "agent":
+            raise HTTPException(status_code=403, detail="Agent-Zuweisung ist nicht erlaubt")
+        for field in MEMBER_RESTRICTED_TASK_FIELDS:
+            if hasattr(body, field):
+                setattr(body, field, None)
+
     col_result = await db.execute(
         select(BoardColumn.project_id).where(BoardColumn.id == body.board_column_id)
     )
     project_id = col_result.scalar_one_or_none()
     if project_id and not await check_project_access(project_id, user, db):
         raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
-
-    if user.role != "owner":
-        for field in MEMBER_RESTRICTED_TASK_FIELDS:
-            if hasattr(body, field):
-                setattr(body, field, None)
-        if hasattr(body, "assignee") and body.assignee == "agent":
-            raise HTTPException(status_code=403, detail="Agent-Zuweisung ist nicht erlaubt")
 
     if body.board_position is None:
         max_result = await db.execute(

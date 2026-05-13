@@ -30,8 +30,11 @@ make test-all       # Schicht 1 + 2 + Contract zusammen
 **Voraussetzungen:**
 - PostgreSQL laeuft auf Port 5435 (`make infra` oder `make dev`)
 - Python-venv aktiviert
+- DB-Passwort wird aus `.env.dev` geladen (gleicher PostgreSQL-Server)
 
-**Keine Credentials noetig.** Alle externen APIs und Auth werden gemockt.
+**Keine externen Credentials noetig.** Alle externen APIs und Auth werden gemockt.
+Tests mit `@pytest.mark.db` nutzen eine dedizierte `taskpilot_test`-Datenbank,
+die bei jedem Lauf automatisch neu erstellt wird (DROP + CREATE + Schema + Seed).
 
 ```bash
 cd /home/innosmith/dev/github/TaskPilot
@@ -191,17 +194,26 @@ Passwoerter werden **nie** in Dateien gespeichert — weder in Testdateien, noch
 
 | Kontext | Woher kommen Credentials? |
 |---------|--------------------------|
-| `make test` (Backend) | Keine noetig — alles gemockt |
+| `make test` (Backend) | DB-Passwort aus `.env.dev`, externe APIs gemockt |
 | `make test-smoke` | Interaktiver Prompt (getpass) |
 | `make test-contract` | Keine noetig |
 | `make test-e2e` | Interaktiver Prompt (getpass) |
 | `make test-explore` | Interaktiver Prompt |
 
-### .env.test
+### DB-Credentials fuer Schicht 1
 
-Die Datei `.env.test` enthaelt **nur** DB-Verbindungsdaten und Auth-Defaults fuer Backend-Unit-Tests. Sie enthaelt **keine externen API-Keys** (kein Graph, Pipedrive, Toggl, Bexio, LLM).
+Die Test-DB (`taskpilot_test`) laeuft auf dem gleichen PostgreSQL wie die DEV-DB.
+Das Passwort wird aus `.env.dev` geladen (`TP_DB_PASSWORD`). Es gibt keine separate `.env.test`-Datei.
 
-### Was `.env.test` nicht enthaelt (bewusst)
+Die `conftest.py` (`src/backend/conftest.py`) erstellt bei jedem Lauf automatisch:
+1. `DROP DATABASE taskpilot_test` (falls vorhanden)
+2. `CREATE DATABASE taskpilot_test`
+3. Schema aus `db/schema.sql`
+4. Seed-Daten aus `db/seed-test.sql` (deterministische Test-UUIDs)
+
+Falls PostgreSQL nicht laeuft, werden `@pytest.mark.db`-Tests automatisch uebersprungen.
+
+### Was NICHT in die Test-Umgebung gehoert (bewusst)
 
 - `TP_GRAPH_*` — kein Microsoft-365-Zugriff in Tests
 - `TP_PIPEDRIVE_*` — kein CRM-Zugriff in Tests
