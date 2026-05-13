@@ -119,6 +119,9 @@ class Settings(BaseSettings):
     triage_interval_seconds: int = 120
     chat_triage_interval_seconds: int = 300
 
+    # Integrations-Steuerung: Nur aktive Umgebung pollt E-Mails/Chats
+    integrations_active: bool = True
+
     # ClamAV (Virenscanner fuer Uploads)
     clamav_host: str = "localhost"
     clamav_port: int = 3310

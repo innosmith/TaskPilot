@@ -40,10 +40,14 @@ services:
       TP_DB_HOST: postgres-prod
       TP_DB_PORT: "5432"
       TP_LITELLM_BASE_URL: http://host.docker.internal:4000
+      TP_OLLAMA_BASE_URL: http://host.docker.internal:11434
+      TP_INVOICEINSIGHT_URL: http://host.docker.internal:8055/mcp
+      TP_CLAMAV_HOST: clamav
     volumes:
       - prod-uploads:/app/uploads
       - prod-exports:/tmp/taskpilot-exports
-      - ${HOME}/.nanobot/workspace:/home/taskpilot/.nanobot/workspace:ro
+      - ${HOME}/.nanobot/workspace:/home/taskpilot/.nanobot/workspace
+      - ${HOME}/OneDrive/Finanzen/Kreditoren:${HOME}/OneDrive/Finanzen/Kreditoren:ro
     # no-new-privileges deaktiviert: Kernel 6.17-nvidia blockt jede exec mit diesem Flag
     # Security durch non-root User (taskpilot) + Cloudflare Zero Trust gewaehrleistet
     depends_on:
@@ -90,5 +94,8 @@ services:
 
 volumes:
   prod-uploads:
+    name: taskpilot-prod-uploads
   prod-exports:
+    name: taskpilot-prod-exports
   clamav-data:
+    name: taskpilot-clamav-data

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.auth.deps import get_current_user, require_role
+from app.config import get_settings
 from app.database import get_db
 from app.models import User
 
@@ -101,17 +102,27 @@ class TriageSettings(BaseModel):
     inbox_hidden_folders: list[str] | None = None
 
 
+class TriageSettingsResponse(TriageSettings):
+    integrations_active_env: bool = True
+    app_env: str = "prod"
+
+
 TRIAGE_FIELDS = ["triage_prompt", "triage_interval_seconds", "triage_enabled", "inbox_hidden_folders"]
 
 
-@router.get("/triage", response_model=TriageSettings)
+@router.get("/triage", response_model=TriageSettingsResponse)
 async def get_triage_settings(
     user: User = Depends(require_role("owner")),
-) -> TriageSettings:
+) -> TriageSettingsResponse:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
     s = user.settings or {}
-    return TriageSettings(**{f: s.get(f) for f in TRIAGE_FIELDS})
+    cfg = get_settings()
+    return TriageSettingsResponse(
+        **{f: s.get(f) for f in TRIAGE_FIELDS},
+        integrations_active_env=cfg.integrations_active,
+        app_env=cfg.app_env,
+    )
 
 
 @router.put("/triage", response_model=TriageSettings)
@@ -144,6 +155,12 @@ class IntegrationSettings(BaseModel):
     bexio_api_token: str | None = None
 
 
+class IntegrationSettingsResponse(IntegrationSettings):
+    integrations_active_env: bool = True
+    triage_enabled: bool = True
+    app_env: str = "prod"
+
+
 INTEGRATION_FIELDS = ["pipedrive_api_token", "pipedrive_domain", "toggl_api_token", "toggl_workspace_id", "bexio_api_token"]
 
 
@@ -153,19 +170,23 @@ def _mask_token(token: str) -> str:
     return f"{'*' * (len(token) - 4)}{token[-4:]}" if len(token) > 4 else "****"
 
 
-@router.get("/integrations", response_model=IntegrationSettings)
+@router.get("/integrations", response_model=IntegrationSettingsResponse)
 async def get_integration_settings(
     user: User = Depends(require_role("owner")),
-) -> IntegrationSettings:
+) -> IntegrationSettingsResponse:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
     s = user.settings or {}
-    return IntegrationSettings(
+    cfg = get_settings()
+    return IntegrationSettingsResponse(
         pipedrive_api_token=_mask_token(s.get("pipedrive_api_token") or ""),
         pipedrive_domain=s.get("pipedrive_domain") or "innosmith",
         toggl_api_token=_mask_token(s.get("toggl_api_token") or ""),
         toggl_workspace_id=s.get("toggl_workspace_id"),
         bexio_api_token=_mask_token(s.get("bexio_api_token") or ""),
+        integrations_active_env=cfg.integrations_active,
+        triage_enabled=s.get("triage_enabled", True),
+        app_env=cfg.app_env,
     )
 
 
@@ -197,6 +218,27 @@ async def update_integration_settings(
         toggl_workspace_id=current.get("toggl_workspace_id"),
         bexio_api_token=_mask_token(current.get("bexio_api_token") or ""),
     )
+
+
+class TriageTogglePayload(BaseModel):
+    triage_enabled: bool
+
+
+@router.patch("/integrations/triage-toggle")
+async def toggle_triage(
+    body: TriageTogglePayload,
+    user: User = Depends(require_role("owner")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Schaltet triage_enabled im Owner-Settings-JSONB um (Runtime-Toggle)."""
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Nur Owner")
+    current = dict(user.settings or {})
+    current["triage_enabled"] = body.triage_enabled
+    user.settings = current
+    flag_modified(user, "settings")
+    await db.flush()
+    return {"triage_enabled": body.triage_enabled}
 
 
 # --- LLM-Einstellungen ---

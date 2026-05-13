@@ -57,11 +57,17 @@ from app.services.triage import start_triage_service, stop_triage_service
 
 logging.basicConfig(level=logging.INFO)
 app_settings = get_settings()
-logging.getLogger("taskpilot.startup").info(
+_startup_log = logging.getLogger("taskpilot.startup")
+_startup_log.info(
     "Settings geladen: app_env=%s, mfa_issuer=%s, env_file=%s",
     app_settings.app_env,
     app_settings.mfa_issuer,
     app_settings.model_config.get("env_file", "?"),
+)
+_startup_log.info(
+    "Umgebung: %s | Integrationen (E-Mail/Chat-Polling): %s",
+    app_settings.app_env.upper(),
+    "AKTIV" if app_settings.integrations_active else "INAKTIV",
 )
 
 UPLOADS_DIR = pathlib.Path(__file__).resolve().parent.parent / "uploads"

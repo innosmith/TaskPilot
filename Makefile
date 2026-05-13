@@ -3,7 +3,7 @@
 
 COMPOSE_SHARED = docker compose -f docker/docker-compose.yml
 COMPOSE_INT    = $(COMPOSE_SHARED) -f docker/docker-compose.integration.yml --profile clamav
-COMPOSE_PROD   = docker compose --env-file .env.prod -f docker/docker-compose.prod.yml
+COMPOSE_PROD   = docker compose -p taskpilot-prod --env-file .env.prod -f docker/docker-compose.prod.yml
 
 .PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all reset-dev schema-int seed-int backup-prod backup-schedule backup-unschedule backup-status
 

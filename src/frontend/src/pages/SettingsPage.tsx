@@ -39,6 +39,8 @@ interface TriageSettingsData {
   triage_interval_seconds: number | null;
   triage_enabled: boolean | null;
   inbox_hidden_folders: string[] | null;
+  integrations_active_env: boolean;
+  app_env: string;
 }
 
 interface TriageTestResult {
@@ -124,6 +126,8 @@ export function SettingsPage() {
   const [triageTesting, setTriageTesting] = useState(false);
   const [hiddenFolders, setHiddenFolders] = useState<string[]>(['ArchivSorted', 'Conversation History', 'Outbox']);
   const [hiddenFolderInput, setHiddenFolderInput] = useState('');
+  const [integrationsActiveEnv, setIntegrationsActiveEnv] = useState(true);
+  const [appEnv, setAppEnv] = useState('prod');
 
   const [memFiles, setMemFiles] = useState<MemoryFile[]>([]);
   const [heartbeat, setHeartbeat] = useState<HeartbeatStatus | null>(null);
@@ -181,6 +185,8 @@ export function SettingsPage() {
         if (ts.triage_interval_seconds) setTriageInterval(Math.round(ts.triage_interval_seconds / 60));
         if (ts.triage_enabled !== null && ts.triage_enabled !== undefined) setTriageEnabled(ts.triage_enabled);
         if (ts.inbox_hidden_folders) setHiddenFolders(ts.inbox_hidden_folders);
+        setIntegrationsActiveEnv(ts.integrations_active_env ?? true);
+        setAppEnv(ts.app_env ?? 'prod');
       }
     } catch { /* */ }
     finally { setLoading(false); }
@@ -209,13 +215,16 @@ export function SettingsPage() {
 
   useEffect(() => {
     if (tab !== 'integrations') return;
-    api.get<{ pipedrive_api_token: string | null; pipedrive_domain: string | null; toggl_api_token: string | null; toggl_workspace_id: number | null; bexio_api_token: string | null }>('/api/settings/integrations')
+    api.get<{ pipedrive_api_token: string | null; pipedrive_domain: string | null; toggl_api_token: string | null; toggl_workspace_id: number | null; bexio_api_token: string | null; integrations_active_env?: boolean; triage_enabled?: boolean; app_env?: string }>('/api/settings/integrations')
       .then((data) => {
         setPdToken(data.pipedrive_api_token || '');
         setPdDomain(data.pipedrive_domain || 'innosmith');
         setTogglToken(data.toggl_api_token || '');
         setTogglWsId(data.toggl_workspace_id ? String(data.toggl_workspace_id) : '');
         setBexioToken(data.bexio_api_token || '');
+        if (data.integrations_active_env !== undefined) setIntegrationsActiveEnv(data.integrations_active_env);
+        if (data.triage_enabled !== undefined) setTriageEnabled(data.triage_enabled);
+        if (data.app_env) setAppEnv(data.app_env);
       })
       .catch(() => {});
     api.get<{ has_key: boolean; created_at: string | null }>('/api/settings/extension-api-key')
@@ -1028,6 +1037,56 @@ export function SettingsPage() {
               <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Integrationen</h2>
               <div className="space-y-6">
 
+                {/* Integrations-Steuerung */}
+                <div className={`rounded-xl border p-5 ${
+                  !integrationsActiveEnv
+                    ? 'border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/30'
+                    : triageEnabled
+                      ? 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-900 dark:bg-emerald-950/30'
+                      : 'border-gray-200 bg-gray-50/50 dark:border-gray-700 dark:bg-gray-800/50'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                        E-Mail- & Chat-Triage
+                      </h3>
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Automatisches Polling und Klassifikation von E-Mails und Teams-Chats.
+                        {!integrationsActiveEnv && (
+                          <span className="ml-1 font-medium text-amber-600 dark:text-amber-400">
+                            Auf Env-Ebene gesperrt (TP_INTEGRATIONS_ACTIVE=false, {appEnv.toUpperCase()}).
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-xs font-medium ${
+                        !integrationsActiveEnv ? 'text-amber-600 dark:text-amber-400' :
+                        triageEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400'
+                      }`}>
+                        {!integrationsActiveEnv ? 'Gesperrt' : triageEnabled ? 'Aktiv' : 'Inaktiv'}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          if (!integrationsActiveEnv) return;
+                          const next = !triageEnabled;
+                          try {
+                            await api.patch('/api/settings/integrations/triage-toggle', { triage_enabled: next });
+                            setTriageEnabled(next);
+                          } catch { /* */ }
+                        }}
+                        disabled={!integrationsActiveEnv}
+                        className={`relative h-6 w-11 rounded-full transition-colors ${
+                          !integrationsActiveEnv ? 'cursor-not-allowed bg-gray-300 opacity-50 dark:bg-gray-600' :
+                          triageEnabled ? 'bg-emerald-600' : 'bg-gray-300 dark:bg-gray-600'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${triageEnabled ? 'left-[22px]' : 'left-0.5'}`} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="rounded-xl border border-orange-200 bg-orange-50/50 p-5 dark:border-orange-900 dark:bg-orange-950/30">
                   <div className="mb-3 flex items-center gap-3">
                     <PipedriveIcon className="h-8 w-8" />
@@ -1245,21 +1304,6 @@ export function SettingsPage() {
             <section>
               <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">E-Mail-Triage</h2>
               <div className="space-y-6">
-
-                <div className="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-700">
-                  <div>
-                    <p className="font-medium text-gray-900 dark:text-white">Automatische Triage aktiv</p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Neue E-Mails werden automatisch klassifiziert
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setTriageEnabled(!triageEnabled)}
-                    className={`relative h-6 w-11 rounded-full transition-colors ${triageEnabled ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
-                  >
-                    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${triageEnabled ? 'left-[22px]' : 'left-0.5'}`} />
-                  </button>
-                </div>
 
                 <div>
                   <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">

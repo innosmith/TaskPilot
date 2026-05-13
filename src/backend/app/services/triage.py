@@ -17,7 +17,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from dateutil.parser import isoparse
 from sqlalchemy import select
@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import async_session
-from app.models import AgentJob, ChatTriage, EmailTriage
+from app.models import AgentJob, ChatTriage, EmailTriage, User
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
 from graph_client import GraphClient, GraphConfig  # noqa: E402
@@ -33,6 +33,24 @@ from graph_client import GraphClient, GraphConfig  # noqa: E402
 logger = logging.getLogger("taskpilot.triage")
 
 MAX_EMAILS_PER_CYCLE = 20
+COLD_START_CUTOFF_HOURS = 24
+
+
+async def _is_triage_enabled_in_db() -> bool:
+    """Prüft triage_enabled im Owner-Settings-JSONB (Stufe 2: Runtime-Toggle)."""
+    try:
+        async with async_session() as db:
+            owner = (
+                await db.execute(
+                    select(User).where(User.role == "owner").limit(1)
+                )
+            ).scalar_one_or_none()
+            if owner is None:
+                return True
+            return (owner.settings or {}).get("triage_enabled", True)
+    except Exception:
+        logger.warning("triage_enabled konnte nicht aus DB gelesen werden, Default=True")
+        return True
 
 
 def _get_graph_client() -> GraphClient | None:
@@ -117,16 +135,25 @@ async def _triage_cycle() -> int:
     if client is None:
         return 0
 
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=COLD_START_CUTOFF_HOURS)
     processed = 0
     try:
         async with async_session() as db:
             known_ids = await _get_known_message_ids(db)
 
             data = await client.list_emails(folder="inbox", top=MAX_EMAILS_PER_CYCLE)
-            new_emails = [
-                msg for msg in data.get("value", [])
-                if msg.get("id") and msg["id"] not in known_ids
-            ]
+            new_emails = []
+            for msg in data.get("value", []):
+                if not msg.get("id") or msg["id"] in known_ids:
+                    continue
+                received = msg.get("receivedDateTime")
+                if received:
+                    try:
+                        if isoparse(received) < cutoff:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                new_emails.append(msg)
 
             for email_data in new_emails:
                 await _create_triage_job(db, email_data)
@@ -177,7 +204,12 @@ async def run_triage_now(top: int = 50) -> int:
 
 
 async def triage_loop() -> None:
-    """Automatische Endlosschleife: Prueft alle 2 Minuten auf neue E-Mails."""
+    """Automatische Endlosschleife: Prueft alle 2 Minuten auf neue E-Mails.
+
+    Prüft vor jedem Zyklus:
+    - Stufe 1: TP_INTEGRATIONS_ACTIVE (Env)
+    - Stufe 2: triage_enabled (Owner-Settings in DB)
+    """
     settings = get_settings()
     interval = settings.triage_interval_seconds
     logger.info(
@@ -187,6 +219,12 @@ async def triage_loop() -> None:
     await asyncio.sleep(5)
     while True:
         try:
+            if not settings.integrations_active:
+                await asyncio.sleep(interval)
+                continue
+            if not await _is_triage_enabled_in_db():
+                await asyncio.sleep(interval)
+                continue
             count = await _triage_cycle()
             if count:
                 logger.info("Triage: %d neue E-Mail(s) → AgentJobs für nanobot erstellt", count)
@@ -258,7 +296,9 @@ async def _chat_triage_cycle() -> int:
     if client is None:
         return 0
 
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=COLD_START_CUTOFF_HOURS)
     processed = 0
+    skipped_old = 0
     try:
         async with async_session() as db:
             known_ids = await _get_known_chat_message_ids(db)
@@ -283,8 +323,22 @@ async def _chat_triage_cycle() -> int:
                         continue
                     if msg_type in ("systemEventMessage",):
                         continue
+                    created = msg.get("createdDateTime")
+                    if created:
+                        try:
+                            if isoparse(created) < cutoff:
+                                skipped_old += 1
+                                continue
+                        except (ValueError, TypeError):
+                            pass
                     await _create_chat_triage_job(db, chat_id, msg, chat_type)
                     processed += 1
+
+            if skipped_old:
+                logger.info(
+                    "Chat-Triage: %d alte Nachrichten (>%dh) übersprungen",
+                    skipped_old, COLD_START_CUTOFF_HOURS,
+                )
 
             await db.commit()
 
@@ -300,7 +354,12 @@ async def _chat_triage_cycle() -> int:
 
 
 async def chat_triage_loop() -> None:
-    """Automatische Endlosschleife: Prüft alle 5 Minuten auf neue Chat-Nachrichten."""
+    """Automatische Endlosschleife: Prüft alle 5 Minuten auf neue Chat-Nachrichten.
+
+    Prüft vor jedem Zyklus:
+    - Stufe 1: TP_INTEGRATIONS_ACTIVE (Env)
+    - Stufe 2: triage_enabled (Owner-Settings in DB)
+    """
     settings = get_settings()
     interval = settings.chat_triage_interval_seconds
     logger.info(
@@ -310,6 +369,12 @@ async def chat_triage_loop() -> None:
     await asyncio.sleep(15)
     while True:
         try:
+            if not settings.integrations_active:
+                await asyncio.sleep(interval)
+                continue
+            if not await _is_triage_enabled_in_db():
+                await asyncio.sleep(interval)
+                continue
             count = await _chat_triage_cycle()
             if count:
                 logger.info("Chat-Triage: %d neue Nachricht(en) → AgentJobs erstellt", count)
@@ -325,12 +390,23 @@ _chat_triage_task: asyncio.Task | None = None
 async def start_triage_service() -> None:
     global _triage_task, _chat_triage_task
     s = get_settings()
+    if not s.integrations_active:
+        logger.info(
+            "Triage-Service deaktiviert (TP_INTEGRATIONS_ACTIVE=false, Umgebung: %s)",
+            s.app_env,
+        )
+        return
     if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):
         logger.info("Triage-Service deaktiviert (Graph API nicht konfiguriert)")
         return
     _triage_task = asyncio.create_task(triage_loop())
     _chat_triage_task = asyncio.create_task(chat_triage_loop())
-    logger.info("Triage-Service: E-Mail (120s) + Chat (300s) Hintergrund-Tasks laufen")
+    logger.info(
+        "Triage-Service: E-Mail (%ds) + Chat (%ds) Hintergrund-Tasks laufen [Umgebung: %s]",
+        s.triage_interval_seconds,
+        s.chat_triage_interval_seconds,
+        s.app_env,
+    )
 
 
 async def stop_triage_service() -> None:
