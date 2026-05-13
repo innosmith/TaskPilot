@@ -131,6 +131,11 @@ test-all: test test-smoke ## Alle automatisierten Tests (Schicht 1-2 + Contract 
 	.venv/bin/python -m pytest tests/contract/ -v
 	@echo "Alle Tests bestanden."
 
+# ── Backup ────────────────────────────────────────────────
+
+backup-prod: ## Prod-Backup auf OneDrive erstellen
+	./scripts/backup-prod.sh
+
 # ── DB-Schema & Migration ────────────────────────────────
 
 schema-int: ## Schema direkt auf taskpilot_int anwenden (frische DB)

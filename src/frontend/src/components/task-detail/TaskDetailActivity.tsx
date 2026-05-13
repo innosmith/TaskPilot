@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect, useCallback, type KeyboardEvent } from 'react';
+import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { Pencil, Trash2 } from 'lucide-react';
 import { MentionsInput, Mention } from 'react-mentions';
 import { api } from '../../api/client';
@@ -45,7 +45,6 @@ export default function TaskDetailActivity({
   const [editText, setEditText] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [mentionableUsers, setMentionableUsers] = useState<MentionableUser[]>([]);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -60,13 +59,6 @@ export default function TaskDetailActivity({
     () => mentionableUsers.map((u) => ({ id: u.id, display: u.display_name })),
     [mentionableUsers],
   );
-
-  const adjustHeight = () => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 144) + 'px';
-  };
 
   const commentCount = useMemo(
     () => activities.filter((a) => a.event_type === 'comment').length,
@@ -93,19 +85,9 @@ export default function TaskDetailActivity({
         details: { text },
       });
       setCommentText('');
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
       await refreshTask();
     } finally {
       setSubmittingComment(false);
-    }
-  };
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmitComment();
     }
   };
 
