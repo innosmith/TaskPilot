@@ -1,0 +1,31 @@
+---
+description: Verbietet das Auslesen von Umgebungsvariablen und Secret-Dateien; bei Bedarf User fragen.
+alwaysApply: true
+---
+
+# Umgebungsvariablen und Secrets — kein Auslesen
+
+## Ziel
+
+Werte aus der laufenden Umgebung und aus Secret-Dateien sind **vertraulich**. Der Agent darf sie **nicht** selbst einsehen oder ausgeben lassen — unabhängig von `.cursorignore` oder ähnlichen Mechanismen.
+
+## Streng verboten
+
+- **Dateien lesen:** `.env`, `.env.*`, `*.pem`, SSH-Keys, Token-Dateien, Cloud-Credentials, lokale Overrides mit echten Werten.
+- **Shell-Befehle**, deren Hauptzweck das Auflisten von Umgebungsvariablen ist: z. B. `printenv`, `env`, `export -p`, `set` (wenn es die komplette Umgebung ausgibt), Lesen von `/proc/self/environ` o. Ä.
+- **Indirektes Auslesen:** z. B. Skripte oder Befehle, die nur dazu da sind, `.env` zu laden und Werte zu drucken.
+- **Tool-Nutzung** (Read, Grep, Terminal, …) auf Inhalte, die offensichtlich aktuelle Secret-**Werte** enthalten.
+
+## Erlaubt
+
+- **Namen** von Variablen (ohne Werte) in Code, Docs, Beispielen — z. B. `TP_DB_HOST` als Platzhalter.
+- **Öffentliche** Projekt-Doku, die beschreibt, *welche* Keys existieren, ohne echte Produktionswerte zu liefern.
+
+## Wenn Wissen über konkrete Werte nötig ist
+
+1. Den **User fragen** — kurz und konkret (z. B. «Welchen Wert soll ich für X annehmen?»).
+2. Der User kann Werte **manuell** mitteilen, **redigiert** oder als temporäre Anweisung im Chat — nicht durch Auslesen der lokalen Umgebung.
+
+## Bei Unsicherheit
+
+Lieber zu wenig lesen als zu viel: keine `.env`-Pfad-Ratespiele; bei Verdacht auf Secrets **nicht** öffnen, sondern nachfragen.

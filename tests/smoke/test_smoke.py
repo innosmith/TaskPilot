@@ -48,21 +48,38 @@ def _ensure_credentials():
 
 
 def _get_token(backend: str) -> str | None:
-    """Login einmal ausfuehren, Token fuer alle Tests cachen."""
+    """Login einmal ausfuehren, Token fuer alle Tests cachen.
+
+    Falls MFA aktiviert ist, wird der TOTP-Code interaktiv abgefragt.
+    """
     global _cached_token
     _ensure_credentials()
     if not _smoke_password:
         return None
     if _cached_token is not None:
         return _cached_token
-    r = httpx.post(
-        f"{backend}/api/auth/login",
-        json={"email": _smoke_email, "password": _smoke_password},
-        timeout=TIMEOUT,
-    )
+
+    payload: dict = {"email": _smoke_email, "password": _smoke_password}
+    r = httpx.post(f"{backend}/api/auth/login", json=payload, timeout=TIMEOUT)
     if r.status_code != 200:
         return None
-    _cached_token = r.json().get("access_token", "")
+
+    data = r.json()
+    if data.get("requires_mfa") and not data.get("access_token"):
+        try:
+            mfa_code = getpass.getpass("  MFA-Code (TOTP): ")
+        except (EOFError, OSError):
+            mfa_code = ""
+        if not mfa_code:
+            print("  → Kein MFA-Code eingegeben, Auth-Tests uebersprungen.\n")
+            return None
+        payload["mfa_code"] = mfa_code
+        r = httpx.post(f"{backend}/api/auth/login", json=payload, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+
+    _cached_token = data.get("access_token", "")
     return _cached_token or None
 
 
@@ -113,17 +130,10 @@ class TestAuthRoundtrip:
 
     def test_login_and_me(self, backend):
         """Login → Token → GET /me liefert User-Daten."""
-        email, password = self._get_credentials()
+        email, _ = self._get_credentials()
 
-        login_r = httpx.post(
-            f"{backend}/api/auth/login",
-            json={"email": email, "password": password},
-            timeout=TIMEOUT,
-        )
-        assert login_r.status_code == 200, f"Login fehlgeschlagen: {login_r.status_code} {login_r.text}"
-
-        token = login_r.json().get("access_token")
-        assert token, "Kein access_token in Login-Response"
+        token = _get_token(backend)
+        assert token, "Login fehlgeschlagen (kein Token erhalten)"
 
         me_r = httpx.get(
             f"{backend}/api/auth/me",
@@ -272,20 +282,11 @@ class TestDockerIntegration:
         data = r.json()
         assert "url" in data, "Upload-Response enthaelt keine URL"
 
-    def test_upload_via_nginx(self, frontend):
+    def test_upload_via_nginx(self, frontend, backend):
         """Upload durch Nginx-Proxy -- prueft client_max_body_size."""
-        _ensure_credentials()
-        if not _smoke_password:
-            pytest.skip("Kein Passwort eingegeben")
-        # Login ueber Nginx
-        login_r = httpx.post(
-            f"{frontend}/api/auth/login",
-            json={"email": _smoke_email, "password": _smoke_password},
-            timeout=TIMEOUT,
-        )
-        if login_r.status_code != 200:
-            pytest.skip("Login via Nginx fehlgeschlagen")
-        token = login_r.json().get("access_token")
+        token = _get_token(backend)
+        if not token:
+            pytest.skip("Login nicht moeglich")
         # 2MB Dummy-Datei (ueber Default 1MB Nginx-Limit)
         big_data = b"\x00" * (2 * 1024 * 1024)
         r = httpx.post(
