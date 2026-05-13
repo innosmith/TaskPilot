@@ -1,8 +1,10 @@
 """Playwright E2E Test-Konfiguration.
 
 Tests laufen gegen die Integration- oder Dev-Umgebung.
-Credentials: TP_TEST_PASSWORD / TP_OWNER_PASSWORD aus .env.test,
+Credentials: TP_TEST_PASSWORD / TP_OWNER_PASSWORD aus .env.integration,
 Fallback auf interaktiven getpass-Prompt.
+
+Falls MFA aktiviert ist, wird der TOTP-Code interaktiv abgefragt.
 
 Login wird einmal pro Session durchgefuehrt (storageState-Pattern),
 alle Tests teilen den authentifizierten Zustand.
@@ -72,7 +74,7 @@ def _resolve_credentials():
 
 
 def _login(page: Page, email: str, password: str) -> None:
-    """Login ueber die UI mit defensiver Fehlerpruefung."""
+    """Login ueber die UI mit MFA-Support und defensiver Fehlerpruefung."""
     page.goto("/login")
     page.wait_for_selector("input[type='email'], input[name='email']", timeout=10000)
 
@@ -81,6 +83,23 @@ def _login(page: Page, email: str, password: str) -> None:
     page.click("button[type='submit']")
 
     page.wait_for_timeout(2000)
+
+    mfa_input = page.locator(
+        "input[name='mfa_code'], input[data-testid='mfa-input'], "
+        "input[placeholder*='Code'], input[inputmode='numeric']"
+    ).first
+    if mfa_input.count() > 0 and mfa_input.is_visible():
+        try:
+            mfa_code = getpass.getpass(f"  MFA-Code fuer {email}: ")
+        except (EOFError, OSError):
+            mfa_code = ""
+        if not mfa_code:
+            raise RuntimeError("MFA-Code benoetigt aber nicht eingegeben")
+        mfa_input.fill(mfa_code)
+        submit = page.locator("button[type='submit']").first
+        if submit.count() > 0:
+            submit.click()
+        page.wait_for_timeout(2000)
 
     error_el = page.locator("[role='alert'], .text-red-500, .text-red-600, .text-destructive").first
     if error_el.count() > 0 and error_el.is_visible():

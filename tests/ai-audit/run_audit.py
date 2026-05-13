@@ -17,9 +17,12 @@ Umgebungsvariablen:
     TP_TEST_EMAIL    - Login-Email
     TP_TEST_PASSWORD - Login-Passwort (MUSS gesetzt sein)
     TP_AUDIT_MODEL   - Ollama-Modell (default: qwen3.5:latest)
+
+Falls MFA aktiviert ist, wird der TOTP-Code interaktiv abgefragt.
 """
 
 import asyncio
+import getpass
 import os
 import sys
 from datetime import datetime
@@ -92,6 +95,12 @@ async def run_audit():
 
     check_dependencies()
 
+    mfa_code = ""
+    try:
+        mfa_code = getpass.getpass("  MFA-Code (TOTP, leer falls kein MFA): ")
+    except (EOFError, OSError):
+        pass
+
     from browser_use import Agent
     from langchain_ollama import ChatOllama
 
@@ -112,6 +121,12 @@ async def run_audit():
         f"",
     ]
 
+    mfa_instruction = ""
+    if mfa_code:
+        mfa_instruction = (
+            f" Falls ein MFA/TOTP-Code-Feld erscheint, gib '{mfa_code}' ein."
+        )
+
     for scenario in AUDIT_SCENARIOS:
         print(f"\n{'='*60}")
         print(f"Audit: {scenario['name']}")
@@ -120,6 +135,7 @@ async def run_audit():
         task_with_password = scenario["task"].replace(
             "dem Passwort aus der Umgebung", f"Passwort '{LOGIN_PASSWORD}'"
         )
+        task_with_password += mfa_instruction
 
         try:
             agent = Agent(task=task_with_password, llm=llm)

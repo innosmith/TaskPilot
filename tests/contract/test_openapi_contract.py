@@ -67,7 +67,8 @@ FRONTEND_EXPECTED_ENDPOINTS: list[tuple[str, str]] = [
     ("PUT", "/api/settings/llm"),
     ("DELETE", "/api/settings/extension-api-key"),
     # Uploads
-    ("POST", "/api/uploads"),
+    ("POST", "/api/uploads/avatars"),
+    ("POST", "/api/uploads/icons"),
 ]
 
 
