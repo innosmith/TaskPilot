@@ -24,10 +24,19 @@ RUN PANDOC_PATH=$(python -c "import pypandoc; print(pypandoc.get_pandoc_path())"
     && pandoc --version | head -1
 
 # Private Packages (via docker/build.sh nach vendor/ kopiert)
+# [all] = pdf + anonymize + mcp + extract (Presidio, spaCy, GLiNER, Faker, …)
 COPY src/backend/vendor/ /opt/vendor/
 RUN if [ -d /opt/vendor/contentconverter ]; then \
-      pip install --no-cache-dir -e /opt/vendor/contentconverter; \
+      pip install --no-cache-dir -e "/opt/vendor/contentconverter[all]"; \
     fi
+
+# NLP-Modelle fuer Anonymisierung vorabladen (vermeidet Laufzeit-Downloads)
+# spaCy: de (Primaersprache) + en (Fallback)
+RUN python -m spacy download de_core_news_lg \
+    && python -m spacy download en_core_web_sm
+# GLiNER PII-Modell in den HuggingFace-Cache laden
+ENV HF_HOME=/opt/hf-cache
+RUN python -c "from gliner import GLiNER; GLiNER.from_pretrained('urchade/gliner_multi_pii-v1')"
 
 # Backend-Quellcode
 COPY src/backend/app/ /app/app/
@@ -70,7 +79,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf 
 RUN useradd -m -d /home/taskpilot -u 1000 -s /usr/sbin/nologin taskpilot && \
     mkdir -p /app/uploads/avatars /app/uploads/tasks /app/uploads/backgrounds /app/uploads/projects \
              /tmp/taskpilot-exports /home/taskpilot/.nanobot && \
-    chown -R taskpilot:taskpilot /app /tmp/taskpilot-exports /home/taskpilot
+    chown -R taskpilot:taskpilot /app /tmp/taskpilot-exports /home/taskpilot /opt/hf-cache
 
 EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]

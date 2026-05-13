@@ -404,6 +404,7 @@ export function PipelinePage() {
         taskId={selectedTaskId}
         onClose={() => setSelectedTaskId(null)}
         onUpdated={fetchData}
+        onOpenTask={setSelectedTaskId}
       />
 
       <BackgroundPicker

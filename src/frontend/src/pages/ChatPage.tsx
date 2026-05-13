@@ -1681,6 +1681,7 @@ export function ChatPage() {
           taskId={selectedTaskId}
           onClose={() => setSelectedTaskId(null)}
           onUpdated={() => setSelectedTaskId(null)}
+          onOpenTask={setSelectedTaskId}
         />
       )}
 

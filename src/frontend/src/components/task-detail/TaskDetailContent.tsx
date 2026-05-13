@@ -27,6 +27,15 @@ interface TaskDetailContentProps {
   onUpdated: () => void;
   updateTask: (payload: TaskUpdatePayload) => Promise<void>;
   refreshTask: () => Promise<void>;
+  onOpenTask?: (taskId: string) => void;
+}
+
+function ArrowUpRightIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+    </svg>
+  );
 }
 
 interface SortableChecklistItemProps {
@@ -39,6 +48,7 @@ interface SortableChecklistItemProps {
   onSaveEdit: () => void;
   onCancelEdit: () => void;
   onDelete: () => void;
+  onConvertToTask?: () => void;
 }
 
 function SortableChecklistItem({
@@ -51,6 +61,7 @@ function SortableChecklistItem({
   onSaveEdit,
   onCancelEdit,
   onDelete,
+  onConvertToTask,
 }: SortableChecklistItemProps) {
   const {
     attributes,
@@ -126,6 +137,17 @@ function SortableChecklistItem({
         </span>
       )}
 
+      {!item.is_checked && onConvertToTask && (
+        <button
+          type="button"
+          onClick={onConvertToTask}
+          title="Als Task erstellen"
+          className="shrink-0 text-gray-300 opacity-0 transition-opacity hover:text-indigo-500 group-hover:opacity-100 dark:text-gray-600 dark:hover:text-indigo-400"
+        >
+          <ArrowUpRightIcon className="h-4 w-4" />
+        </button>
+      )}
+
       <button
         type="button"
         onClick={onDelete}
@@ -143,6 +165,7 @@ export default function TaskDetailContent({
   onUpdated,
   updateTask,
   refreshTask,
+  onOpenTask,
 }: TaskDetailContentProps) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(task.title);
@@ -155,6 +178,8 @@ export default function TaskDetailContent({
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editItemText, setEditItemText] = useState('');
   const [newChecklistText, setNewChecklistText] = useState('');
+  const [convertedTask, setConvertedTask] = useState<{ id: string; title: string } | null>(null);
+  const convertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setTitleValue(task.title);
@@ -252,6 +277,28 @@ export default function TaskDetailContent({
     await refreshTask();
     onUpdated();
   }, [newChecklistText, taskId, refreshTask, onUpdated]);
+
+  const convertChecklistToTask = useCallback(
+    async (item: ChecklistItem) => {
+      try {
+        const newTask = await api.post<TaskDetail>('/api/tasks', {
+          title: item.text,
+          project_id: task.project_id,
+          board_column_id: task.board_column_id,
+        });
+        await api.patch(`/api/tasks/${taskId}/checklist/${item.id}`, {
+          is_checked: true,
+        });
+        await refreshTask();
+        onUpdated();
+
+        if (convertTimerRef.current) clearTimeout(convertTimerRef.current);
+        setConvertedTask({ id: newTask.id, title: item.text });
+        convertTimerRef.current = setTimeout(() => setConvertedTask(null), 5000);
+      } catch { /* Fehler ignorieren */ }
+    },
+    [task.project_id, task.board_column_id, taskId, refreshTask, onUpdated],
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -397,13 +444,14 @@ export default function TaskDetailContent({
                   onSaveEdit={saveEditItem}
                   onCancelEdit={cancelEditItem}
                   onDelete={() => deleteChecklistItem(item.id)}
+                  onConvertToTask={() => convertChecklistToTask(item)}
                 />
               ))}
             </div>
           </SortableContext>
         </DndContext>
 
-        <div className="mt-2 flex gap-2">
+        <div className="mt-2">
           <input
             type="text"
             value={newChecklistText}
@@ -411,18 +459,38 @@ export default function TaskDetailContent({
             onKeyDown={(e) => {
               if (e.key === 'Enter') addChecklistItem();
             }}
+            onBlur={addChecklistItem}
             placeholder="Neuer Eintrag…"
-            className="flex-1 rounded-lg border border-gray-200 bg-transparent px-3 py-1.5 text-sm text-gray-700 outline-none placeholder:text-gray-400 focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300 dark:border-gray-700 dark:text-gray-300 dark:placeholder:text-gray-500 dark:focus:border-indigo-600"
+            className="w-full rounded-lg border border-gray-200 bg-transparent px-3 py-1.5 text-sm text-gray-700 outline-none placeholder:text-gray-400 focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300 dark:border-gray-700 dark:text-gray-300 dark:placeholder:text-gray-500 dark:focus:border-indigo-600"
           />
-          <button
-            type="button"
-            onClick={addChecklistItem}
-            disabled={!newChecklistText.trim()}
-            className="shrink-0 rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Hinzufügen
-          </button>
         </div>
+
+        {convertedTask && (
+          <div className="mt-2 flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-2 dark:border-indigo-800 dark:bg-indigo-950/30">
+            <ArrowUpRightIcon className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+            <span className="flex-1 truncate text-xs text-indigo-700 dark:text-indigo-300">
+              «{convertedTask.title}» als Task erstellt
+            </span>
+            {onOpenTask && (
+              <button
+                type="button"
+                onClick={() => { onOpenTask(convertedTask.id); setConvertedTask(null); }}
+                className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-indigo-700"
+              >
+                Öffnen
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setConvertedTask(null)}
+              className="shrink-0 text-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

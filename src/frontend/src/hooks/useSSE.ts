@@ -25,6 +25,10 @@ export function useSSE(onEvent: SSEHandler) {
       handlerRef.current('email_triage_changed', e.data);
     });
 
+    es.addEventListener('notifications_changed', (e) => {
+      handlerRef.current('notifications_changed', e.data);
+    });
+
     es.onerror = () => {
       es.close();
       setTimeout(() => connect(), 3000);

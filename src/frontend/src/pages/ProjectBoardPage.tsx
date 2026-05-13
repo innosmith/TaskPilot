@@ -616,6 +616,7 @@ export function ProjectBoardPage() {
         taskId={selectedTaskId}
         onClose={() => setSelectedTaskId(null)}
         onUpdated={fetchBoard}
+        onOpenTask={setSelectedTaskId}
       />
 
       <BackgroundPicker

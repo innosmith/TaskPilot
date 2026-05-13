@@ -28,6 +28,7 @@ interface TaskDetailSidebarProps {
   updateTask: (payload: TaskUpdatePayload) => Promise<void>;
   handleProjectChange: (newProjectId: string) => Promise<void>;
   toggleTag: (tag: Tag) => Promise<void>;
+  onTagsChanged: () => Promise<void>;
 }
 
 const DATA_CLASS_OPTIONS = [
@@ -67,12 +68,13 @@ function formatTimestamp(iso: string): string {
 export default function TaskDetailSidebar({
   task, taskId, isOwner, authUser, allProjects, pipelineCols,
   boardColumns, boardMembers, allTags, models, defaultLocalModel,
-  updateTask, handleProjectChange, toggleTag,
+  updateTask, handleProjectChange, toggleTag, onTagsChanged,
 }: TaskDetailSidebarProps) {
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [newTagName, setNewTagName] = useState('');
   const [newTagColor, setNewTagColor] = useState('#6B7280');
   const [creatingTag, setCreatingTag] = useState(false);
+  const [deletingTagId, setDeletingTagId] = useState<string | null>(null);
   const dateInputRef = useRef<HTMLInputElement>(null);
   const [showCalendarPicker, setShowCalendarPicker] = useState(false);
   const recurrenceEndRef = useRef<HTMLInputElement>(null);
@@ -294,7 +296,7 @@ export default function TaskDetailSidebar({
           </button>
         </div>
         {showTagPicker && (
-          <div className="mt-2 space-y-2 rounded-lg border border-gray-200 bg-gray-50/50 p-2.5 dark:border-gray-700 dark:bg-gray-800/50">
+          <div className="mt-2 max-h-[240px] space-y-2 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50/50 p-2.5 dark:border-gray-700 dark:bg-gray-800/50">
             {allTags.filter((t) => !task.tags.some((tt) => tt.id === t.id)).length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {allTags
@@ -318,7 +320,7 @@ export default function TaskDetailSidebar({
                     type="color"
                     value={newTagColor}
                     onChange={(e) => setNewTagColor(e.target.value)}
-                    className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent p-0"
+                    className="h-6 w-6 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
                   />
                   <input
                     type="text"
@@ -329,6 +331,7 @@ export default function TaskDetailSidebar({
                         setCreatingTag(true);
                         try {
                           const created = await api.post<{ id: string; name: string; color: string }>('/api/tags', { name: newTagName.trim(), color: newTagColor });
+                          await onTagsChanged();
                           await toggleTag(created as unknown as Tag);
                           setNewTagName('');
                         } catch { /* tag might already exist */ }
@@ -336,24 +339,9 @@ export default function TaskDetailSidebar({
                       }
                     }}
                     placeholder="Neuer Tag…"
-                    className="flex-1 rounded border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 outline-none placeholder:text-gray-400 focus:border-indigo-300 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                    disabled={creatingTag}
+                    className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 outline-none placeholder:text-gray-400 focus:border-indigo-300 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
                   />
-                  <button
-                    onClick={async () => {
-                      if (!newTagName.trim()) return;
-                      setCreatingTag(true);
-                      try {
-                        const created = await api.post<{ id: string; name: string; color: string }>('/api/tags', { name: newTagName.trim(), color: newTagColor });
-                        await toggleTag(created as unknown as Tag);
-                        setNewTagName('');
-                      } catch { /* tag might already exist */ }
-                      setCreatingTag(false);
-                    }}
-                    disabled={!newTagName.trim() || creatingTag}
-                    className="rounded bg-indigo-600 px-2 py-1 text-[10px] font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"
-                  >
-                    +
-                  </button>
                 </div>
               </div>
             )}
@@ -367,18 +355,38 @@ export default function TaskDetailSidebar({
                       className="inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[10px] font-medium"
                       style={{ backgroundColor: t.color + '22', color: t.color }}
                     >
-                      {t.name}
-                      <button
-                        onClick={async () => {
-                          if (!confirm(`Tag "${t.name}" endgültig löschen?`)) return;
-                          await api.delete(`/api/tags/${t.id}`);
-                          window.location.reload();
-                        }}
-                        className="ml-0.5 rounded-full p-0.5 opacity-50 transition-opacity hover:opacity-100"
-                        title="Tag löschen"
-                      >
-                        <CloseIcon className="h-2.5 w-2.5" />
-                      </button>
+                      {deletingTagId === t.id ? (
+                        <>
+                          <span className="mr-0.5">Löschen?</span>
+                          <button
+                            onClick={async () => {
+                              await api.delete(`/api/tags/${t.id}`);
+                              setDeletingTagId(null);
+                              await onTagsChanged();
+                            }}
+                            className="rounded px-1 text-[9px] font-bold opacity-80 hover:opacity-100"
+                          >
+                            Ja
+                          </button>
+                          <button
+                            onClick={() => setDeletingTagId(null)}
+                            className="rounded px-1 text-[9px] opacity-60 hover:opacity-100"
+                          >
+                            Nein
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {t.name}
+                          <button
+                            onClick={() => setDeletingTagId(t.id)}
+                            className="ml-0.5 rounded-full p-0.5 opacity-50 transition-opacity hover:opacity-100"
+                            title="Tag löschen"
+                          >
+                            <CloseIcon className="h-2.5 w-2.5" />
+                          </button>
+                        </>
+                      )}
                     </span>
                   ))}
                 </div>
@@ -476,7 +484,7 @@ export default function TaskDetailSidebar({
           ) : (
             <button
               onClick={() => setShowCalendarPicker(true)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-indigo-300 px-2.5 py-2 text-xs font-medium text-indigo-600 transition-colors hover:border-indigo-400 hover:bg-indigo-50/50 dark:border-indigo-700 dark:text-indigo-400 dark:hover:border-indigo-600 dark:hover:bg-indigo-950/30"
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-2 text-xs font-medium text-white transition-colors hover:bg-indigo-700"
             >
               <CalendarIcon className="h-3.5 w-3.5" />
               Termin blockieren

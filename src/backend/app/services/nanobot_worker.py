@@ -29,6 +29,7 @@ from sqlalchemy import select, update
 
 from app.database import async_session
 from app.models import AgentJob, BoardColumn, EmailTriage, Project, Task, User
+from app.services.notification import notify_agent_awaiting_approval, notify_task_suggested
 
 logger = logging.getLogger("taskpilot.nanobot_worker")
 
@@ -361,6 +362,13 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
                         assignee="me",
                     )
                     db.add(new_task)
+                    await db.flush()
+                    await notify_task_suggested(
+                        db,
+                        task_id=new_task.id,
+                        task_title=task_title,
+                        from_email=meta.get("from_address"),
+                    )
                     logger.info(
                         "Job %s: Task erstellt '%s' in Projekt '%s' (reply_expected=%s)",
                         job_id, task_title, matched_project.name, reply_expected,
@@ -374,6 +382,9 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
                 existing_meta["draft_id"] = draft_id
                 job.metadata_json = existing_meta
             final_status = "awaiting_approval"
+            await notify_agent_awaiting_approval(
+                db, job_id=job_id, subject=meta.get("subject"),
+            )
 
         await db.commit()
 
@@ -514,6 +525,11 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
             status = "completed"
             if "awaiting_approval" in content.lower():
                 status = "awaiting_approval"
+
+        if status == "awaiting_approval" and job_type != "email_triage":
+            async with async_session() as notif_db:
+                await notify_agent_awaiting_approval(notif_db, job_id=job_id)
+                await notif_db.commit()
 
         async with async_session() as db:
             await db.execute(

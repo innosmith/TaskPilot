@@ -349,3 +349,24 @@ CREATE INDEX idx_chat_triage_chat_id ON chat_triage(chat_id);
 
 CREATE TRIGGER chat_triage_notify AFTER INSERT OR UPDATE ON chat_triage
     FOR EACH ROW EXECUTE FUNCTION notify_change('chat_triage_changed');
+
+-- Notifications
+CREATE TABLE notifications (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type            TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    body            TEXT,
+    link            TEXT,
+    source_type     TEXT,
+    source_id       UUID,
+    is_read         BOOLEAN DEFAULT false,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_notifications_user ON notifications(user_id);
+CREATE INDEX idx_notifications_user_unread ON notifications(user_id, is_read) WHERE NOT is_read;
+CREATE INDEX idx_notifications_created ON notifications(created_at DESC);
+
+CREATE TRIGGER notifications_notify AFTER INSERT OR UPDATE ON notifications
+    FOR EACH ROW EXECUTE FUNCTION notify_change('notifications_changed');

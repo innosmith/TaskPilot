@@ -1053,6 +1053,7 @@ export function CockpitPage() {
           taskId={selectedTaskId}
           onClose={() => setSelectedTaskId(null)}
           onUpdated={() => { setSelectedTaskId(null); fetchAppData(); }}
+          onOpenTask={setSelectedTaskId}
         />
       )}
 

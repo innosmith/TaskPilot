@@ -1,5 +1,6 @@
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { NotificationBell } from './NotificationBell';
 
 const PAGE_TITLES: Record<string, string> = {
   '/cockpit': 'Cockpit',
@@ -16,9 +17,11 @@ const PAGE_TITLES: Record<string, string> = {
 interface MobileHeaderProps {
   onMenuOpen: () => void;
   onSearchOpen: () => void;
+  notificationCount?: number;
+  onNotificationOpen?: () => void;
 }
 
-export function MobileHeader({ onMenuOpen, onSearchOpen }: MobileHeaderProps) {
+export function MobileHeader({ onMenuOpen, onSearchOpen, notificationCount = 0, onNotificationOpen }: MobileHeaderProps) {
   const { pathname } = useLocation();
   const { isOwner } = useAuth();
 
@@ -43,17 +46,25 @@ export function MobileHeader({ onMenuOpen, onSearchOpen }: MobileHeaderProps) {
           {title}
         </h1>
 
-        {isOwner ? (
-          <button
-            onClick={onSearchOpen}
-            className="flex h-11 w-11 items-center justify-center rounded-xl text-gray-600 transition-colors active:bg-gray-200/60 dark:text-gray-300 dark:active:bg-gray-800/60"
-            aria-label="Suche öffnen"
-          >
-            <SearchIcon className="h-5 w-5" />
-          </button>
-        ) : (
-          <div className="h-11 w-11" />
-        )}
+        <div className="flex items-center">
+          {onNotificationOpen && (
+            <NotificationBell
+              unreadCount={notificationCount}
+              onClick={onNotificationOpen}
+            />
+          )}
+          {isOwner ? (
+            <button
+              onClick={onSearchOpen}
+              className="flex h-11 w-11 items-center justify-center rounded-xl text-gray-600 transition-colors active:bg-gray-200/60 dark:text-gray-300 dark:active:bg-gray-800/60"
+              aria-label="Suche öffnen"
+            >
+              <SearchIcon className="h-5 w-5" />
+            </button>
+          ) : (
+            <div className="h-11 w-11" />
+          )}
+        </div>
       </div>
     </header>
   );

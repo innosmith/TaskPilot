@@ -14,6 +14,7 @@ from app.auth.deps import MEMBER_RESTRICTED_TASK_FIELDS, check_project_access, g
 from app.routers.uploads import _scan_with_clamav
 from app.database import get_db
 from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, BoardMember, ChecklistItem, Project, Task, User
+from app.services.notification import notify_mentions, notify_task_assigned
 from app.schemas import (
     AssigneeUser,
     ChecklistItemCreate,
@@ -310,6 +311,15 @@ async def update_task(
     if body.assignee == "agent" and old_assignee != "agent" and user.role == "owner":
         job = AgentJob(task_id=task.id, llm_model=task.llm_override)
         db.add(job)
+
+    new_assignee = task.assignee
+    if new_assignee != old_assignee and new_assignee not in ("agent", "me"):
+        try:
+            new_uid = uuid.UUID(new_assignee)
+            if new_uid != user.id:
+                await notify_task_assigned(db, task, new_uid, user.email)
+        except ValueError:
+            pass
 
     task_out = TaskOut.model_validate(task)
     task_out.assignee_user = await _resolve_assignee_user(task.assignee, db)
@@ -615,6 +625,9 @@ async def add_comment(
     )
     db.add(log)
     await db.flush()
+
+    await notify_mentions(db, body.text, task_id, task.title, user.email, user.id)
+
     return ActivityLogOut(
         id=str(log.id),
         task_id=str(log.task_id),
@@ -795,9 +808,53 @@ async def delete_attachment(
     if attachment is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    base = pathlib.Path(__file__).resolve().parent.parent.parent / "uploads"
-    full_path = base / attachment.filepath.lstrip("/").removeprefix("uploads/")
-    if full_path.exists():
-        full_path.unlink()
+    if not attachment.filepath.startswith("onedrive://"):
+        base = pathlib.Path(__file__).resolve().parent.parent.parent / "uploads"
+        full_path = base / attachment.filepath.lstrip("/").removeprefix("uploads/")
+        if full_path.exists():
+            full_path.unlink()
 
     await db.delete(attachment)
+
+
+class OneDriveAttachBody(BaseModel):
+    item_id: str
+    name: str
+
+
+@router.post("/{task_id}/attachments/onedrive", response_model=AttachmentOut, status_code=201)
+async def add_onedrive_attachment(
+    task_id: uuid.UUID,
+    body: OneDriveAttachBody,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> AttachmentOut:
+    """Speichert eine OneDrive-Dateireferenz als Attachment (keine lokale Kopie)."""
+    task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    mime_ext = body.name.rsplit(".", 1)[-1].lower() if "." in body.name else None
+    mime_map = {
+        "pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "txt": "text/plain", "csv": "text/csv", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    }
+    mime_type = mime_map.get(mime_ext or "", "application/octet-stream")
+
+    attachment = Attachment(
+        task_id=task_id,
+        filename=body.name,
+        filepath=f"onedrive://{body.item_id}",
+        mime_type=mime_type,
+    )
+    db.add(attachment)
+    await db.flush()
+
+    return AttachmentOut(
+        id=str(attachment.id), task_id=str(attachment.task_id),
+        filename=attachment.filename, filepath=attachment.filepath,
+        mime_type=attachment.mime_type, size=0,
+        uploaded_at=attachment.uploaded_at.isoformat(),
+    )

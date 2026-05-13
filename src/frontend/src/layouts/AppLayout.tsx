@@ -4,7 +4,10 @@ import { Sidebar } from '../components/Sidebar';
 import { MobileHeader } from '../components/MobileHeader';
 import { SearchDialog } from '../components/SearchDialog';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
+import { NotificationBell } from '../components/NotificationBell';
+import { NotificationPanel } from '../components/NotificationPanel';
 import { useBadgeData, BadgeProvider } from '../hooks/useBadges';
+import { useNotifications } from '../hooks/useNotifications';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -26,6 +29,8 @@ export function AppLayout() {
   const { isOwner } = useAuth();
 
   const badges = useBadgeData(sidebarRefreshKey);
+  const notifications = useNotifications();
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
 
   useEffect(() => {
     if (isOwner) {
@@ -108,7 +113,46 @@ export function AppLayout() {
         />
 
         <div className="flex flex-1 flex-col overflow-hidden">
-          <MobileHeader onMenuOpen={openSidebar} onSearchOpen={openSearch} />
+          <MobileHeader
+            onMenuOpen={openSidebar}
+            onSearchOpen={openSearch}
+            notificationCount={notifications.unreadCount}
+            onNotificationOpen={() => setNotifPanelOpen((v) => !v)}
+          />
+
+          {/* Desktop notification bell */}
+          {!isMobile && (
+            <div className="relative flex justify-end px-4 pt-2">
+              <NotificationBell
+                unreadCount={notifications.unreadCount}
+                onClick={() => setNotifPanelOpen((v) => !v)}
+              />
+              <NotificationPanel
+                isOpen={notifPanelOpen}
+                items={notifications.items}
+                loading={notifications.loading}
+                onClose={() => setNotifPanelOpen(false)}
+                onFetchItems={notifications.fetchItems}
+                onMarkAsRead={notifications.markAsRead}
+                onMarkAllAsRead={notifications.markAllAsRead}
+                onDismiss={notifications.dismiss}
+              />
+            </div>
+          )}
+
+          {/* Mobile notification panel */}
+          {isMobile && (
+            <NotificationPanel
+              isOpen={notifPanelOpen}
+              items={notifications.items}
+              loading={notifications.loading}
+              onClose={() => setNotifPanelOpen(false)}
+              onFetchItems={notifications.fetchItems}
+              onMarkAsRead={notifications.markAsRead}
+              onMarkAllAsRead={notifications.markAllAsRead}
+              onDismiss={notifications.dismiss}
+            />
+          )}
 
           <main className="flex-1 overflow-hidden" style={isMobile ? { paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))' } : undefined}>
             <Outlet context={{ refreshSidebar, refreshAppSettings }} />
@@ -129,6 +173,7 @@ export function AppLayout() {
             taskId={selectedTaskId}
             onClose={() => setSelectedTaskId(null)}
             onUpdated={() => setSelectedTaskId(null)}
+            onOpenTask={setSelectedTaskId}
           />
         )}
       </div>

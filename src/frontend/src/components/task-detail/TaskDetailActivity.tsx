@@ -1,5 +1,6 @@
-import { useState, useRef, useMemo, type KeyboardEvent } from 'react';
+import { useState, useRef, useMemo, useEffect, useCallback, type KeyboardEvent } from 'react';
 import { Pencil, Trash2 } from 'lucide-react';
+import { MentionsInput, Mention } from 'react-mentions';
 import { api } from '../../api/client';
 import type { ActivityLogEntry } from './shared';
 import {
@@ -12,8 +13,15 @@ import {
 
 type ActivityFilter = 'all' | 'comments' | 'changes';
 
+interface MentionableUser {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
 interface TaskDetailActivityProps {
   taskId: string;
+  projectId?: string;
   activities: ActivityLogEntry[];
   onActivitiesChanged: (activities: ActivityLogEntry[]) => void;
   currentUserEmail?: string;
@@ -23,6 +31,7 @@ interface TaskDetailActivityProps {
 
 export default function TaskDetailActivity({
   taskId,
+  projectId,
   activities,
   onActivitiesChanged,
   currentUserEmail,
@@ -35,8 +44,22 @@ export default function TaskDetailActivity({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [mentionableUsers, setMentionableUsers] = useState<MentionableUser[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!projectId) return;
+    api
+      .get<MentionableUser[]>(`/api/notifications/mentionable-users?project_id=${projectId}`)
+      .then(setMentionableUsers)
+      .catch(() => {});
+  }, [projectId]);
+
+  const mentionData = useMemo(
+    () => mentionableUsers.map((u) => ({ id: u.id, display: u.display_name })),
+    [mentionableUsers],
+  );
 
   const adjustHeight = () => {
     const el = textareaRef.current;
@@ -132,6 +155,21 @@ export default function TaskDetailActivity({
       minute: '2-digit',
     });
 
+  const renderMentionText = useCallback((text: string) => {
+    const parts = text.split(/(@\[[^\]]+\]\([^)]+\))/g);
+    return parts.map((part, i) => {
+      const match = part.match(/^@\[([^\]]+)\]\(([^)]+)\)$/);
+      if (match) {
+        return (
+          <span key={i} className="inline-block rounded bg-indigo-100 px-1 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+            @{match[1]}
+          </span>
+        );
+      }
+      return <span key={i}>{part}</span>;
+    });
+  }, []);
+
   const filterTabs: { key: ActivityFilter; label: string; count?: number }[] = [
     { key: 'all', label: 'Alle' },
     { key: 'comments', label: 'Kommentare', count: commentCount },
@@ -142,27 +180,56 @@ export default function TaskDetailActivity({
     <div>
       <SectionLabel icon={ActivityIcon} text="Aktivität" />
 
-      {/* Comment input */}
-      <div className="mb-3 flex gap-2">
-        <textarea
-          ref={textareaRef}
+      {/* Comment input with @-mention autocomplete */}
+      <div className="mb-3">
+        <MentionsInput
           value={commentText}
-          onChange={(e) => {
-            setCommentText(e.target.value);
-            adjustHeight();
+          onChange={(e) => setCommentText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              handleSubmitComment();
+            }
           }}
-          onKeyDown={handleKeyDown}
-          placeholder="Kommentar hinzufügen…"
-          rows={2}
-          className="flex-1 resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition-colors placeholder:text-gray-400 focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:placeholder:text-gray-500"
-        />
-        <button
-          onClick={handleSubmitComment}
-          disabled={!commentText.trim() || submittingComment}
-          className="self-end rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+          placeholder="Kommentar hinzufügen… (@Name für Erwähnung)"
+          className="mentions-input"
+          style={{
+            control: {
+              fontSize: '0.875rem',
+              minHeight: '3rem',
+            },
+            input: {
+              padding: '0.5rem 0.75rem',
+              border: '1px solid',
+              borderRadius: '0.5rem',
+              outline: 'none',
+            },
+            suggestions: {
+              list: {
+                border: '1px solid rgba(0,0,0,0.1)',
+                borderRadius: '0.5rem',
+                overflow: 'hidden',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              },
+              item: {
+                padding: '0.5rem 0.75rem',
+                fontSize: '0.875rem',
+                '&focused': {
+                  backgroundColor: '#EEF2FF',
+                },
+              },
+            },
+          }}
         >
-          Senden
-        </button>
+          <Mention
+            trigger="@"
+            data={mentionData}
+            markup="@[__display__](__id__)"
+            displayTransform={(_id: string, display: string) => `@${display}`}
+            appendSpaceOnAdd
+            style={{ backgroundColor: '#C7D2FE', borderRadius: '2px' }}
+          />
+        </MentionsInput>
       </div>
 
       {/* Filter tabs */}
@@ -193,9 +260,10 @@ export default function TaskDetailActivity({
         {filteredActivities.map((entry) => {
           const isComment = entry.event_type === 'comment';
           const Icon = isComment ? CommentDotIcon : HistoryIcon;
-          const content = isComment
+          const rawContent = isComment
             ? (entry.details?.text as string) || ''
             : formatActivityEvent(entry.event_type, entry.details);
+          const content = rawContent;
           const modifiable = canModify(entry);
           const isEditing = editingId === entry.id;
           const isDeleting = deletingId === entry.id;
@@ -242,7 +310,9 @@ export default function TaskDetailActivity({
                   </div>
                 ) : isDeleting ? (
                   <div>
-                    <p className="text-sm text-gray-700 dark:text-gray-300">{content}</p>
+                    <p className="text-sm text-gray-700 dark:text-gray-300">
+                      {isComment ? renderMentionText(content) : content}
+                    </p>
                     <div className="mt-1 flex items-center gap-1.5">
                       <span className="text-[11px] text-red-600 dark:text-red-400">Löschen?</span>
                       <button
@@ -260,7 +330,9 @@ export default function TaskDetailActivity({
                     </div>
                   </div>
                 ) : (
-                  <p className="text-sm text-gray-700 dark:text-gray-300">{content}</p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300">
+                    {isComment ? renderMentionText(content) : content}
+                  </p>
                 )}
                 <p className="mt-0.5 text-[10px] text-gray-400 dark:text-gray-500">
                   {entry.actor} · {formatTimestamp(entry.created_at)}

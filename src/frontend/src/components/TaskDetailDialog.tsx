@@ -16,9 +16,10 @@ interface TaskDetailDialogProps {
   taskId: string | null;
   onClose: () => void;
   onUpdated: () => void;
+  onOpenTask?: (taskId: string) => void;
 }
 
-export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialogProps) {
+export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask }: TaskDetailDialogProps) {
   const { isOwner, user: authUser } = useAuth();
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [agentJobs, setAgentJobs] = useState<AgentJob[]>([]);
@@ -120,6 +121,11 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
     if (!firstCol) return;
     await updateTask({ project_id: newProjectId, board_column_id: firstCol.id } as TaskUpdatePayload);
   }, [task, allProjects, updateTask]);
+
+  const refreshTags = useCallback(async () => {
+    const tags = await api.get<Tag[]>('/api/tags');
+    setAllTags(tags);
+  }, []);
 
   const toggleTag = useCallback(async (tag: Tag) => {
     if (!taskId || !task) return;
@@ -318,12 +324,14 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                   onUpdated={onUpdated}
                   updateTask={updateTask}
                   refreshTask={refreshTask}
+                  onOpenTask={onOpenTask}
                 />
 
                 <TaskDetailAttachments
                   taskId={taskId}
                   attachments={attachments}
                   onAttachmentsChanged={setAttachments}
+                  isOwner={isOwner}
                 />
 
                 {/* Agent-Aufträge (Owner-only) */}
@@ -353,6 +361,7 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
 
                 <TaskDetailActivity
                   taskId={taskId}
+                  projectId={task?.project_id}
                   activities={activities}
                   onActivitiesChanged={setActivities}
                   currentUserEmail={authUser?.email}
@@ -377,6 +386,7 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated }: TaskDetailDialo
                 updateTask={updateTask}
                 handleProjectChange={handleProjectChange}
                 toggleTag={toggleTag}
+                onTagsChanged={refreshTags}
               />
             </div>
           </div>

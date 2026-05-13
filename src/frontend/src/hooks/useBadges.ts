@@ -8,6 +8,7 @@ export interface BadgeData {
   unreadMailCount: number;
   pendingDecisions: number;
   focusTaskCount: number;
+  unreadNotificationCount: number;
   refreshBadges: () => void;
 }
 
@@ -16,6 +17,7 @@ const BadgeContext = createContext<BadgeData>({
   unreadMailCount: 0,
   pendingDecisions: 0,
   focusTaskCount: 0,
+  unreadNotificationCount: 0,
   refreshBadges: () => {},
 });
 
@@ -26,6 +28,7 @@ export function useBadgeData(refreshKey: number): BadgeData {
   const [unreadMailCount, setUnreadMailCount] = useState(0);
   const [pendingDecisions, setPendingDecisions] = useState(0);
   const [focusTaskCount, setFocusTaskCount] = useState(0);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
 
   const refreshBadges = useCallback(() => {
     api
@@ -51,6 +54,11 @@ export function useBadgeData(refreshKey: number): BadgeData {
         setFocusTaskCount(focusCol?.tasks?.length ?? 0);
       })
       .catch(() => {});
+
+    api
+      .get<{ count: number }>('/api/notifications/unread-count')
+      .then((r) => setUnreadNotificationCount(r.count))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -73,10 +81,15 @@ export function useBadgeData(refreshKey: number): BadgeData {
           setFocusTaskCount(focusCol?.tasks?.length ?? 0);
         })
         .catch(() => {});
+    } else if (event === 'notifications_changed') {
+      api
+        .get<{ count: number }>('/api/notifications/unread-count')
+        .then((r) => setUnreadNotificationCount(r.count))
+        .catch(() => {});
     }
   });
 
-  return { activeJobCount, unreadMailCount, pendingDecisions, focusTaskCount, refreshBadges };
+  return { activeJobCount, unreadMailCount, pendingDecisions, focusTaskCount, unreadNotificationCount, refreshBadges };
 }
 
 export function useBadges(): BadgeData {
