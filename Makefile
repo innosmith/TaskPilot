@@ -5,7 +5,7 @@ COMPOSE_SHARED = docker compose -f docker/docker-compose.yml
 COMPOSE_INT    = $(COMPOSE_SHARED) -f docker/docker-compose.integration.yml --profile clamav
 COMPOSE_PROD   = docker compose --env-file .env.prod -f docker/docker-compose.prod.yml
 
-.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all schema-int seed-int backup-prod backup-schedule backup-unschedule backup-status
+.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all reset-dev schema-int seed-int backup-prod backup-schedule backup-unschedule backup-status
 
 help: ## Zeigt diese Hilfe
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -172,6 +172,21 @@ backup-status: ## Status des Backup-Timers anzeigen
 	@echo "Logs:  journalctl --user -u taskpilot-backup -n 50"
 
 # ── DB-Schema & Migration ────────────────────────────────
+
+reset-dev: infra ## DEV-DB komplett zuruecksetzen (DROP + Schema + Seed + Alembic)
+	@docker exec taskpilot-postgres psql -U taskpilot -d postgres \
+		-c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='taskpilot_dev' AND pid != pg_backend_pid();" > /dev/null 2>&1 || true
+	docker exec taskpilot-postgres psql -U taskpilot -d postgres \
+		-c "DROP DATABASE IF EXISTS taskpilot_dev;"
+	docker exec taskpilot-postgres psql -U taskpilot -d postgres \
+		-c "CREATE DATABASE taskpilot_dev OWNER taskpilot;"
+	docker exec taskpilot-postgres psql -U taskpilot -d taskpilot_dev \
+		-c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"; CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+	docker exec -i taskpilot-postgres psql -U taskpilot -d taskpilot_dev < db/schema.sql
+	docker exec -i taskpilot-postgres psql -U taskpilot -d taskpilot_dev < db/seed.sql
+	cd src/backend && PYTHONPATH=. ../../.venv/bin/alembic stamp head
+	@echo ""
+	@echo "DEV-DB zurueckgesetzt. Backend starten → Owner wird automatisch angelegt."
 
 schema-int: ## Schema direkt auf taskpilot_int anwenden (frische DB)
 	docker exec -i taskpilot-postgres psql -U taskpilot -d taskpilot_int < db/schema.sql

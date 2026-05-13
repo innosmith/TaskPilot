@@ -139,6 +139,18 @@ function getYouTubeEmbedUrl(url: string): string {
   return match ? `https://www.youtube.com/embed/${match[1]}?autoplay=1` : url;
 }
 
+function getYouTubeVideoId(url: string): string | null {
+  const match = url.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
+}
+
+function getHighResThumbnail(url: string | null): string | null {
+  if (!url) return null;
+  const id = getYouTubeVideoId(url);
+  if (!id) return null;
+  return `https://img.youtube.com/vi/${id}/maxresdefault.jpg`;
+}
+
 const STRIP_CSS_PROPS = new Set([
   'background', 'background-color', 'background-image',
   'font-family', 'box-shadow', 'color',
@@ -512,9 +524,25 @@ export function SignalePage() {
                               <div className="aspect-video w-full overflow-hidden rounded-t-2xl">
                                 <iframe src={getYouTubeEmbedUrl(s.url)} className="h-full w-full" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
                               </div>
-                            ) : s.thumbnail_url ? (
+                            ) : (s.thumbnail_url || s.url) ? (
                               <div className="relative cursor-pointer overflow-hidden rounded-t-2xl" onClick={() => setPlayingVideoId(s.id)}>
-                                <img src={s.thumbnail_url} alt="" className="aspect-video w-full object-cover" loading="lazy" />
+                                <img
+                                  src={getHighResThumbnail(s.url) ?? s.thumbnail_url ?? ''}
+                                  alt=""
+                                  className="aspect-video w-full object-cover"
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    const img = e.currentTarget;
+                                    const id = s.url ? getYouTubeVideoId(s.url) : null;
+                                    if (id && img.src.includes('maxresdefault')) {
+                                      img.src = `https://img.youtube.com/vi/${id}/sddefault.jpg`;
+                                    } else if (id && img.src.includes('sddefault')) {
+                                      img.src = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+                                    } else if (s.thumbnail_url && img.src !== s.thumbnail_url) {
+                                      img.src = s.thumbnail_url;
+                                    }
+                                  }}
+                                />
                                 <div className="absolute inset-0 flex items-center justify-center bg-black/20 transition-colors hover:bg-black/30">
                                   <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-600/90 shadow-lg transition-transform hover:scale-110">
                                     <PlayIcon className="h-6 w-6 text-white" />

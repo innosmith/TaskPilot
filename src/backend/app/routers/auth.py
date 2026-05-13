@@ -453,10 +453,16 @@ async def ensure_owner_exists(db: AsyncSession, retries: int = 5) -> None:
             if result.scalar_one_or_none() is not None:
                 return
 
+            if not settings.owner_email or not settings.owner_password:
+                logger.warning(
+                    "TP_OWNER_EMAIL / TP_OWNER_PASSWORD nicht gesetzt — Owner wird nicht angelegt"
+                )
+                return
+
             owner = User(
                 email=settings.owner_email,
                 password_hash=hash_password(settings.owner_password),
-                display_name=settings.owner_display_name,
+                display_name=settings.owner_display_name or settings.owner_email,
                 role="owner",
             )
             db.add(owner)

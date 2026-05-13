@@ -29,6 +29,7 @@ make health     # Health-Checks aller Umgebungen
 make build      # Alle Images bauen (ohne Start)
 make vendor     # Vendor-Verzeichnis vorbereiten
 make sandbox    # Sandbox-Image bauen
+make reset-dev     # DEV-DB komplett zuruecksetzen (DROP + Schema + Seed + Alembic)
 make migrate-int   # Schema auf Int-DB anwenden
 make migrate-prod  # Schema auf Prod-DB anwenden
 ```
@@ -143,6 +144,17 @@ lsof -ti:5173 | xargs -r kill -9   # Frontend
 | DB-Schema geaendert | Ja (alembic upgrade head) | Ja (alembic im Container) | Ja (alembic im Container) |
 | Docker-Compose geaendert | - | Ja (make int) | Ja (make prod) |
 | MCP-Server-Code | Nein (Nanobot laedt neu) | Ja (rebuild) | Ja (rebuild) |
+
+## DEV-DB zuruecksetzen
+
+Falls die DEV-Datenbank in einen inkonsistenten Zustand geraten ist oder ein Passwort-Reset noetig ist:
+
+```bash
+make reset-dev
+# Danach Backend starten → Owner wird automatisch aus .env.dev angelegt
+```
+
+Das Target fuehrt aus: DROP + CREATE + Extensions + schema.sql + seed.sql + alembic stamp head.
 
 ## Docker-Build vorbereiten
 

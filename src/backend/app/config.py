@@ -51,10 +51,10 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60  # 1h Access-Token
     refresh_token_expire_hours: int = 24  # 24h Refresh-Token (Owner), 4h fuer Member
 
-    # Owner (Phase 0: nur ein User)
-    owner_email: str = "admin@innosmith.ai"
-    owner_password: str = "changeme"
-    owner_display_name: str = "InnoSmith"
+    # Owner (Phase 0: nur ein User) — Werte kommen aus .env.dev / .env.integration / .env.prod
+    owner_email: str = ""
+    owner_password: str = ""
+    owner_display_name: str = ""
 
     # CORS
     cors_origins: list[str] = [
