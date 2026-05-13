@@ -5,7 +5,7 @@ COMPOSE_SHARED = docker compose -f docker/docker-compose.yml
 COMPOSE_INT    = $(COMPOSE_SHARED) -f docker/docker-compose.integration.yml --profile clamav
 COMPOSE_PROD   = docker compose --env-file .env.prod -f docker/docker-compose.prod.yml
 
-.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all schema-int seed-int
+.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all schema-int seed-int backup-prod backup-schedule backup-unschedule backup-status
 
 help: ## Zeigt diese Hilfe
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -133,8 +133,43 @@ test-all: test test-smoke ## Alle automatisierten Tests (Schicht 1-2 + Contract 
 
 # ── Backup ────────────────────────────────────────────────
 
+SYSTEMD_USER_DIR = $(HOME)/.config/systemd/user
+BACKUP_UNITS     = taskpilot-backup.service taskpilot-backup.timer
+
 backup-prod: ## Prod-Backup auf OneDrive erstellen
 	./scripts/backup-prod.sh
+
+backup-schedule: ## Taegl. Backup aktivieren (03:00, systemd-timer)
+	@mkdir -p $(SYSTEMD_USER_DIR)
+	@cp systemd/taskpilot-backup.service $(SYSTEMD_USER_DIR)/
+	@cp systemd/taskpilot-backup.timer $(SYSTEMD_USER_DIR)/
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now taskpilot-backup.timer
+	@echo ""
+	@echo "Backup-Timer aktiviert (taeglich 03:00)."
+	@echo ""
+	@if ! loginctl show-user $(USER) 2>/dev/null | grep -q "Linger=yes"; then \
+		echo "HINWEIS: Linger ist nicht aktiviert. Timer laeuft nur bei aktiver Session."; \
+		echo "Fuer Ausfuehrung ohne Login:  sudo loginctl enable-linger $(USER)"; \
+		echo ""; \
+	fi
+	@systemctl --user list-timers taskpilot-backup.timer
+
+backup-unschedule: ## Taegl. Backup deaktivieren
+	@systemctl --user disable --now taskpilot-backup.timer 2>/dev/null || true
+	@rm -f $(SYSTEMD_USER_DIR)/taskpilot-backup.service
+	@rm -f $(SYSTEMD_USER_DIR)/taskpilot-backup.timer
+	@systemctl --user daemon-reload
+	@echo "Backup-Timer deaktiviert und Unit-Dateien entfernt."
+
+backup-status: ## Status des Backup-Timers anzeigen
+	@echo "=== Timer-Status ==="
+	@systemctl --user list-timers taskpilot-backup.timer 2>/dev/null || echo "  Timer nicht aktiv"
+	@echo ""
+	@echo "=== Letzter Lauf ==="
+	@systemctl --user status taskpilot-backup.service 2>/dev/null | head -15 || echo "  Noch kein Lauf"
+	@echo ""
+	@echo "Logs:  journalctl --user -u taskpilot-backup -n 50"
 
 # ── DB-Schema & Migration ────────────────────────────────
 

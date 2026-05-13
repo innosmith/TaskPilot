@@ -168,7 +168,7 @@ async def mfa_setup(
     await db.flush()
 
     totp = pyotp.TOTP(secret)
-    provisioning_uri = totp.provisioning_uri(user.email, issuer_name="TaskPilot")
+    provisioning_uri = totp.provisioning_uri(user.email, issuer_name=settings.mfa_issuer)
 
     return {"secret": secret, "provisioning_uri": provisioning_uri}
 

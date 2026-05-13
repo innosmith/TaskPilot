@@ -11,7 +11,18 @@ except IndexError:
 
 class Settings(BaseSettings):
     app_name: str = "TaskPilot"
+    app_env: str = "prod"
     debug: bool = False
+
+    @property
+    def mfa_issuer(self) -> str:
+        """Issuer-Name für TOTP (Google Authenticator etc.).
+
+        Prod → 'TaskPilot', sonst 'TaskPilot-Dev' / 'TaskPilot-Int'.
+        """
+        if self.app_env in ("prod", "production"):
+            return "TaskPilot"
+        return f"TaskPilot-{self.app_env.capitalize()}"
 
     # PostgreSQL
     db_host: str = "localhost"

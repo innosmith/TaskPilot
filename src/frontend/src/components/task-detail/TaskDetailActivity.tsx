@@ -175,33 +175,7 @@ export default function TaskDetailActivity({
           }}
           placeholder="Kommentar hinzufügen… (@Name für Erwähnung)"
           className="mentions-input"
-          style={{
-            control: {
-              fontSize: '0.875rem',
-              minHeight: '3rem',
-            },
-            input: {
-              padding: '0.5rem 0.75rem',
-              border: '1px solid',
-              borderRadius: '0.5rem',
-              outline: 'none',
-            },
-            suggestions: {
-              list: {
-                border: '1px solid rgba(0,0,0,0.1)',
-                borderRadius: '0.5rem',
-                overflow: 'hidden',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-              },
-              item: {
-                padding: '0.5rem 0.75rem',
-                fontSize: '0.875rem',
-                '&focused': {
-                  backgroundColor: '#EEF2FF',
-                },
-              },
-            },
-          }}
+          forceSuggestionsAboveCursor
         >
           <Mention
             trigger="@"
@@ -209,7 +183,7 @@ export default function TaskDetailActivity({
             markup="@[__display__](__id__)"
             displayTransform={(_id: string, display: string) => `@${display}`}
             appendSpaceOnAdd
-            style={{ backgroundColor: '#C7D2FE', borderRadius: '2px' }}
+            className="mention-highlight"
           />
         </MentionsInput>
       </div>

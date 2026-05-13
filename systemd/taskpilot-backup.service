@@ -1,0 +1,8 @@
+[Unit]
+Description=TaskPilot Produktions-Backup
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/dev/github/TaskPilot/scripts/backup-prod.sh
+Environment=HOME=%h

@@ -444,3 +444,101 @@ body {
 @keyframes cursor-blink {
   50% { opacity: 0; }
 }
+
+/* ═══════════ react-mentions: Autocomplete Dropdown ═══════════ */
+
+.mentions-input {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.mentions-input__control {
+  min-height: 3rem;
+}
+
+.mentions-input__input {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  outline: none;
+  color: #1f2937;
+  background: transparent;
+  transition: border-color 0.15s;
+}
+.mentions-input__input:focus {
+  border-color: #a5b4fc;
+  box-shadow: 0 0 0 1px #a5b4fc;
+}
+.dark .mentions-input__input {
+  border-color: #374151;
+  color: #e5e7eb;
+}
+.dark .mentions-input__input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px #6366f1;
+}
+.dark .mentions-input__input::placeholder {
+  color: #6b7280;
+}
+
+.mentions-input__highlighter {
+  padding: 0.5rem 0.75rem;
+}
+
+.mentions-input__highlighter__substring {
+  visibility: visible !important;
+}
+
+/* Suggestion dropdown */
+.mentions-input__suggestions {
+  z-index: 100 !important;
+}
+
+.mentions-input__suggestions__list {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.dark .mentions-input__suggestions__list {
+  background: #1f2937;
+  border-color: #374151;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.mentions-input__suggestions__item {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  color: #1f2937;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+.mentions-input__suggestions__item:hover {
+  background-color: #eef2ff;
+}
+.dark .mentions-input__suggestions__item {
+  color: #e5e7eb;
+}
+.dark .mentions-input__suggestions__item:hover {
+  background-color: #374151;
+}
+
+.mentions-input__suggestions__item--focused {
+  background-color: #eef2ff;
+}
+.dark .mentions-input__suggestions__item--focused {
+  background-color: #374151;
+}
+
+/* Inline-Highlight für @Mentions im Eingabefeld */
+.mentions-input__highlighter .mention-highlight {
+  background-color: #c7d2fe;
+  border-radius: 2px;
+  color: transparent;
+}
+.dark .mentions-input__highlighter .mention-highlight {
+  background-color: rgba(99, 102, 241, 0.3);
+}

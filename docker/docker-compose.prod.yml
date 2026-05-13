@@ -18,6 +18,8 @@ services:
       POSTGRES_DB: ${TP_DB_NAME}
     volumes:
       - ${HOME}/.local/share/taskpilot/postgres/prod:/var/lib/postgresql/data
+      - ../db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../db/seed-prod.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${TP_DB_USER} -d ${TP_DB_NAME}"]
       interval: 10s

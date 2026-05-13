@@ -193,19 +193,28 @@ export function AnonymizePanel({ isOpen, onClose, onInsertText, initialText = ''
               <div>
                 <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">Zu anonymisieren</label>
                 <div className="flex flex-wrap gap-2">
-                  {ENTITY_OPTIONS.map(opt => (
-                    <button
-                      key={opt.id}
-                      onClick={() => toggleEntity(opt.id)}
-                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                        entities.includes(opt.id)
-                          ? ENTITY_COLORS[opt.id]
-                          : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
+                  {ENTITY_OPTIONS.map(opt => {
+                    const active = entities.includes(opt.id);
+                    return (
+                      <button
+                        key={opt.id}
+                        onClick={() => toggleEntity(opt.id)}
+                        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                          active
+                            ? ENTITY_COLORS[opt.id]
+                            : 'bg-gray-100 text-gray-400 opacity-60 dark:bg-gray-700 dark:text-gray-500'
+                        }`}
+                        title={active ? `${opt.label} nicht anonymisieren` : `${opt.label} anonymisieren`}
+                      >
+                        {opt.label}
+                        {active ? (
+                          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                        ) : (
+                          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
