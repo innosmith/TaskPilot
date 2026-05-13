@@ -16,7 +16,10 @@ from app.models import models as _models  # noqa: F401 – Alle Models registrie
 config = context.config
 
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url_sync)
+config.set_main_option(
+    "sqlalchemy.url",
+    settings.database_url_sync.replace("%", "%%"),
+)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

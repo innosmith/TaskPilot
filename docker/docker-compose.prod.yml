@@ -44,8 +44,8 @@ services:
       - prod-uploads:/app/uploads
       - prod-exports:/tmp/taskpilot-exports
       - ${HOME}/.nanobot/workspace:/home/taskpilot/.nanobot/workspace:ro
-    security_opt:
-      - no-new-privileges:true
+    # no-new-privileges deaktiviert: Kernel 6.17-nvidia blockt jede exec mit diesem Flag
+    # Security durch non-root User (taskpilot) + Cloudflare Zero Trust gewaehrleistet
     depends_on:
       postgres-prod:
         condition: service_healthy
