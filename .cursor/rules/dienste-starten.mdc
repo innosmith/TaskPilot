@@ -80,7 +80,7 @@ docker compose -f docker/docker-compose.yml --profile clamav up -d clamav
 ```bash
 # Backend
 source .venv/bin/activate
-PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src/backend
+TP_APP_ENV=dev PYTHONPATH=src/backend uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src/backend
 
 # Frontend (separates Terminal)
 cd src/frontend && npm run dev

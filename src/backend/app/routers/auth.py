@@ -167,10 +167,13 @@ async def mfa_setup(
     user.mfa_secret = secret
     await db.flush()
 
-    totp = pyotp.TOTP(secret)
-    provisioning_uri = totp.provisioning_uri(user.email, issuer_name=settings.mfa_issuer)
+    issuer = settings.mfa_issuer
+    logger.info("MFA-Setup: app_env=%s, issuer=%s", settings.app_env, issuer)
 
-    return {"secret": secret, "provisioning_uri": provisioning_uri}
+    totp = pyotp.TOTP(secret)
+    provisioning_uri = totp.provisioning_uri(user.email, issuer_name=issuer)
+
+    return {"secret": secret, "provisioning_uri": provisioning_uri, "issuer": issuer}
 
 
 @router.post("/mfa/verify")

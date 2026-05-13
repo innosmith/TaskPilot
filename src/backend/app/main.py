@@ -57,6 +57,12 @@ from app.services.triage import start_triage_service, stop_triage_service
 
 logging.basicConfig(level=logging.INFO)
 app_settings = get_settings()
+logging.getLogger("taskpilot.startup").info(
+    "Settings geladen: app_env=%s, mfa_issuer=%s, env_file=%s",
+    app_settings.app_env,
+    app_settings.mfa_issuer,
+    app_settings.model_config.get("env_file", "?"),
+)
 
 UPLOADS_DIR = pathlib.Path(__file__).resolve().parent.parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
