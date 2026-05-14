@@ -65,6 +65,8 @@ export interface TaskDetail {
   needs_review: boolean;
   pipedrive_deal_id: number | null;
   pipedrive_person_id: number | null;
+  source_email_subject: string | null;
+  source_email_from: string | null;
   tags: Tag[];
   checklist_items: ChecklistItem[];
   created_at: string;

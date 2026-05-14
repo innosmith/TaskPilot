@@ -1,11 +1,15 @@
 import { useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { ProjectIcon } from './ProjectIcon';
 import type { TaskCard as TaskCardType } from '../types';
 
 interface TaskCardProps {
   task: TaskCardType;
   projectColor?: string;
+  projectName?: string;
+  projectIconUrl?: string | null;
+  projectIconEmoji?: string | null;
   showProjectIndicator?: boolean;
   hasBg?: boolean;
   userAvatarUrl?: string | null;
@@ -16,6 +20,9 @@ interface TaskCardProps {
 export function TaskCard({
   task,
   projectColor,
+  projectName,
+  projectIconUrl,
+  projectIconEmoji,
   showProjectIndicator = false,
   hasBg = false,
   onClick,
@@ -79,10 +86,19 @@ export function TaskCard({
       )}
 
       {showProjectIndicator && projectColor && (
-        <div
-          className="mb-2 h-1 w-8 rounded-full"
-          style={{ backgroundColor: projectColor }}
-        />
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <ProjectIcon
+            iconUrl={projectIconUrl}
+            iconEmoji={projectIconEmoji}
+            color={projectColor}
+            size={14}
+          />
+          {projectName && (
+            <span className="truncate text-[11px] font-medium text-gray-500 dark:text-gray-400">
+              {projectName}
+            </span>
+          )}
+        </div>
       )}
 
       <p

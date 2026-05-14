@@ -175,6 +175,8 @@ class TaskOut(TaskBase):
     pipedrive_deal_id: int | None = None
     pipedrive_person_id: int | None = None
     assignee_user: AssigneeUser | None = None
+    source_email_subject: str | None = None
+    source_email_from: str | None = None
     created_at: datetime
     updated_at: datetime
     tags: list[TagOut] = []

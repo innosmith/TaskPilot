@@ -56,6 +56,10 @@ export function PipelinePage() {
     projects.map((p) => [p.id, p.color]),
   );
 
+  const projectMap = Object.fromEntries(
+    projects.map((p) => [p.id, p]),
+  );
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
@@ -340,6 +344,7 @@ export function PipelinePage() {
                   title={col.name}
                   tasks={col.tasks}
                   projectColorMap={projectColorMap}
+                  projectMap={projectMap}
                   showProjectIndicator
                   showColumnCount={showColCount}
                   hasBg={hasBg}
@@ -391,6 +396,9 @@ export function PipelinePage() {
                 <TaskCard
                   task={activeTask}
                   projectColor={projectColorMap[activeTask.project_id]}
+                  projectName={projectMap[activeTask.project_id]?.name}
+                  projectIconUrl={projectMap[activeTask.project_id]?.icon_url}
+                  projectIconEmoji={projectMap[activeTask.project_id]?.icon_emoji}
                   showProjectIndicator
                   onClick={() => {}}
                 />

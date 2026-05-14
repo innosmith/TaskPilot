@@ -6,6 +6,7 @@ import type { ActivityLogEntry, AttachmentEntry, ModelsData } from './task-detai
 import {
   CloseIcon, ModalIcon, PanelIcon, FullscreenIcon, AgentSmallIcon,
   MoreHorizontalIcon, TrashIcon, CopyIcon, LinkIcon, SectionLabel,
+  MailIcon,
 } from './task-detail/shared';
 import type {
   TaskDetail, TaskUpdatePayload, AgentJob, Tag,
@@ -17,9 +18,12 @@ interface TaskDetailDialogProps {
   onClose: () => void;
   onUpdated: () => void;
   onOpenTask?: (taskId: string) => void;
+  reviewMode?: boolean;
+  onReviewConfirm?: () => void;
+  onReviewDismiss?: () => void;
 }
 
-export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask }: TaskDetailDialogProps) {
+export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask, reviewMode, onReviewConfirm, onReviewDismiss }: TaskDetailDialogProps) {
   const { isOwner, user: authUser } = useAuth();
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [agentJobs, setAgentJobs] = useState<AgentJob[]>([]);
@@ -309,6 +313,38 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask }: Tas
           </div>
         )}
 
+        {/* ─── Review-Herkunfts-Banner ─── */}
+        {reviewMode && task && (
+          <div className="flex items-center gap-2.5 border-b border-amber-200/60 bg-amber-50/80 px-5 py-2.5 dark:border-amber-800/40 dark:bg-amber-950/20">
+            {task.email_message_id ? (
+              <>
+                <MailIcon className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm text-amber-800 dark:text-amber-300">
+                    Vorschlag aus E-Mail-Triage
+                  </span>
+                  {task.source_email_subject && (
+                    <span className="ml-1 text-sm text-amber-700/70 dark:text-amber-400/60">
+                      — {task.source_email_subject}
+                      {task.source_email_from && ` (${task.source_email_from})`}
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <AgentSmallIcon className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span className="text-sm text-amber-800 dark:text-amber-300">
+                  Automatisch erstellt am {new Date(task.created_at).toLocaleDateString('de-CH')}
+                </span>
+              </>
+            )}
+            <span className="shrink-0 rounded-full bg-amber-200/60 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-800/40 dark:text-amber-300">
+              Prüfung ausstehend
+            </span>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex flex-1 items-center justify-center">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
@@ -392,6 +428,24 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask }: Tas
           </div>
         ) : (
           <div className="flex flex-1 items-center justify-center text-gray-500">Task nicht gefunden.</div>
+        )}
+
+        {/* ─── Review-Aktionsleiste ─── */}
+        {reviewMode && task && (
+          <div className="flex items-center justify-end gap-3 border-t border-gray-200 bg-gray-50/80 px-5 py-3 dark:border-gray-800 dark:bg-gray-900/60">
+            <button
+              onClick={onReviewDismiss}
+              className="rounded-lg px-4 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
+            >
+              Verwerfen
+            </button>
+            <button
+              onClick={onReviewConfirm}
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700"
+            >
+              Übernehmen
+            </button>
+          </div>
         )}
       </div>
     </div>

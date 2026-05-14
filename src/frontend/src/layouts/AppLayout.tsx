@@ -6,6 +6,8 @@ import { SearchDialog } from '../components/SearchDialog';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { NotificationBell } from '../components/NotificationBell';
 import { NotificationPanel } from '../components/NotificationPanel';
+import { PullToRefresh } from '../components/PullToRefresh';
+import { UpdateBanner } from '../components/UpdateBanner';
 import { useBadgeData, BadgeProvider } from '../hooks/useBadges';
 import { useNotifications } from '../hooks/useNotifications';
 import { useMediaQuery } from '../hooks/useMediaQuery';
@@ -154,9 +156,11 @@ export function AppLayout() {
             />
           )}
 
-          <main className="flex-1 overflow-hidden" style={isMobile ? { paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))' } : undefined}>
-            <Outlet context={{ refreshSidebar, refreshAppSettings }} />
-          </main>
+          <PullToRefresh>
+            <main className="flex-1 overflow-hidden" style={isMobile ? { paddingTop: 'calc(3rem + env(safe-area-inset-top, 0px))' } : undefined}>
+              <Outlet context={{ refreshSidebar, refreshAppSettings }} />
+            </main>
+          </PullToRefresh>
         </div>
 
         {isOwner && (
@@ -176,6 +180,8 @@ export function AppLayout() {
             onOpenTask={setSelectedTaskId}
           />
         )}
+
+        <UpdateBanner />
       </div>
     </BadgeProvider>
   );

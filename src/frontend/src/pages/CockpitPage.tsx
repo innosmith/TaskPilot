@@ -31,11 +31,6 @@ interface PendingReviewTask {
   needs_review: boolean;
 }
 
-interface ProjectOption {
-  id: string;
-  name: string;
-  color: string;
-}
 
 interface TriageStats {
   by_status: Record<string, number>;
@@ -162,9 +157,8 @@ export function CockpitPage() {
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [expandedApprovals, setExpandedApprovals] = useState<Set<string>>(new Set());
 
-  const [projects, setProjects] = useState<ProjectOption[]>([]);
-  const [editingProject, setEditingProject] = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [reviewTaskId, setReviewTaskId] = useState<string | null>(null);
   const [senderAvatars, setSenderAvatars] = useState<Record<string, { pic_url: string | null; person_id: number | null; name: string | null }>>({});
   const lookedUpEmails = useRef<Set<string>>(new Set());
 
@@ -197,18 +191,15 @@ export function CockpitPage() {
       const excludeCats = settingsData.cockpit_calendar_exclude_categories ?? 'Transfer, Privat';
       const hidePrivate = settingsData.cockpit_calendar_hide_private ?? true;
 
-      const [jobsData, reviewData, triageData, projectData, pipelineData, calData, flaggedData, recentData] = await Promise.all([
+      const [jobsData, reviewData, triageData, pipelineData, calData, flaggedData, recentData] = await Promise.all([
         api.get<AgentJob[]>('/api/agent-jobs'),
         api.get<PendingReviewTask[]>('/api/tasks/pending-review').catch(() => [] as PendingReviewTask[]),
         api.get<TriageStats>('/api/triage/stats').catch(() => null),
-        api.get<ProjectOption[]>('/api/projects'),
         api.get<PipelineData>('/api/pipeline').catch(() => null),
         api.get<CalendarEvent[]>(`/api/calendar/events?start=${encodeURIComponent(startOfDay)}&end=${encodeURIComponent(endOfDay)}&exclude_categories=${encodeURIComponent(excludeCats)}&hide_private=${hidePrivate}&hide_free=true`).catch(() => [] as CalendarEvent[]),
         api.get<FlaggedEmail[]>('/api/emails/flagged?top=10').catch(() => [] as FlaggedEmail[]),
         api.get<AgentJob[]>('/api/agent-jobs?status=completed&limit=8').catch(() => [] as AgentJob[]),
       ]);
-
-      setProjects(projectData);
 
       const awaitingApproval = jobsData.filter(j => j.status === 'awaiting_approval');
       const active = jobsData.filter(j => ['queued', 'running'].includes(j.status));
@@ -332,19 +323,41 @@ export function CockpitPage() {
 
   const handleConfirmTask = async (task: PendingReviewTask) => {
     try {
-      const newProjectId = editingProject[task.id];
-      const body: Record<string, string> = {};
-      if (newProjectId && newProjectId !== task.project_id) body.project_id = newProjectId;
-      await api.post(`/api/tasks/${task.id}/confirm`, body);
+      await api.post(`/api/tasks/${task.id}/confirm`, {});
       fetchAppData();
     } catch { /* */ }
   };
 
   const handleDismissTask = async (taskId: string) => {
     try {
-      await api.delete(`/api/tasks/${taskId}`);
+      await api.post(`/api/tasks/${taskId}/dismiss-review`);
       fetchAppData();
     } catch { /* */ }
+  };
+
+  const openReviewDialog = (taskId: string) => {
+    setReviewTaskId(taskId);
+    setSelectedTaskId(taskId);
+  };
+
+  const handleReviewConfirm = async () => {
+    if (!reviewTaskId) return;
+    try {
+      await api.post(`/api/tasks/${reviewTaskId}/confirm`, {});
+    } catch { /* */ }
+    setSelectedTaskId(null);
+    setReviewTaskId(null);
+    fetchAppData();
+  };
+
+  const handleReviewDismiss = async () => {
+    if (!reviewTaskId) return;
+    try {
+      await api.post(`/api/tasks/${reviewTaskId}/dismiss-review`);
+    } catch { /* */ }
+    setSelectedTaskId(null);
+    setReviewTaskId(null);
+    fetchAppData();
   };
 
   if (loading) {
@@ -857,32 +870,30 @@ export function CockpitPage() {
                         {task.source_email_subject && (
                           <div className={`text-xs truncate ${textMuted}`}>
                             Aus E-Mail: {task.source_email_subject}
+                            {task.source_email_from && ` von ${task.source_email_from}`}
                           </div>
                         )}
                       </div>
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <select
-                        value={editingProject[task.id] || task.project_id}
-                        onChange={e => setEditingProject(prev => ({ ...prev, [task.id]: e.target.value }))}
-                        className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
-                      >
-                        {projects.map(p => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={() => handleConfirmTask(task)}
-                        className="shrink-0 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
-                      >
-                        Übernehmen
-                      </button>
-                      <button
-                        onClick={() => handleDismissTask(task.id)}
-                        className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
-                      >
-                        Verwerfen
-                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          onClick={() => openReviewDialog(task.id)}
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                        >
+                          Task planen
+                        </button>
+                        <button
+                          onClick={() => handleConfirmTask(task)}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-medium ${hasBg ? 'text-white/70 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700'}`}
+                        >
+                          Übernehmen
+                        </button>
+                        <button
+                          onClick={() => handleDismissTask(task.id)}
+                          className="rounded-lg px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                        >
+                          Verwerfen
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -1051,9 +1062,12 @@ export function CockpitPage() {
       {selectedTaskId && (
         <TaskDetailDialog
           taskId={selectedTaskId}
-          onClose={() => setSelectedTaskId(null)}
-          onUpdated={() => { setSelectedTaskId(null); fetchAppData(); }}
+          onClose={() => { setSelectedTaskId(null); setReviewTaskId(null); }}
+          onUpdated={() => { setSelectedTaskId(null); setReviewTaskId(null); fetchAppData(); }}
           onOpenTask={setSelectedTaskId}
+          reviewMode={selectedTaskId === reviewTaskId && reviewTaskId !== null}
+          onReviewConfirm={handleReviewConfirm}
+          onReviewDismiss={handleReviewDismiss}
         />
       )}
 

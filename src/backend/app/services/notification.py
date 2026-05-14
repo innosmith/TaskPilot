@@ -225,8 +225,8 @@ async def _check_due_soon() -> int:
             select(Task).where(
                 Task.is_completed.is_(False),
                 Task.due_date.isnot(None),
-                Task.due_date <= str(tomorrow),
-                Task.due_date >= str(date.today()),
+                Task.due_date <= tomorrow,
+                Task.due_date >= date.today(),
             )
         )
         tasks = list(result.scalars().all())

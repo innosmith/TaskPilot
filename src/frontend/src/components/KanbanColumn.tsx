@@ -9,7 +9,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Palette, Star } from 'lucide-react';
 import { LucideIconPicker, LucideIconByName } from './LucideIconPicker';
 import { TaskCard } from './TaskCard';
-import type { TaskCard as TaskCardType } from '../types';
+import type { TaskCard as TaskCardType, Project } from '../types';
 
 const COLUMN_COLORS: { key: string; label: string; swatch: string; bg: string; bgDark: string }[] = [
   { key: '', label: 'Standard', swatch: '', bg: '', bgDark: '' },
@@ -31,6 +31,7 @@ interface KanbanColumnProps {
   title: string;
   tasks: TaskCardType[];
   projectColorMap?: Record<string, string>;
+  projectMap?: Record<string, Project>;
   showProjectIndicator?: boolean;
   showColumnCount?: boolean;
   hasBg?: boolean;
@@ -50,6 +51,7 @@ export function KanbanColumn({
   title,
   tasks,
   projectColorMap,
+  projectMap,
   showProjectIndicator = false,
   showColumnCount = false,
   hasBg = false,
@@ -382,6 +384,9 @@ export function KanbanColumn({
               key={task.id}
               task={task}
               projectColor={projectColorMap?.[task.project_id]}
+              projectName={projectMap?.[task.project_id]?.name}
+              projectIconUrl={projectMap?.[task.project_id]?.icon_url}
+              projectIconEmoji={projectMap?.[task.project_id]?.icon_emoji}
               showProjectIndicator={showProjectIndicator}
               hasBg={hasBg}
               userAvatarUrl={userAvatarUrl}

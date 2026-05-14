@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 from app.auth.deps import MEMBER_RESTRICTED_TASK_FIELDS, check_project_access, get_current_user, require_role
 from app.routers.uploads import _scan_with_clamav
 from app.database import get_db
-from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, BoardMember, ChecklistItem, Project, Task, User
+from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, BoardMember, ChecklistItem, EmailTriage, Project, Task, User
 from app.services.notification import notify_mentions, notify_task_assigned
 from app.schemas import (
     AssigneeUser,
@@ -134,6 +134,10 @@ async def create_task(
     db.add(task)
     await db.flush()
 
+    if task.due_date and task.assignee != "agent":
+        from app.services.pipeline_promoter import auto_place_task
+        await auto_place_task(db, task)
+
     result = await db.execute(
         select(Task)
         .options(selectinload(Task.tags), selectinload(Task.checklist_items))
@@ -157,6 +161,8 @@ class PendingReviewOut(BaseModel):
     pipeline_column_id: uuid.UUID | None
     due_date: str | None
     email_message_id: str | None
+    source_email_subject: str | None = None
+    source_email_from: str | None = None
     created_at: str
 
 
@@ -225,8 +231,9 @@ async def list_pending_review(
 ) -> list[PendingReviewOut]:
     """Tasks mit needs_review=True laden (auto-erstellte Task-Vorschlaege)."""
     result = await db.execute(
-        select(Task, Project.name)
+        select(Task, Project.name, EmailTriage.subject, EmailTriage.from_name, EmailTriage.from_address)
         .join(Project, Task.project_id == Project.id)
+        .outerjoin(EmailTriage, Task.email_message_id == EmailTriage.message_id)
         .where(Task.needs_review == True)  # noqa: E712
         .order_by(Task.created_at.desc())
     )
@@ -242,9 +249,11 @@ async def list_pending_review(
             pipeline_column_id=task.pipeline_column_id,
             due_date=task.due_date.isoformat() if task.due_date else None,
             email_message_id=task.email_message_id,
+            source_email_subject=email_subject,
+            source_email_from=email_from_name or email_from_addr,
             created_at=task.created_at.isoformat(),
         )
-        for task, proj_name in rows
+        for task, proj_name, email_subject, email_from_name, email_from_addr in rows
     ]
 
 
@@ -266,6 +275,15 @@ async def get_task(
         raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
     task_out = TaskOut.model_validate(task)
     task_out.assignee_user = await _resolve_assignee_user(task.assignee, db)
+    if task.email_message_id:
+        et_result = await db.execute(
+            select(EmailTriage.subject, EmailTriage.from_name, EmailTriage.from_address)
+            .where(EmailTriage.message_id == task.email_message_id)
+        )
+        et_row = et_result.one_or_none()
+        if et_row:
+            task_out.source_email_subject = et_row.subject
+            task_out.source_email_from = et_row.from_name or et_row.from_address
     return task_out
 
 

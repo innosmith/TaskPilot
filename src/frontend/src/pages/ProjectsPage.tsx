@@ -3,6 +3,7 @@ import { useNavigate, useOutletContext } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { ProjectIcon } from '../components/ProjectIcon';
+import { ColorPicker, PRESET_COLORS } from '../components/ColorPicker';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 
 interface ProjectMetrics {
@@ -25,17 +26,6 @@ interface ProjectCreatePayload {
   description?: string;
 }
 
-const PRESET_COLORS = [
-  '#3B82F6',
-  '#EF4444',
-  '#10B981',
-  '#F59E0B',
-  '#8B5CF6',
-  '#EC4899',
-  '#6366F1',
-  '#14B8A6',
-];
-
 export function ProjectsPage() {
   const navigate = useNavigate();
   const { isOwner } = useAuth();
@@ -50,6 +40,14 @@ export function ProjectsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
+  const [editingColorId, setEditingColorId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editingColorId) return;
+    const handleClick = () => setEditingColorId(null);
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [editingColorId]);
 
   useEffect(() => {
     api.get<{ projects_background_url?: string | null }>('/api/settings')
@@ -121,6 +119,14 @@ export function ProjectsPage() {
     try {
       await api.delete(`/api/projects/${projectId}`);
       fetchProjects();
+    } catch { /* handled by api client */ }
+  };
+
+  const handleColorChange = async (projectId: string, color: string) => {
+    try {
+      await api.patch(`/api/projects/${projectId}`, { color });
+      setProjects((prev) => prev.map((p) => p.id === projectId ? { ...p, color } : p));
+      refreshSidebar();
     } catch { /* handled by api client */ }
   };
 
@@ -218,19 +224,7 @@ export function ProjectsPage() {
               <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
                 Farbe
               </label>
-              <div className="flex gap-1.5">
-                {PRESET_COLORS.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setFormColor(c)}
-                    className={`h-7 w-7 rounded-full transition-transform hover:scale-110 ${
-                      formColor === c ? 'ring-2 ring-offset-2 ring-indigo-500 dark:ring-offset-gray-900' : ''
-                    }`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
+              <ColorPicker value={formColor} onChange={setFormColor} />
             </div>
             <div className="min-w-[200px] flex-1">
               <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -283,12 +277,39 @@ export function ProjectsPage() {
                   >
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
-                        <ProjectIcon
-                          iconUrl={project.icon_url}
-                          iconEmoji={project.icon_emoji}
-                          color={project.color}
-                          size={20}
-                        />
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingColorId(editingColorId === project.id ? null : project.id);
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="rounded-md p-0.5 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
+                            title="Farbe ändern"
+                          >
+                            <ProjectIcon
+                              iconUrl={project.icon_url}
+                              iconEmoji={project.icon_emoji}
+                              color={project.color}
+                              size={20}
+                            />
+                          </button>
+                          {editingColorId === project.id && (
+                            <div
+                              className="absolute left-0 top-8 z-50 rounded-xl border border-gray-200 bg-white p-3 shadow-xl dark:border-gray-700 dark:bg-gray-900"
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <ColorPicker
+                                value={project.color}
+                                onChange={(color) => {
+                                  handleColorChange(project.id, color);
+                                  setEditingColorId(null);
+                                }}
+                              />
+                            </div>
+                          )}
+                        </div>
                         <span className="font-medium text-gray-900 dark:text-white">
                           {project.name}
                         </span>

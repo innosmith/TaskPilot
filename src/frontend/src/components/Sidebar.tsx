@@ -213,16 +213,6 @@ export function Sidebar({
                       )}
                     </span>
                   </NavLink>
-                  <NavLink to="/agenten" className={collapsedLinkClasses} onClick={onClose} title="Agenten">
-                    <span className="relative">
-                      <AgentIcon className="h-5 w-5" />
-                      {activeJobCount > 0 && (
-                        <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-indigo-500 text-[9px] font-bold text-white">
-                          {activeJobCount}
-                        </span>
-                      )}
-                    </span>
-                  </NavLink>
                   <NavLink to="/agenten/chat" className={collapsedLinkClasses} onClick={onClose} title="Chat">
                     <ChatIcon className="h-5 w-5" />
                   </NavLink>
@@ -233,10 +223,10 @@ export function Sidebar({
 
               <button
                 onClick={() => setProjectsExpanded((v) => !v)}
-                className={`flex items-center justify-center rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200`}
+                className="flex items-center justify-center rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                 title={projectsExpanded ? 'Projekte einklappen' : 'Projekte ausklappen'}
               >
-                <ProjectsIcon className="h-5 w-5" />
+                {projectsExpanded ? <LayersOpenIcon className="h-5 w-5" /> : <LayersClosedIcon className="h-5 w-5" />}
               </button>
 
               {projectsExpanded && sortedProjects.map((project) => (
@@ -279,6 +269,16 @@ export function Sidebar({
                   <NavLink to="/debitoren" className={collapsedLinkClasses} onClick={onClose} title="Debitoren">
                     <DebtorsIcon className="h-5 w-5" />
                   </NavLink>
+                  <NavLink to="/agenten" className={collapsedLinkClasses} onClick={onClose} title="Agenten">
+                    <span className="relative">
+                      <AgentIcon className="h-5 w-5" />
+                      {activeJobCount > 0 && (
+                        <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-indigo-500 text-[9px] font-bold text-white">
+                          {activeJobCount}
+                        </span>
+                      )}
+                    </span>
+                  </NavLink>
                 </>
               )}
             </>
@@ -306,17 +306,6 @@ export function Sidebar({
                     )}
                   </NavLink>
 
-                  <NavLink to="/agenten" className={linkClasses} onClick={onClose}>
-                    <AgentIcon className="h-5 w-5" />
-                    <span className="flex-1">Agenten</span>
-                    {activeJobCount > 0 && (
-                      <span className="flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" />
-                        {activeJobCount}
-                      </span>
-                    )}
-                  </NavLink>
-
                   <NavLink to="/agenten/chat" className={linkClasses} onClick={onClose}>
                     <ChatIcon className="h-5 w-5" />
                     <span className="flex-1">Chat</span>
@@ -324,18 +313,17 @@ export function Sidebar({
                 </>
               )}
 
-              <div className="mt-4 mb-1 flex items-center">
-                <NavLink to="/projects" className={linkClasses} onClick={onClose} end>
-                  <ProjectsIcon className="h-5 w-5" />
-                  <span className="flex-1">Projekte</span>
-                </NavLink>
+              <div className="mt-4 mb-1 flex items-center gap-0">
                 <button
                   onClick={() => setProjectsExpanded((v) => !v)}
-                  className="mr-1 rounded-md p-1 text-gray-300 transition-colors hover:bg-gray-200/60 hover:text-gray-500 dark:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-400"
+                  className="shrink-0 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                   title={projectsExpanded ? 'Projekte einklappen' : 'Projekte ausklappen'}
                 >
-                  {projectsExpanded ? <MinusIcon className="h-3.5 w-3.5" /> : <PlusIcon className="h-3.5 w-3.5" />}
+                  {projectsExpanded ? <LayersOpenIcon className="h-5 w-5" /> : <LayersClosedIcon className="h-5 w-5" />}
                 </button>
+                <NavLink to="/projects" className={linkClasses} onClick={onClose} end>
+                  <span className="flex-1">Projekte</span>
+                </NavLink>
               </div>
 
               {projectsExpanded && (
@@ -380,6 +368,17 @@ export function Sidebar({
                   <NavLink to="/debitoren" className={linkClasses} onClick={onClose}>
                     <DebtorsIcon className="h-5 w-5" />
                     <span className="flex-1">Debitoren</span>
+                  </NavLink>
+
+                  <NavLink to="/agenten" className={linkClasses} onClick={onClose}>
+                    <AgentIcon className="h-5 w-5" />
+                    <span className="flex-1">Agenten</span>
+                    {activeJobCount > 0 && (
+                      <span className="flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" />
+                        {activeJobCount}
+                      </span>
+                    )}
                   </NavLink>
                 </>
               )}
@@ -554,13 +553,6 @@ function MailIcon({ className }: { className?: string }) {
   );
 }
 
-function ProjectsIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
-    </svg>
-  );
-}
 
 function LogoutIcon({ className }: { className?: string }) {
   return (
@@ -643,18 +635,20 @@ function ChatIcon({ className }: { className?: string }) {
   );
 }
 
-function MinusIcon({ className }: { className?: string }) {
+function LayersOpenIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 2.25 3.75 7.5 12 12.75l8.25-5.25L12 2.25Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6.429 9.75 12 13.25l5.571-3.5" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6.429 14.25 12 17.75l5.571-3.5" />
     </svg>
   );
 }
 
-function PlusIcon({ className }: { className?: string }) {
+function LayersClosedIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 2.25 3.75 7.5 12 12.75l8.25-5.25L12 2.25Z" />
     </svg>
   );
 }
