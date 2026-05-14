@@ -130,7 +130,7 @@ export function TaskCard({
             <PinIcon className="h-3.5 w-3.5" />
           </span>
         )}
-        {task.recurrence_rule && (
+        {(task.recurrence_rule || task.template_id) && (
           <span className="text-indigo-400" title="Wiederkehrend">
             <RepeatIcon className="h-3.5 w-3.5" />
           </span>

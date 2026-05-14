@@ -56,13 +56,6 @@ async def create_project(
     db.add(project)
     await db.flush()
 
-    defaults = [
-        BoardColumn(project_id=project.id, name="Open", position=1.0),
-        BoardColumn(project_id=project.id, name="In Progress", position=2.0),
-        BoardColumn(project_id=project.id, name="Done", position=3.0, is_archive=True),
-    ]
-    db.add_all(defaults)
-
     db.add(BoardMember(project_id=project.id, user_id=user.id, role="member"))
 
     return project
@@ -146,7 +139,11 @@ async def get_board(
         task_result = await db.execute(
             select(Task)
             .options(selectinload(Task.tags), selectinload(Task.checklist_items))
-            .where(Task.board_column_id == col.id, Task.is_completed == False)
+            .where(
+                Task.board_column_id == col.id,
+                Task.is_completed == False,  # noqa: E712
+                Task.template_id.is_(None),
+            )
             .order_by(Task.board_position)
         )
         tasks = task_result.scalars().all()
@@ -169,6 +166,8 @@ async def get_board(
                 tags=t.tags,
                 checklist_total=len(t.checklist_items),
                 checklist_done=sum(1 for ci in t.checklist_items if ci.is_checked),
+                recurrence_rule=t.recurrence_rule,
+                template_id=t.template_id,
             )
             task_cards.append(card)
 

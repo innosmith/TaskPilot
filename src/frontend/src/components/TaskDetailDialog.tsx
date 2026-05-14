@@ -222,7 +222,7 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask }: Tas
       ? 'flex h-full w-full flex-col overflow-hidden bg-white pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] dark:bg-gray-950'
       : mode === 'modal'
         ? 'flex w-full max-w-4xl max-h-[90dvh] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-gray-200 dark:bg-gray-950 dark:ring-gray-700/60'
-        : 'flex h-full w-full max-w-2xl flex-col overflow-hidden bg-white shadow-2xl ring-1 ring-gray-200 dark:bg-gray-950 dark:ring-gray-700/60';
+        : 'flex h-full w-full max-w-4xl flex-col overflow-hidden bg-white shadow-2xl ring-1 ring-gray-200 dark:bg-gray-950 dark:ring-gray-700/60';
 
   const boardColumns: BoardColumn[] = currentProject?.board_columns?.sort((a, b) => a.position - b.position) || [];
 
@@ -317,7 +317,7 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask }: Tas
           <div className="flex-1 overflow-y-auto">
             <div className="grid grid-cols-1 md:grid-cols-[1fr_340px]">
               {/* ═══════════ Linke Spalte: Inhalt ═══════════ */}
-              <div className="space-y-6 p-6 md:border-r md:border-gray-100 md:dark:border-gray-800">
+              <div className="min-w-0 space-y-6 p-6 md:border-r md:border-gray-100 md:dark:border-gray-800">
                 <TaskDetailContent
                   task={task}
                   taskId={taskId}

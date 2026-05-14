@@ -17,7 +17,7 @@ interface AuthContextValue {
   role: UserRole | null;
   isOwner: boolean;
   login: (credentials: LoginRequest) => Promise<LoginResponse>;
-  logout: () => void;
+  logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
 
@@ -74,7 +74,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return data;
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch { /* Auch bei Netzwerkfehler lokal aufraeumen */ }
     clearToken();
     setTokenState(null);
     setUser(null);

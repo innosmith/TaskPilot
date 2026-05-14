@@ -565,7 +565,9 @@ class GraphClient:
         normalisiert, da alle Zeiten konsistent in Europe/Zurich sind.
         """
         from datetime import datetime as dt
-        clean = s.replace("Z", "").rstrip("0").rstrip(".")
+        clean = s.replace("Z", "")
+        if "." in clean:
+            clean = clean.rstrip("0").rstrip(".")
         if "+" in clean[10:] or clean.endswith(("-00:00", "-01:00", "-02:00")):
             clean = clean.rsplit("+", 1)[0].rsplit("-", 1)[0]
         return dt.fromisoformat(clean)

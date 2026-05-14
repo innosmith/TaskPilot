@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,7 +33,11 @@ async def get_pipeline(
         task_result = await db.execute(
             select(Task)
             .options(selectinload(Task.tags), selectinload(Task.checklist_items))
-            .where(Task.pipeline_column_id == col.id, Task.is_completed == False)
+            .where(
+                Task.pipeline_column_id == col.id,
+                Task.is_completed == False,  # noqa: E712
+                ~and_(Task.recurrence_rule.isnot(None), Task.template_id.is_(None)),
+            )
             .order_by(Task.pipeline_position)
         )
         tasks = task_result.scalars().all()
@@ -55,6 +59,8 @@ async def get_pipeline(
                 tags=t.tags,
                 checklist_total=len(t.checklist_items),
                 checklist_done=sum(1 for ci in t.checklist_items if ci.is_checked),
+                recurrence_rule=t.recurrence_rule,
+                template_id=t.template_id,
             )
             for t in tasks
         ]

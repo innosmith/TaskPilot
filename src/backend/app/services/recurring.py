@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from croniter import croniter
 from sqlalchemy import and_, func, select
@@ -62,8 +62,16 @@ async def _has_active_instance(db: AsyncSession, template_id: uuid.UUID) -> bool
     return (result.scalar_one() or 0) > 0
 
 
-async def _copy_template(db: AsyncSession, template: Task) -> Task:
-    """Erzeugt eine frische Instanz aus dem Template inkl. Checkliste + Tags."""
+async def _copy_template(
+    db: AsyncSession, template: Task, due_date: date | None = None,
+) -> Task:
+    """Erzeugt eine frische Instanz aus dem Template inkl. Checkliste + Tags.
+
+    Wenn due_date uebergeben wird, wird die Instanz via Smart Placement
+    automatisch in die passende Agenda-Spalte platziert.
+    """
+    from app.services.pipeline_promoter import auto_place_task
+
     instance = Task(
         title=template.title,
         description=template.description,
@@ -73,6 +81,7 @@ async def _copy_template(db: AsyncSession, template: Task) -> Task:
         pipeline_column_id=template.pipeline_column_id,
         pipeline_position=None,
         assignee=template.assignee,
+        due_date=due_date,
         data_class=template.data_class,
         llm_override=template.llm_override,
         autonomy_level=template.autonomy_level,
@@ -86,16 +95,17 @@ async def _copy_template(db: AsyncSession, template: Task) -> Task:
     )
     instance.board_position = (max_pos_result.scalar_one() or 0.0) + 1.0
 
-    if template.pipeline_column_id:
+    db.add(instance)
+    await db.flush()
+
+    placed = await auto_place_task(db, instance)
+    if not placed and template.pipeline_column_id:
         max_pp = await db.execute(
             select(func.coalesce(func.max(Task.pipeline_position), 0.0)).where(
                 Task.pipeline_column_id == template.pipeline_column_id
             )
         )
         instance.pipeline_position = (max_pp.scalar_one() or 0.0) + 1.0
-
-    db.add(instance)
-    await db.flush()
 
     cl_result = await db.execute(
         select(ChecklistItem)
@@ -150,32 +160,34 @@ async def _create_calendar_blocker(instance: Task, template: Task) -> None:
         cron_hour = cron_next.hour
         cron_minute = cron_next.minute
 
+        fmt = "%Y-%m-%dT%H:%M:%S"
+
         search_start = datetime.combine(
             target_date, datetime.min.time()
-        ).replace(hour=cron_hour, minute=cron_minute, tzinfo=timezone.utc)
+        ).replace(hour=cron_hour, minute=cron_minute)
         search_end = datetime.combine(
             target_date, datetime.min.time()
-        ).replace(hour=20, minute=0, tzinfo=timezone.utc)
+        ).replace(hour=20, minute=0)
 
         if search_start >= search_end:
             search_start = search_start.replace(hour=7, minute=0)
 
         slots = await client.find_free_slots(
-            start=search_start.isoformat(),
-            end=search_end.isoformat(),
+            start=search_start.strftime(fmt),
+            end=search_end.strftime(fmt),
             duration_minutes=duration,
         )
 
         if not slots:
             next_day_start = datetime.combine(
                 target_date + timedelta(days=1), datetime.min.time()
-            ).replace(hour=cron_hour, minute=cron_minute, tzinfo=timezone.utc)
+            ).replace(hour=cron_hour, minute=cron_minute)
             next_day_end = datetime.combine(
                 target_date + timedelta(days=1), datetime.min.time()
-            ).replace(hour=20, minute=0, tzinfo=timezone.utc)
+            ).replace(hour=20, minute=0)
             slots = await client.find_free_slots(
-                start=next_day_start.isoformat(),
-                end=next_day_end.isoformat(),
+                start=next_day_start.strftime(fmt),
+                end=next_day_end.strftime(fmt),
                 duration_minutes=duration,
             )
 
@@ -240,13 +252,15 @@ async def _check_and_spawn(db: AsyncSession) -> int:
             if next_run.tzinfo is None:
                 next_run = next_run.replace(tzinfo=timezone.utc)
 
-            if next_run <= now:
-                instance = await _copy_template(db, tmpl)
-                spawned += 1
-                logger.info(
-                    "Recurring-Instanz '%s' (id=%s) aus Template %s erzeugt",
-                    instance.title, instance.id, tmpl.id,
-                )
+            if tmpl.recurrence_end_date and next_run.date() > tmpl.recurrence_end_date:
+                continue
+
+            instance = await _copy_template(db, tmpl, due_date=next_run.date())
+            spawned += 1
+            logger.info(
+                "Recurring-Instanz '%s' (id=%s) aus Template %s erzeugt (due=%s)",
+                instance.title, instance.id, tmpl.id, next_run.date(),
+            )
         except Exception:
             logger.exception("Fehler bei Recurring-Check für Template %s", tmpl.id)
 

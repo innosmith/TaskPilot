@@ -38,6 +38,28 @@ function ArrowUpRightIcon({ className }: { className?: string }) {
   );
 }
 
+function renderTextWithLinks(text: string) {
+  const urlPattern = /(https?:\/\/[^\s]+)/g;
+  const parts = text.split(urlPattern);
+  if (parts.length === 1) return text;
+  return parts.map((part, i) =>
+    urlPattern.test(part) ? (
+      <a
+        key={i}
+        href={part}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="text-indigo-500 hover:underline dark:text-indigo-400"
+      >
+        {part}
+      </a>
+    ) : (
+      <span key={i}>{part}</span>
+    ),
+  );
+}
+
 interface SortableChecklistItemProps {
   item: ChecklistItem;
   isEditing: boolean;
@@ -91,7 +113,7 @@ function SortableChecklistItem({
     <div
       ref={setNodeRef}
       style={style}
-      className="group flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50"
+      className="group flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50"
     >
       <button
         type="button"
@@ -122,18 +144,18 @@ function SortableChecklistItem({
             if (e.key === 'Escape') onCancelEdit();
           }}
           onBlur={onSaveEdit}
-          className="flex-1 rounded border border-indigo-300 bg-white px-2 py-0.5 text-sm text-gray-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:border-indigo-600 dark:bg-gray-800 dark:text-gray-200"
+          className="min-w-0 flex-1 rounded border border-indigo-300 bg-white px-2 py-0.5 text-sm text-gray-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:border-indigo-600 dark:bg-gray-800 dark:text-gray-200"
         />
       ) : (
         <span
           onClick={onStartEdit}
-          className={`flex-1 cursor-text text-sm ${
+          className={`min-w-0 flex-1 cursor-text break-all text-sm ${
             item.is_checked
               ? 'text-gray-400 line-through dark:text-gray-500'
               : 'text-gray-700 dark:text-gray-300'
           }`}
         >
-          {item.text}
+          {renderTextWithLinks(item.text)}
         </span>
       )}
 

@@ -44,14 +44,7 @@ const AUTONOMY_OPTIONS = [
   { value: 'L3', label: 'L3 – Auto' },
 ] as const;
 
-const CALENDAR_DURATION_OPTIONS = [
-  { value: '', label: 'Kein Blocker' },
-  { value: '15', label: '15 Min' },
-  { value: '30', label: '30 Min' },
-  { value: '60', label: '60 Min' },
-  { value: '90', label: '90 Min' },
-  { value: '120', label: '120 Min' },
-] as const;
+const CALENDAR_PRESETS = [15, 30, 60, 120] as const;
 
 
 function formatDateDE(iso: string): string {
@@ -417,8 +410,27 @@ export default function TaskDetailSidebar({
                 type="date"
                 value={task.recurrence_end_date ?? ''}
                 onChange={(e) => updateTask({ recurrence_end_date: e.target.value || null })}
-                className={ATTR_SELECT}
+                className="sr-only"
               />
+              <button
+                onClick={() => recurrenceEndRef.current?.showPicker()}
+                className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs transition-colors border-gray-200 text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:text-gray-300 dark:hover:border-gray-600`}
+              >
+                <CalendarIcon className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                {task.recurrence_end_date ? (
+                  <span>{formatDateDE(task.recurrence_end_date)}</span>
+                ) : (
+                  <span className="text-gray-400 dark:text-gray-500">Unbegrenzt</span>
+                )}
+                {task.recurrence_end_date && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); updateTask({ recurrence_end_date: null }); }}
+                    className="ml-auto rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10"
+                  >
+                    <CloseIcon className="h-3 w-3" />
+                  </button>
+                )}
+              </button>
             </div>
             <div className="flex items-center gap-3">
               <span className="w-[72px] shrink-0 text-[11px] text-gray-500 dark:text-gray-400">Max.</span>
@@ -448,17 +460,39 @@ export default function TaskDetailSidebar({
             <CalendarIcon className="h-3.5 w-3.5" />
             Auto-Kalender
           </div>
-          <select
-            value={task.calendar_duration_minutes?.toString() ?? ''}
-            onChange={(e) =>
-              updateTask({ calendar_duration_minutes: e.target.value ? Number(e.target.value) : null })
-            }
-            className={ATTR_SELECT}
-          >
-            {CALENDAR_DURATION_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
+          <div className="flex flex-wrap items-center gap-1">
+            {[null, ...CALENDAR_PRESETS].map((m) => {
+              const active = task.calendar_duration_minutes === m;
+              return (
+                <button
+                  key={m ?? 'off'}
+                  onClick={() => updateTask({ calendar_duration_minutes: m })}
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                    active
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {m == null ? 'Aus' : `${m}`}
+                </button>
+              );
+            })}
+            <div className="flex items-center gap-0.5">
+              <input
+                type="number"
+                min={5}
+                max={480}
+                step={5}
+                value={task.calendar_duration_minutes ?? ''}
+                onChange={(e) =>
+                  updateTask({ calendar_duration_minutes: e.target.value ? Number(e.target.value) : null })
+                }
+                className="w-12 rounded border border-gray-200 bg-white px-1 py-0.5 text-center text-[11px] dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                placeholder="Min"
+              />
+              <span className="text-[10px] text-gray-400">Min</span>
+            </div>
+          </div>
           <p className="mt-1.5 text-[10px] leading-tight text-gray-500 dark:text-gray-400">
             Bucht automatisch ab der eingestellten Uhrzeit. Bei Konflikten wird der nächste freie Slot gewählt.
           </p>

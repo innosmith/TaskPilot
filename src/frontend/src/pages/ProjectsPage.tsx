@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { ProjectIcon } from '../components/ProjectIcon';
+import { BackgroundPicker } from '../components/BackgroundPicker';
 
 interface ProjectMetrics {
   id: string;
@@ -38,6 +39,7 @@ const PRESET_COLORS = [
 export function ProjectsPage() {
   const navigate = useNavigate();
   const { isOwner } = useAuth();
+  const { refreshSidebar } = useOutletContext<{ refreshSidebar: () => void }>();
   const [projects, setProjects] = useState<ProjectMetrics[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -46,6 +48,19 @@ export function ProjectsPage() {
   const [formColor, setFormColor] = useState(PRESET_COLORS[0]);
   const [formDescription, setFormDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const [bgPickerOpen, setBgPickerOpen] = useState(false);
+
+  useEffect(() => {
+    api.get<{ projects_background_url?: string | null }>('/api/settings')
+      .then((s) => setBgUrl(s.projects_background_url ?? null))
+      .catch(() => {});
+  }, []);
+
+  const handleBgSelect = async (url: string | null, _type: 'gradient' | 'unsplash' | 'custom' | null) => {
+    await api.patch('/api/settings', { projects_background_url: url });
+    setBgUrl(url);
+  };
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -79,6 +94,7 @@ export function ProjectsPage() {
       await api.post('/api/projects', payload);
       resetForm();
       fetchProjects();
+      refreshSidebar();
     } catch { /* handled by api client */ }
     finally { setSubmitting(false); }
   };
@@ -120,21 +136,44 @@ export function ProjectsPage() {
   const archivedProjects = projects.filter((p) => p.status === 'archived');
   const displayedProjects = showArchived ? archivedProjects : activeProjects;
 
+  const hasBg = !!bgUrl;
+  const isGradient = bgUrl?.startsWith('gradient:') ?? false;
+  const bgStyle = isGradient
+    ? { background: bgUrl!.slice('gradient:'.length) }
+    : hasBg
+      ? { backgroundImage: `url(${bgUrl})`, backgroundSize: 'cover' as const, backgroundPosition: 'center' }
+      : undefined;
+
+  const textPrimary = hasBg ? 'text-white' : 'text-gray-900 dark:text-white';
+  const textSecondary = hasBg ? 'text-white/70' : 'text-gray-500 dark:text-gray-400';
+
   return (
-    <div className="flex h-full flex-col">
-      <div className="border-b border-gray-200 px-4 py-4 sm:px-6 dark:border-gray-800">
+    <div className="relative flex h-full flex-col" style={bgStyle}>
+      {hasBg && !isGradient && <div className="pointer-events-none absolute inset-0 bg-black/10 dark:bg-black/30" />}
+      {isGradient && <div className="pointer-events-none absolute inset-0 bg-black/5 dark:bg-black/20" />}
+
+      <div className={`relative z-10 border-b px-4 py-4 sm:px-6 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 dark:border-gray-800'}`}>
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">Projekte</h1>
+            <h1 className={`text-xl font-bold ${textPrimary}`}>Projekte</h1>
             {isOwner && (
-              <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+              <p className={`mt-0.5 text-sm ${textSecondary}`}>
                 {activeProjects.length} aktiv{archivedProjects.length > 0 && ` · ${archivedProjects.length} archiviert`}
               </p>
             )}
           </div>
           {isOwner && (
             <div className="flex items-center gap-3">
-              <div className="flex rounded-lg border border-gray-200 dark:border-gray-700">
+              <button
+                onClick={() => setBgPickerOpen(true)}
+                className={`rounded-lg p-2 transition-colors ${hasBg ? 'text-white/70 hover:bg-white/10 hover:text-white' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
+                title="Hintergrund ändern"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" />
+                </svg>
+              </button>
+              <div className={`flex rounded-lg border ${hasBg ? 'border-white/20' : 'border-gray-200 dark:border-gray-700'}`}>
                 <button
                   onClick={() => setShowArchived(false)}
                   className={`px-3 py-1.5 text-xs font-medium transition-colors ${!showArchived ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'}`}
@@ -160,7 +199,7 @@ export function ProjectsPage() {
       </div>
 
       {isOwner && showForm && (
-        <div className="border-b border-gray-200 bg-gray-50 px-4 py-4 sm:px-6 dark:border-gray-800 dark:bg-gray-900/50">
+        <div className={`relative z-10 border-b px-4 py-4 sm:px-6 ${hasBg ? 'border-white/10 bg-black/20 backdrop-blur-sm' : 'border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/50'}`}>
           <form onSubmit={handleCreate} className="flex flex-wrap items-end gap-4">
             <div className="min-w-[200px] flex-1">
               <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -216,7 +255,7 @@ export function ProjectsPage() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
+      <div className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
         {displayedProjects.length === 0 ? (
           <div className="flex h-48 items-center justify-center text-gray-400 dark:text-gray-600">
             <p>{showArchived ? 'Kein archiviertes Projekt vorhanden' : 'Noch keine Projekte vorhanden'}</p>
@@ -332,6 +371,13 @@ export function ProjectsPage() {
           </div>
         )}
       </div>
+
+      <BackgroundPicker
+        isOpen={bgPickerOpen}
+        currentUrl={bgUrl}
+        onSelect={handleBgSelect}
+        onClose={() => setBgPickerOpen(false)}
+      />
     </div>
   );
 }

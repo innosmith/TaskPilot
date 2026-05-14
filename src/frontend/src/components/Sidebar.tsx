@@ -1,5 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
+import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -41,13 +44,50 @@ export function Sidebar({
   sidebarColor,
 }: SidebarProps) {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [sidebarOrder, setSidebarOrder] = useState<string[] | null>(null);
+  const [projectsExpanded, setProjectsExpanded] = useState(true);
+  const orderLoaded = useRef(false);
   const { activeJobCount, unreadMailCount, pendingDecisions, focusTaskCount } = useBadges();
   const { logout, isOwner } = useAuth();
   const navigate = useNavigate();
 
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  );
+
   useEffect(() => {
     api.get<Project[]>('/api/projects').then(setProjects).catch(() => {});
+    if (!orderLoaded.current) {
+      orderLoaded.current = true;
+      api.get<{ project_sidebar_order?: string[] | null }>('/api/settings')
+        .then((s) => { if (s.project_sidebar_order) setSidebarOrder(s.project_sidebar_order); })
+        .catch(() => {});
+    }
   }, [refreshKey]);
+
+  const sortedProjects = sidebarOrder
+    ? [...projects].sort((a, b) => {
+        const ia = sidebarOrder.indexOf(a.id);
+        const ib = sidebarOrder.indexOf(b.id);
+        if (ia === -1 && ib === -1) return 0;
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+      })
+    : projects;
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const ids = sortedProjects.map((p) => p.id);
+    const oldIndex = ids.indexOf(active.id as string);
+    const newIndex = ids.indexOf(over.id as string);
+    if (oldIndex === -1 || newIndex === -1) return;
+    const newOrder = arrayMove(ids, oldIndex, newIndex);
+    setSidebarOrder(newOrder);
+    api.patch('/api/settings', { project_sidebar_order: newOrder }).catch(() => {});
+  }, [sortedProjects]);
 
   const handleLogout = () => {
     logout();
@@ -191,7 +231,15 @@ export function Sidebar({
                 </>
               )}
 
-              {projects.map((project) => (
+              <button
+                onClick={() => setProjectsExpanded((v) => !v)}
+                className={`flex items-center justify-center rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200`}
+                title={projectsExpanded ? 'Projekte einklappen' : 'Projekte ausklappen'}
+              >
+                <ProjectsIcon className="h-5 w-5" />
+              </button>
+
+              {projectsExpanded && sortedProjects.map((project) => (
                 <NavLink
                   key={project.id}
                   to={`/projects/${project.id}`}
@@ -276,36 +324,34 @@ export function Sidebar({
                 </>
               )}
 
-              <div className="mt-6 mb-2 flex items-center justify-between px-3">
-                <span className="text-xs font-semibold tracking-wider text-gray-400 uppercase dark:text-gray-500">
-                  Projekte
-                </span>
-                <NavLink
-                  to="/projects"
-                  className="rounded p-0.5 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-300"
-                  onClick={onClose}
-                  title="Alle Projekte"
-                >
-                  <GridIcon className="h-3.5 w-3.5" />
+              <div className="mt-4 mb-1 flex items-center">
+                <NavLink to="/projects" className={linkClasses} onClick={onClose} end>
+                  <ProjectsIcon className="h-5 w-5" />
+                  <span className="flex-1">Projekte</span>
                 </NavLink>
+                <button
+                  onClick={() => setProjectsExpanded((v) => !v)}
+                  className="mr-1 rounded-md p-1 text-gray-300 transition-colors hover:bg-gray-200/60 hover:text-gray-500 dark:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-400"
+                  title={projectsExpanded ? 'Projekte einklappen' : 'Projekte ausklappen'}
+                >
+                  {projectsExpanded ? <MinusIcon className="h-3.5 w-3.5" /> : <PlusIcon className="h-3.5 w-3.5" />}
+                </button>
               </div>
 
-              {projects.map((project) => (
-                <NavLink
-                  key={project.id}
-                  to={`/projects/${project.id}`}
-                  className={linkClasses}
-                  onClick={onClose}
-                >
-                  <ProjectIcon
-                    iconUrl={project.icon_url}
-                    iconEmoji={project.icon_emoji}
-                    color={project.color}
-                    size={16}
-                  />
-                  {project.name}
-                </NavLink>
-              ))}
+              {projectsExpanded && (
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                  <SortableContext items={sortedProjects.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+                    {sortedProjects.map((project) => (
+                      <SortableProjectItem
+                        key={project.id}
+                        project={project}
+                        linkClasses={linkClasses}
+                        onClose={onClose}
+                      />
+                    ))}
+                  </SortableContext>
+                </DndContext>
+              )}
 
               {isOwner && (
                 <>
@@ -429,6 +475,43 @@ function LogoutButton({ onLogout, collapsed = false }: { onLogout: () => void; c
   );
 }
 
+/* ── SortableProjectItem ── */
+
+function SortableProjectItem({
+  project,
+  linkClasses,
+  onClose,
+}: {
+  project: Project;
+  linkClasses: (props: { isActive: boolean }) => string;
+  onClose: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: project.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <NavLink
+        to={`/projects/${project.id}`}
+        className={linkClasses}
+        onClick={onClose}
+      >
+        <ProjectIcon
+          iconUrl={project.icon_url}
+          iconEmoji={project.icon_emoji}
+          color={project.color}
+          size={16}
+        />
+        {project.name}
+      </NavLink>
+    </div>
+  );
+}
+
 /* ── Icons ── */
 
 function SearchIcon({ className }: { className?: string }) {
@@ -471,10 +554,10 @@ function MailIcon({ className }: { className?: string }) {
   );
 }
 
-function GridIcon({ className }: { className?: string }) {
+function ProjectsIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
     </svg>
   );
 }
@@ -556,6 +639,22 @@ function ChatIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155" />
+    </svg>
+  );
+}
+
+function MinusIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+    </svg>
+  );
+}
+
+function PlusIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
     </svg>
   );
 }

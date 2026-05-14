@@ -52,6 +52,7 @@ from app.routers.auth import ensure_owner_exists
 from app.services.content_converter import start_content_converter, stop_content_converter
 from app.services.nanobot_worker import start_nanobot_worker, stop_nanobot_worker
 from app.services.notification import start_notification_scheduler, stop_notification_scheduler
+from app.services.pipeline_promoter import start_pipeline_promoter, stop_pipeline_promoter
 from app.services.recurring import start_recurring_scheduler, stop_recurring_scheduler
 from app.services.triage import start_triage_service, stop_triage_service
 
@@ -105,11 +106,13 @@ async def lifespan(app: FastAPI):
     await start_content_converter()
     await start_nanobot_worker()
     await start_recurring_scheduler()
+    await start_pipeline_promoter()
     await start_triage_service()
     await start_notification_scheduler()
     yield
     await stop_notification_scheduler()
     await stop_triage_service()
+    await stop_pipeline_promoter()
     await stop_recurring_scheduler()
     await stop_nanobot_worker()
     await stop_content_converter()

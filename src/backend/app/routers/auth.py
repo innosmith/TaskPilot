@@ -108,6 +108,20 @@ async def login(
     return response
 
 
+@router.post("/logout")
+async def logout() -> Response:
+    """Loescht das Refresh-Cookie, damit ein Page-Refresh nicht erneut einloggt."""
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(
+        key="taskpilot_refresh",
+        path="/api/auth/refresh",
+        httponly=True,
+        secure=True,
+        samesite="strict",
+    )
+    return response
+
+
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(get_current_user)) -> UserOut:
     return user

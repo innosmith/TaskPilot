@@ -177,7 +177,7 @@ async def list_due_today(
         .where(
             Task.is_completed.is_(False),
             Task.due_date.isnot(None),
-            Task.due_date <= str(today),
+            Task.due_date <= today,
         )
         .options(selectinload(Task.tags))
         .order_by(Task.due_date)
@@ -307,6 +307,10 @@ async def update_task(
         update_data["description"] = _sanitize_text(update_data["description"])
     for field, value in update_data.items():
         setattr(task, field, value)
+
+    if "due_date" in update_data and task.assignee != "agent" and task.pipeline_column_id:
+        from app.services.pipeline_promoter import auto_place_task
+        await auto_place_task(db, task)
 
     if body.assignee == "agent" and old_assignee != "agent" and user.role == "owner":
         job = AgentJob(task_id=task.id, llm_model=task.llm_override)
