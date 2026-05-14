@@ -316,7 +316,7 @@ function KpiStrip({ toggl, data, hasBg, textMuted: _textMuted }: { toggl: TogglM
         sublabel={data.dso_days != null ? `DSO: ${data.dso_days} Tage` : `${data.debtors.filter(d => d.open_invoices_count > 0).length} Kunden`}
         icon={<InvoiceIcon />} status={data.dso_days != null ? (data.dso_days <= 30 ? 'green' : data.dso_days <= 60 ? 'yellow' : 'red') : 'neutral'} hasBg={hasBg} />
       <KpiCard label="Umsatz YTD" value={formatCHF(data.total_revenue_ytd)}
-        sublabel="Rechnungen (Bexio)" icon={<BankIcon />} status="neutral" hasBg={hasBg} />
+        sublabel="Rechnungen (Bexio)" icon={<BankIcon />} status="neutral" hasBg={hasBg} className="col-span-2 lg:col-span-1" />
     </div>
   );
 }
@@ -554,8 +554,8 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
             <tr className={`border-b text-left text-[10px] font-medium uppercase tracking-wider ${hasBg ? 'border-white/10 text-white/40' : 'border-gray-100 text-gray-400 dark:border-gray-700 dark:text-gray-500'}`}>
               <th className="py-2 pl-1 pr-1">Projekt</th>
               <th className="w-[55px] px-1 py-2 text-right">Zeit</th>
-              <th className="w-[40px] px-1 py-2 text-right">%</th>
-              <th className="w-[80px] py-2 pl-1 pr-1 text-right">CHF</th>
+              <th className="w-[35px] px-1 py-2 text-right">%</th>
+              <th className="w-[90px] py-2 pl-1 pr-1 text-right">CHF</th>
             </tr>
           </thead>
           <tbody>
@@ -683,9 +683,9 @@ function DebtorTable({ debtors, debtorSort, setDebtorSort, expandedDebtor, setEx
   );
 }
 
-function KpiCard({ label, value, sublabel, icon, status = 'neutral', hasBg = false }: {
+function KpiCard({ label, value, sublabel, icon, status = 'neutral', hasBg = false, className = '' }: {
   label: string; value: string; sublabel: string; icon: React.ReactNode;
-  status?: 'green' | 'yellow' | 'red' | 'neutral'; hasBg?: boolean;
+  status?: 'green' | 'yellow' | 'red' | 'neutral'; hasBg?: boolean; className?: string;
 }) {
   const statusColors: Record<string, string> = {
     green: 'border-l-green-500', yellow: 'border-l-amber-500', red: 'border-l-red-500',
@@ -695,13 +695,13 @@ function KpiCard({ label, value, sublabel, icon, status = 'neutral', hasBg = fal
     ? 'bg-black/20 backdrop-blur-xl ring-1 ring-white/10 border-transparent'
     : 'border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800/50';
   return (
-    <div className={`rounded-xl border border-l-4 ${statusColors[status]} ${bgClass} p-3 sm:p-4`}>
-      <div className="flex items-center gap-2.5 sm:gap-3">
-        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg sm:h-10 sm:w-10 ${hasBg ? 'bg-white/10 text-white/70' : 'bg-gray-50 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>{icon}</div>
+    <div className={`rounded-xl border border-l-4 ${statusColors[status]} ${bgClass} p-3 sm:p-4 ${className}`}>
+      <div className="flex items-center gap-2 lg:gap-3">
+        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg lg:h-10 lg:w-10 ${hasBg ? 'bg-white/10 text-white/70' : 'bg-gray-50 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>{icon}</div>
         <div className="min-w-0 flex-1">
-          <p className={`text-[11px] font-medium sm:text-xs ${hasBg ? 'text-white/50' : 'text-gray-500 dark:text-gray-400'}`}>{label}</p>
-          <p className={`truncate text-base font-bold sm:text-lg ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>{value}</p>
-          <p className={`truncate text-[10px] sm:text-xs ${hasBg ? 'text-white/40' : 'text-gray-400 dark:text-gray-500'}`}>{sublabel}</p>
+          <p className={`text-[11px] font-medium lg:text-xs ${hasBg ? 'text-white/50' : 'text-gray-500 dark:text-gray-400'}`}>{label}</p>
+          <p className={`text-[15px] font-bold leading-tight lg:text-lg ${hasBg ? 'text-white' : 'text-gray-900 dark:text-white'}`}>{value}</p>
+          <p className={`truncate text-[10px] lg:text-xs ${hasBg ? 'text-white/40' : 'text-gray-400 dark:text-gray-500'}`}>{sublabel}</p>
         </div>
       </div>
     </div>

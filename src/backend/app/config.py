@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-change-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60  # 1h Access-Token
-    refresh_token_expire_hours: int = 24  # 24h Refresh-Token (Owner), 4h fuer Member
+    refresh_token_expire_hours: int = 168  # 7d Refresh-Token (Owner), 4h fuer Member
 
     # Owner (Phase 0: nur ein User) — Werte kommen aus .env.dev / .env.integration / .env.prod
     owner_email: str = ""

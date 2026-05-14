@@ -95,7 +95,6 @@ export function AppLayout() {
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const openSearch = useCallback(() => setSearchOpen(true), []);
 
-  // BottomTabBar deaktiviert — Code bleibt in BottomTabBar.tsx erhalten
   const isMobile = useMediaQuery('(max-width: 1023px)');
 
   return (
@@ -151,6 +150,7 @@ export function AppLayout() {
               onMarkAsRead={notifications.markAsRead}
               onMarkAllAsRead={notifications.markAllAsRead}
               onDismiss={notifications.dismiss}
+              mobile
             />
           )}
 

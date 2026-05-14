@@ -15,6 +15,7 @@ import { BackgroundPicker } from '../components/BackgroundPicker';
 import { ExportDialog } from '../components/ExportDialog';
 import { AnonymizePanel } from '../components/AnonymizePanel';
 import { OneDrivePicker, type ContextSource } from '../components/OneDrivePicker';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 
 let mermaidReady: Promise<typeof import('mermaid')> | null = null;
 function getMermaid() {
@@ -199,7 +200,8 @@ export function ChatPage() {
   const [mode, setMode] = useState<ChatMode>('agent');
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
-  const [showSidebar, setShowSidebar] = useState(true);
+  const isChatMobile = useMediaQuery('(max-width: 1023px)');
+  const [showSidebar, setShowSidebar] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [tempOpen, setTempOpen] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -1020,12 +1022,19 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Sidebar */}
-      <div className={`${showSidebar ? 'w-72' : 'w-0'} shrink-0 overflow-hidden border-r border-gray-200 bg-white/60 backdrop-blur-sm transition-all dark:border-gray-800 dark:bg-gray-900/60`}>
+      {/* Sidebar -- Mobile: fullscreen overlay; Desktop: inline */}
+      {isChatMobile && showSidebar && (
+        <div className="fixed inset-0 z-30 bg-black/30 backdrop-blur-sm" onClick={() => setShowSidebar(false)} />
+      )}
+      <div className={
+        isChatMobile
+          ? `fixed inset-y-0 left-0 z-40 w-72 border-r border-gray-200 bg-white/95 backdrop-blur-xl transition-[transform,visibility] duration-200 dark:border-gray-800 dark:bg-gray-950/95 ${showSidebar ? 'visible translate-x-0' : 'invisible -translate-x-full'}`
+          : `${showSidebar ? 'w-72' : 'w-0'} shrink-0 overflow-hidden border-r border-gray-200 bg-white/60 backdrop-blur-sm transition-all dark:border-gray-800 dark:bg-gray-900/60`
+      }>
         <div className="flex h-full w-72 flex-col">
           <div className="border-b border-gray-200 p-3 dark:border-gray-800">
             <div className="flex gap-2">
-              <button onClick={() => { setActiveId(null); setMessages([]); }} className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">
+              <button onClick={() => { setActiveId(null); setMessages([]); if (isChatMobile) setShowSidebar(false); }} className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">
                 <PlusIcon className="h-4 w-4 shrink-0" />
                 Neuer Chat
               </button>
@@ -1049,7 +1058,7 @@ export function ChatPage() {
             ) : (
               <ul className="space-y-0.5 p-2">
                 {conversations.map(c => (
-                  <li key={c.id} onClick={() => setActiveId(c.id)} className={`group relative cursor-pointer rounded-lg px-3 py-2 pr-9 text-sm transition-colors ${activeId === c.id ? 'bg-indigo-50 dark:bg-indigo-900/30' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
+                  <li key={c.id} onClick={() => { setActiveId(c.id); if (isChatMobile) setShowSidebar(false); }} className={`group relative cursor-pointer rounded-lg px-3 py-2 pr-9 text-sm transition-colors ${activeId === c.id ? 'bg-indigo-50 dark:bg-indigo-900/30' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
                     <p className="truncate font-medium text-gray-900 dark:text-gray-100">{c.title || c.last_message_preview || 'Neuer Chat'}</p>
                     <div className="mt-0.5 flex items-center gap-1.5">
                       <span

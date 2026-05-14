@@ -459,7 +459,7 @@ export function InboxPage() {
 
       {activeTab === 'email' && <>
       {/* Mobile folder tabs */}
-      <div className={`scrollbar-hide flex items-stretch gap-1 overflow-x-auto border-b px-3 md:hidden ${hasBg ? 'border-white/10 bg-black/30 backdrop-blur-sm' : 'border-gray-200/60 bg-white/60 backdrop-blur-sm dark:border-gray-800/60 dark:bg-gray-900/60'}`}>
+      <div className={`relative flex items-stretch gap-1 overflow-x-auto border-b px-3 md:hidden ${hasBg ? 'border-white/10 bg-black/30 backdrop-blur-sm' : 'border-gray-200/60 bg-white/60 backdrop-blur-sm dark:border-gray-800/60 dark:bg-gray-900/60'} [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`} style={{ WebkitOverflowScrolling: 'touch', maskImage: 'linear-gradient(to right, transparent 0, black 8px, black calc(100% - 24px), transparent 100%)' }}>
         {[
           { id: 'inbox', name: 'Posteingang' },
           { id: 'drafts', name: 'Entwürfe' },

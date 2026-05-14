@@ -4,9 +4,10 @@ import {
   useState,
   useCallback,
   useEffect,
+  useRef,
   type ReactNode,
 } from 'react';
-import { api, getToken, setToken, clearToken } from '../api/client';
+import { api, getToken, setToken, clearToken, tryRefreshToken } from '../api/client';
 import type { LoginRequest, LoginResponse, UserProfile, UserRole } from '../types';
 
 interface AuthContextValue {
@@ -42,9 +43,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [token]);
 
+  const refreshAttempted = useRef(false);
+
   useEffect(() => {
     if (token) {
       fetchProfile();
+    } else if (!refreshAttempted.current) {
+      refreshAttempted.current = true;
+      tryRefreshToken().then((ok) => {
+        if (ok) {
+          const fresh = getToken();
+          if (fresh) setTokenState(fresh);
+        }
+      });
     } else {
       setUser(null);
     }

@@ -272,7 +272,7 @@ export function SearchDialog({
       }}
     >
       <div
-        className="mt-16 flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:mt-[12dvh] dark:border-gray-700 dark:bg-gray-900"
+        className="mt-4 flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:mt-[12dvh] dark:border-gray-700 dark:bg-gray-900"
         onKeyDown={handleKeyDown}
       >
         {/* Suchfeld */}
@@ -295,15 +295,16 @@ export function SearchDialog({
         </div>
 
         {/* Ergebnisse */}
-        <div ref={listRef} className="max-h-[60dvh] overflow-y-auto">
+        <div ref={listRef} className="max-h-[50dvh] overflow-y-auto sm:max-h-[60dvh]">
           {!query.trim() && (
             <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-gray-400 dark:text-gray-500">
-              <span className="flex items-center gap-1.5">
+              <span className="hidden items-center gap-1.5 sm:flex">
                 <kbd className="rounded-md border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium dark:border-gray-600">
                   /
                 </kbd>
                 zum Suchen
               </span>
+              <span className="sm:hidden">Tippe zum Suchen</span>
             </div>
           )}
 
@@ -638,9 +639,9 @@ export function SearchDialog({
             ))}
         </div>
 
-        {/* Footer-Hinweise */}
+        {/* Footer-Hinweise (nur Desktop) */}
         {flatItems.length > 0 && (
-          <div className="flex items-center gap-4 border-t border-gray-200 px-4 py-2 text-[11px] text-gray-400 dark:border-gray-700 dark:text-gray-500">
+          <div className="hidden items-center gap-4 border-t border-gray-200 px-4 py-2 text-[11px] text-gray-400 sm:flex dark:border-gray-700 dark:text-gray-500">
             <span className="flex items-center gap-1">
               <kbd className="rounded border border-gray-200 px-1 py-0.5 text-[10px] dark:border-gray-600">↑↓</kbd>
               Navigieren

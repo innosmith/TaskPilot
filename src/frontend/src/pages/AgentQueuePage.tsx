@@ -429,7 +429,7 @@ export function AgentQueuePage() {
                         {job.cost_usd != null && ` · $${job.cost_usd.toFixed(4)}`}
                       </p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                       {jobTypeBadge && (
                         <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-semibold leading-5 ${jobTypeBadge.classes}`}>
                           {jobTypeBadge.label}
@@ -754,9 +754,9 @@ function DraftPreviewInline({
             />
           )}
           {preview.body_html ? (
-            <div className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-900">
+            <div className="mt-1 max-h-40 overflow-auto rounded border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-900">
               <div
-                className="prose prose-sm max-w-none dark:prose-invert"
+                className="prose prose-sm max-w-none break-words dark:prose-invert [&_*]:max-w-full [&_img]:h-auto"
                 dangerouslySetInnerHTML={{ __html: preview.body_html }}
               />
             </div>
@@ -770,18 +770,18 @@ function DraftPreviewInline({
         <p className="text-xs text-gray-400 italic">Kein Entwurf verfügbar</p>
       )}
 
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3 flex flex-wrap gap-2">
         <button
           onClick={doApprove}
           disabled={processing}
-          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+          className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-50 sm:py-1.5"
         >
           {processing ? 'Wird gesendet...' : 'Freigeben & Senden'}
         </button>
         {preview && (
           <button
             onClick={() => setEditing(true)}
-            className="rounded-lg bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-100 dark:bg-indigo-900/20 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
+            className="rounded-lg bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-100 sm:py-1.5 dark:bg-indigo-900/20 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
           >
             <span className="flex items-center gap-1">
               <PencilSmallIcon className="h-3 w-3" />
@@ -792,7 +792,7 @@ function DraftPreviewInline({
         <button
           onClick={doReject}
           disabled={processing}
-          className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
+          className="rounded-lg border border-red-300 px-3 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 sm:py-1.5 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
         >
           Ablehnen & Löschen
         </button>

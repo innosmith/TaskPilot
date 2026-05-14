@@ -14,7 +14,7 @@ export function clearToken(): void {
 
 let _refreshing: Promise<boolean> | null = null;
 
-async function tryRefreshToken(): Promise<boolean> {
+export async function tryRefreshToken(): Promise<boolean> {
   if (_refreshing) return _refreshing;
   _refreshing = (async () => {
     try {

@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 
 // ── Types ────────────────────────────────────────────
 
@@ -191,6 +192,7 @@ export function FinancePage() {
   const [error, setError] = useState<string | null>(null);
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
+  const isFinanceMobile = useMediaQuery('(max-width: 1023px)');
 
   const loadData = useCallback(async (wfPeriod = 'ytd') => {
     setLoading(true);
@@ -471,7 +473,7 @@ export function FinancePage() {
             <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">
               Cashflow (direkte Methode)
             </h2>
-            <ResponsiveContainer width="100%" height={380}>
+            <ResponsiveContainer width="100%" height={isFinanceMobile ? 280 : 380}>
               <ComposedChart data={cashflow.months.map(m => ({
                 ...m,
                 label: formatMonthLabel(m.month),
@@ -481,7 +483,7 @@ export function FinancePage() {
                 hasSpecial: (m.special_items?.length ?? 0) > 0,
               }))}>
                 <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <XAxis dataKey="label" tick={{ fontSize: isFinanceMobile ? 9 : 11 }} interval={isFinanceMobile ? 1 : 0} angle={isFinanceMobile ? -45 : 0} textAnchor={isFinanceMobile ? 'end' : 'middle'} height={isFinanceMobile ? 50 : 30} />
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${formatK(v)}`} />
                 <Tooltip
                   cursor={CURSOR_STYLE}
@@ -932,27 +934,27 @@ export function FinancePage() {
         <div className="mb-6 grid gap-4 md:grid-cols-3">
           <SourceCard title="Bexio" subtitle="Buchhaltung" color="blue" linkUrl="https://office.bexio.com" linkLabel="Bexio öffnen">
             <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-gray-500 dark:text-gray-400">Banksaldo</span>
-                <span className="font-medium text-gray-900 dark:text-white">{formatCHF(overview?.bank_balance)}</span>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">Banksaldo</span>
+                <span className="shrink-0 whitespace-nowrap font-medium text-gray-900 dark:text-white">{formatCHF(overview?.bank_balance)}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500 dark:text-gray-400">Umsatz YTD (brutto)</span>
-                <span className="font-medium text-gray-900 dark:text-white">{formatCHF(overview?.revenue_ytd)}</span>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">Umsatz YTD (brutto)</span>
+                <span className="shrink-0 whitespace-nowrap font-medium text-gray-900 dark:text-white">{formatCHF(overview?.revenue_ytd)}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500 dark:text-gray-400">Umsatz YTD (netto)</span>
-                <span className="font-medium text-gray-900 dark:text-white">{formatCHF(overview?.revenue_ytd_net)}</span>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">Umsatz YTD (netto)</span>
+                <span className="shrink-0 whitespace-nowrap font-medium text-gray-900 dark:text-white">{formatCHF(overview?.revenue_ytd_net)}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500 dark:text-gray-400">EBITDA YTD</span>
-                <span className={`font-medium ${(overview?.ebitda_ytd ?? 0) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">EBITDA YTD</span>
+                <span className={`shrink-0 whitespace-nowrap font-medium ${(overview?.ebitda_ytd ?? 0) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
                   {formatCHF(overview?.ebitda_ytd)}
                 </span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500 dark:text-gray-400">Personalquote</span>
-                <span className={`font-medium ${(overview?.personalquote_ytd ?? 0) <= 80 ? 'text-green-600 dark:text-green-400' : 'text-amber-500'}`}>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">Personalquote</span>
+                <span className={`shrink-0 whitespace-nowrap font-medium ${(overview?.personalquote_ytd ?? 0) <= 80 ? 'text-green-600 dark:text-green-400' : 'text-amber-500'}`}>
                   {overview?.personalquote_ytd != null ? `${overview.personalquote_ytd}%` : '–'}
                 </span>
               </div>
@@ -963,14 +965,14 @@ export function FinancePage() {
             {togglProjects.length === 0 ? (
               <p className="text-sm text-gray-400">Keine Daten für diesen Monat</p>
             ) : (
-              <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-1 text-sm">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1 text-sm">
                 {togglProjects.slice(0, 5).map((p, i) => (
                   <React.Fragment key={i}>
                     <span className="truncate text-gray-600 dark:text-gray-300">
                       {p.client_name ? `${p.client_name} – ` : ''}{p.project_name}
                     </span>
-                    <span className="text-right text-xs text-gray-400 tabular-nums">{p.hours}h</span>
-                    <span className="text-right font-medium text-gray-900 tabular-nums dark:text-white">{formatCHF(p.amount)}</span>
+                    <span className="whitespace-nowrap text-right text-xs text-gray-400 tabular-nums">{p.hours}h</span>
+                    <span className="whitespace-nowrap text-right font-medium text-gray-900 tabular-nums dark:text-white">{formatCHF(p.amount)}</span>
                   </React.Fragment>
                 ))}
               </div>
@@ -1095,15 +1097,15 @@ function KpiCard({
     neutral: 'border-l-gray-200 dark:border-l-gray-700',
   };
   return (
-    <div className={`rounded-xl border border-gray-200 border-l-4 ${statusColors[status]} bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/50`}>
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-50 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+    <div className={`rounded-xl border border-gray-200 border-l-4 ${statusColors[status]} bg-white p-3 shadow-sm lg:p-4 dark:border-gray-700 dark:bg-gray-800/50`}>
+      <div className="flex items-center gap-2 lg:gap-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-50 text-gray-500 lg:h-10 lg:w-10 dark:bg-gray-800 dark:text-gray-400">
           {icon}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400">{label}</p>
-          <p className="truncate text-lg font-bold text-gray-900 dark:text-white">{value}</p>
-          <p className="truncate text-xs text-gray-400 dark:text-gray-500">{sublabel}</p>
+          <p className="text-[11px] font-medium text-gray-500 lg:text-xs dark:text-gray-400">{label}</p>
+          <p className="text-[15px] font-bold leading-tight text-gray-900 lg:text-lg dark:text-white">{value}</p>
+          <p className="truncate text-[11px] text-gray-400 lg:text-xs dark:text-gray-500">{sublabel}</p>
         </div>
       </div>
     </div>
@@ -1312,6 +1314,7 @@ function InvoiceInsightPreview() {
 function InvoicePdfModal({ url, onClose }: { url: string; onClose: () => void }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -1338,17 +1341,36 @@ function InvoicePdfModal({ url, onClose }: { url: string; onClose: () => void })
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="relative mx-4 h-[85vh] w-full max-w-6xl rounded-2xl bg-white shadow-2xl dark:bg-gray-900" onClick={e => e.stopPropagation()}>
+      <div className="relative mx-2 h-[90dvh] w-full rounded-2xl bg-white shadow-2xl lg:mx-4 lg:h-[85vh] lg:max-w-6xl dark:bg-gray-900" onClick={e => e.stopPropagation()}>
         <button
           onClick={onClose}
-          className="absolute -right-3 -top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-gray-800 text-white shadow-lg hover:bg-gray-700"
+          className="absolute right-2 top-2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-gray-800 text-white shadow-lg hover:bg-gray-700 lg:-right-3 lg:-top-3 lg:h-8 lg:w-8"
         >
           ✕
         </button>
         {error ? (
           <div className="flex h-full items-center justify-center text-red-500">{error}</div>
         ) : blobUrl ? (
-          <iframe src={blobUrl} className="h-full w-full rounded-2xl" title="PDF-Vorschau" />
+          isMobile ? (
+            <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+              <svg className="h-16 w-16 text-gray-300 dark:text-gray-600" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+              </svg>
+              <p className="text-sm text-gray-500 dark:text-gray-400">PDF-Vorschau ist auf Mobilgeräten nicht verfügbar.</p>
+              <a
+                href={blobUrl}
+                download="rechnung.pdf"
+                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+                PDF herunterladen
+              </a>
+            </div>
+          ) : (
+            <iframe src={blobUrl} className="h-full w-full rounded-2xl" title="PDF-Vorschau" />
+          )
         ) : (
           <div className="flex h-full items-center justify-center text-gray-400">Laden…</div>
         )}

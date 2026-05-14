@@ -423,7 +423,7 @@ export function CockpitPage() {
 
       {/* Inhalt */}
       <div className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
-        <div className="mx-auto max-w-6xl space-y-6">
+        <div className="mx-auto max-w-6xl space-y-4 lg:space-y-6">
 
           {/* ── Zone 1: KPI-Übersicht ── */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -1092,15 +1092,15 @@ function KpiCard({
   const a = accentMap[accent];
 
   return (
-    <div className={`rounded-xl border p-4 ${
+    <div className={`rounded-xl border p-3 lg:p-4 ${
       hasBg
         ? 'bg-white/10 backdrop-blur-md border-white/20'
         : 'bg-white border-gray-200 dark:bg-gray-900 dark:border-gray-800'
     }`}>
-      <div className={`text-3xl font-bold ${hasBg ? 'text-white' : a.text}`}>
+      <div className={`text-2xl font-bold lg:text-3xl ${hasBg ? 'text-white' : a.text}`}>
         {value}
       </div>
-      <div className={`mt-1 text-xs font-medium ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
+      <div className={`mt-1 text-[11px] font-medium lg:text-xs ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
         {label}
       </div>
     </div>
@@ -1335,6 +1335,7 @@ function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted }: {
 function PdfModal({ url, onClose }: { url: string; onClose: () => void }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -1361,17 +1362,36 @@ function PdfModal({ url, onClose }: { url: string; onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="relative mx-4 h-[85vh] w-full max-w-6xl rounded-2xl bg-white shadow-2xl dark:bg-gray-900" onClick={e => e.stopPropagation()}>
+      <div className="relative mx-2 h-[90dvh] w-full rounded-2xl bg-white shadow-2xl lg:mx-4 lg:h-[85vh] lg:max-w-6xl dark:bg-gray-900" onClick={e => e.stopPropagation()}>
         <button
           onClick={onClose}
-          className="absolute -right-3 -top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-gray-800 text-white shadow-lg hover:bg-gray-700"
+          className="absolute right-2 top-2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-gray-800 text-white shadow-lg hover:bg-gray-700 lg:-right-3 lg:-top-3 lg:h-8 lg:w-8"
         >
           ✕
         </button>
         {error ? (
           <div className="flex h-full items-center justify-center text-red-500">{error}</div>
         ) : blobUrl ? (
-          <iframe src={blobUrl} className="h-full w-full rounded-2xl" title="PDF-Vorschau" />
+          isMobile ? (
+            <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+              <svg className="h-16 w-16 text-gray-300 dark:text-gray-600" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+              </svg>
+              <p className="text-sm text-gray-500 dark:text-gray-400">PDF-Vorschau ist auf Mobilgeräten nicht verfügbar.</p>
+              <a
+                href={blobUrl}
+                download="rechnung.pdf"
+                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+                PDF herunterladen
+              </a>
+            </div>
+          ) : (
+            <iframe src={blobUrl} className="h-full w-full rounded-2xl" title="PDF-Vorschau" />
+          )
         ) : (
           <div className="flex h-full items-center justify-center text-gray-400">Laden…</div>
         )}

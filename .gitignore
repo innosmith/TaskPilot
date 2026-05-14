@@ -1,3 +1,5 @@
+meistertask_export_*.json
+
 # Umgebung & Secrets
 .env
 .env.*
