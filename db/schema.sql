@@ -370,3 +370,64 @@ CREATE INDEX idx_notifications_created ON notifications(created_at DESC);
 
 CREATE TRIGGER notifications_notify AFTER INSERT OR UPDATE ON notifications
     FOR EACH ROW EXECUTE FUNCTION notify_change('notifications_changed');
+
+-- Mind-Maps
+CREATE TABLE mindmap_folders (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL,
+    parent_id   UUID REFERENCES mindmap_folders(id) ON DELETE CASCADE,
+    owner_id    UUID NOT NULL REFERENCES users(id),
+    color       TEXT,
+    icon_emoji  TEXT,
+    position    FLOAT NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    updated_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE mindmaps (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title           TEXT NOT NULL,
+    folder_id       UUID REFERENCES mindmap_folders(id) ON DELETE SET NULL,
+    project_id      UUID REFERENCES projects(id) ON DELETE SET NULL,
+    owner_id        UUID NOT NULL REFERENCES users(id),
+    visibility      TEXT NOT NULL DEFAULT 'private'
+                    CHECK (visibility IN ('private', 'project', 'shared')),
+    flow_data       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    settings        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    background_url  TEXT,
+    background_color TEXT,
+    thumbnail_url   TEXT,
+    is_template     BOOLEAN DEFAULT false,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE mindmap_shares (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    mindmap_id  UUID NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
+    token       TEXT NOT NULL UNIQUE DEFAULT encode(gen_random_bytes(24), 'hex'),
+    password_hash TEXT NOT NULL,
+    permission  TEXT NOT NULL DEFAULT 'view' CHECK (permission IN ('view', 'edit')),
+    label       TEXT,
+    expires_at  TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_mindmap_folders_owner ON mindmap_folders(owner_id);
+CREATE INDEX idx_mindmap_folders_parent ON mindmap_folders(parent_id);
+CREATE INDEX idx_mindmaps_owner ON mindmaps(owner_id);
+CREATE INDEX idx_mindmaps_folder ON mindmaps(folder_id);
+CREATE INDEX idx_mindmaps_project ON mindmaps(project_id);
+CREATE INDEX idx_mindmaps_visibility ON mindmaps(visibility);
+CREATE INDEX idx_mindmap_shares_mindmap ON mindmap_shares(mindmap_id);
+CREATE INDEX idx_mindmap_shares_token ON mindmap_shares(token);
+
+CREATE TRIGGER mindmap_folders_updated_at BEFORE UPDATE ON mindmap_folders
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER mindmaps_updated_at BEFORE UPDATE ON mindmaps
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER mindmaps_notify AFTER INSERT OR UPDATE OR DELETE ON mindmaps
+    FOR EACH ROW EXECUTE FUNCTION notify_change('mindmaps_changed');

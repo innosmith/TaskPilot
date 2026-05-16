@@ -13,6 +13,7 @@ import type { LoginRequest, LoginResponse, UserProfile, UserRole } from '../type
 interface AuthContextValue {
   token: string | null;
   isAuthenticated: boolean;
+  profileLoading: boolean;
   user: UserProfile | null;
   role: UserRole | null;
   isOwner: boolean;
@@ -26,13 +27,17 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState<string | null>(() => getToken());
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(!!getToken());
 
   const fetchProfile = useCallback(async () => {
+    setProfileLoading(true);
     try {
       const profile = await api.get<UserProfile>('/api/auth/me');
       setUser(profile);
     } catch {
       setUser(null);
+    } finally {
+      setProfileLoading(false);
     }
   }, []);
 
@@ -50,14 +55,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       fetchProfile();
     } else if (!refreshAttempted.current) {
       refreshAttempted.current = true;
+      setProfileLoading(true);
       tryRefreshToken().then((ok) => {
         if (ok) {
           const fresh = getToken();
           if (fresh) setTokenState(fresh);
+          else setProfileLoading(false);
+        } else {
+          setProfileLoading(false);
         }
       });
     } else {
       setUser(null);
+      setProfileLoading(false);
     }
   }, [token, fetchProfile]);
 
@@ -92,6 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         token,
         isAuthenticated: !!token,
+        profileLoading,
         user,
         role: user?.role ?? null,
         isOwner: user?.role === 'owner',

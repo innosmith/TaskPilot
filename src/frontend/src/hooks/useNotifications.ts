@@ -24,9 +24,6 @@ export function useNotifications() {
       .get<{ count: number }>('/api/notifications/unread-count')
       .then((r) => {
         setUnreadCount(r.count);
-        if ('setAppBadge' in navigator) {
-          (navigator as any).setAppBadge(r.count || 0).catch(() => {});
-        }
       })
       .catch(() => {});
   }, []);
@@ -70,9 +67,6 @@ export function useNotifications() {
     await api.post('/api/notifications/read-all');
     setItems((prev) => prev.map((n) => ({ ...n, is_read: true })));
     setUnreadCount(0);
-    if ('setAppBadge' in navigator) {
-      (navigator as any).clearAppBadge().catch(() => {});
-    }
   }, []);
 
   const dismiss = useCallback(

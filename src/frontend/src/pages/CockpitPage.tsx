@@ -321,13 +321,6 @@ export function CockpitPage() {
     finally { setProcessing(prev => { const n = new Set(prev); n.delete(jobId); return n; }); }
   };
 
-  const handleConfirmTask = async (task: PendingReviewTask) => {
-    try {
-      await api.post(`/api/tasks/${task.id}/confirm`, {});
-      fetchAppData();
-    } catch { /* */ }
-  };
-
   const handleDismissTask = async (taskId: string) => {
     try {
       await api.post(`/api/tasks/${taskId}/dismiss-review`);
@@ -880,12 +873,6 @@ export function CockpitPage() {
                           className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
                         >
                           Task planen
-                        </button>
-                        <button
-                          onClick={() => handleConfirmTask(task)}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-medium ${hasBg ? 'text-white/70 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700'}`}
-                        >
-                          Übernehmen
                         </button>
                         <button
                           onClick={() => handleDismissTask(task.id)}

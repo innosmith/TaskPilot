@@ -70,6 +70,14 @@ export function ProjectsPage() {
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
 
+  useEffect(() => {
+    if (loading || isOwner) return;
+    const active = projects.filter((p) => p.status === 'active');
+    if (active.length === 1) {
+      navigate(`/projects/${active[0].id}`, { replace: true });
+    }
+  }, [loading, isOwner, projects, navigate]);
+
   const resetForm = () => {
     setFormName('');
     setFormColor(PRESET_COLORS[0]);

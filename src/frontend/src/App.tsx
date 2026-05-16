@@ -25,6 +25,10 @@ const LazyChatPage = lazy(() =>
   import('./pages/ChatPage').then(m => ({ default: m.ChatPage })),
 );
 
+const LazyMindMapsPage = lazy(() => import('./pages/MindMapsPage'));
+const LazyMindMapEditorPage = lazy(() => import('./pages/MindMapEditorPage'));
+const LazySharedMindMapPage = lazy(() => import('./pages/SharedMindMapPage'));
+
 interface ErrorBoundaryState { error: Error | null }
 
 class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryState> {
@@ -69,27 +73,31 @@ function SuspenseFallback() {
 }
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, profileLoading } = useAuth();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (profileLoading) return <SuspenseFallback />;
   return <>{children}</>;
 }
 
 function OwnerRoute({ children }: { children: ReactNode }) {
-  const { isAuthenticated, isOwner, user } = useAuth();
+  const { isAuthenticated, isOwner, user, profileLoading } = useAuth();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (profileLoading) return <SuspenseFallback />;
   if (user && !isOwner) return <Navigate to="/projects" replace />;
   return <>{children}</>;
 }
 
 function PublicRoute({ children }: { children: ReactNode }) {
-  const { isAuthenticated, isOwner } = useAuth();
+  const { isAuthenticated, isOwner, profileLoading } = useAuth();
+  if (isAuthenticated && profileLoading) return <SuspenseFallback />;
   if (isAuthenticated) return <Navigate to={isOwner ? '/cockpit' : '/projects'} replace />;
   return <>{children}</>;
 }
 
 function DefaultRedirect() {
-  const { isAuthenticated, isOwner } = useAuth();
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  const { isAuthenticated, isOwner, profileLoading } = useAuth();
+  if (!isAuthenticated && !profileLoading) return <Navigate to="/login" replace />;
+  if (profileLoading) return <SuspenseFallback />;
   return <Navigate to={isOwner ? '/cockpit' : '/projects'} replace />;
 }
 
@@ -98,6 +106,16 @@ export default function App() {
     <ErrorBoundary>
       <BrowserRouter>
         <Routes>
+          {/* Öffentliche Share-Seite (kein Auth) */}
+          <Route
+            path="/shared/:token"
+            element={
+              <Suspense fallback={<SuspenseFallback />}>
+                <LazySharedMindMapPage />
+              </Suspense>
+            }
+          />
+
           <Route
             path="/login"
             element={
@@ -125,6 +143,8 @@ export default function App() {
             <Route path="/agenten" element={<OwnerRoute><AgentQueuePage /></OwnerRoute>} />
             <Route path="/agenten/chat" element={<OwnerRoute><Suspense fallback={<SuspenseFallback />}><LazyChatPage /></Suspense></OwnerRoute>} />
             <Route path="/agenten/chat/:conversationId" element={<OwnerRoute><Suspense fallback={<SuspenseFallback />}><LazyChatPage /></Suspense></OwnerRoute>} />
+            <Route path="/mindmaps" element={<OwnerRoute><Suspense fallback={<SuspenseFallback />}><LazyMindMapsPage /></Suspense></OwnerRoute>} />
+            <Route path="/mindmaps/:id" element={<Suspense fallback={<SuspenseFallback />}><LazyMindMapEditorPage /></Suspense>} />
             <Route path="/inbox" element={<OwnerRoute><InboxPage /></OwnerRoute>} />
             <Route path="/signale" element={<OwnerRoute><SignalePage /></OwnerRoute>} />
             <Route path="/finanzen" element={<OwnerRoute><FinancePage /></OwnerRoute>} />

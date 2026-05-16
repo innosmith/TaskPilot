@@ -452,3 +452,128 @@ class LlmSettings(BaseModel):
     llm_default_model: str | None = None
     llm_default_local_model: str | None = None
     llm_default_temperature: float | None = None
+
+
+# --- Mind-Maps ---
+
+class MindmapFolderCreate(BaseModel):
+    name: str
+    parent_id: uuid.UUID | None = None
+    color: str | None = None
+    icon_emoji: str | None = None
+    position: float = 0
+
+
+class MindmapFolderUpdate(BaseModel):
+    name: str | None = None
+    parent_id: uuid.UUID | None = None
+    color: str | None = None
+    icon_emoji: str | None = None
+    position: float | None = None
+
+
+class MindmapFolderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    name: str
+    parent_id: uuid.UUID | None
+    color: str | None = None
+    icon_emoji: str | None = None
+    position: float
+    created_at: datetime
+    updated_at: datetime
+
+
+class MindmapCreate(BaseModel):
+    title: str
+    folder_id: uuid.UUID | None = None
+    project_id: uuid.UUID | None = None
+    visibility: str = "private"
+    flow_data: dict | None = None
+    settings: dict | None = None
+    background_url: str | None = None
+    background_color: str | None = None
+    is_template: bool = False
+
+
+class MindmapUpdate(BaseModel):
+    title: str | None = None
+    folder_id: uuid.UUID | None = None
+    project_id: uuid.UUID | None = None
+    visibility: str | None = None
+    flow_data: dict | None = None
+    settings: dict | None = None
+    background_url: str | None = None
+    background_color: str | None = None
+    thumbnail_url: str | None = None
+    is_template: bool | None = None
+
+
+class MindmapOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    title: str
+    folder_id: uuid.UUID | None
+    project_id: uuid.UUID | None
+    owner_id: uuid.UUID
+    visibility: str
+    flow_data: dict
+    settings: dict
+    background_url: str | None = None
+    background_color: str | None = None
+    thumbnail_url: str | None = None
+    is_template: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class MindmapListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    title: str
+    folder_id: uuid.UUID | None
+    project_id: uuid.UUID | None
+    project_name: str | None = None
+    owner_id: uuid.UUID
+    visibility: str
+    background_url: str | None = None
+    background_color: str | None = None
+    thumbnail_url: str | None = None
+    is_template: bool
+    share_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class MindmapShareCreate(BaseModel):
+    password: str
+    permission: str = "view"
+    label: str | None = None
+    expires_at: datetime | None = None
+
+
+class MindmapShareOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    mindmap_id: uuid.UUID
+    token: str
+    permission: str
+    label: str | None = None
+    expires_at: datetime | None = None
+    last_used_at: datetime | None = None
+    created_at: datetime
+
+
+class ConvertToTasksRequest(BaseModel):
+    node_ids: list[str]
+    project_id: uuid.UUID
+    board_column_id: uuid.UUID
+
+
+class ConvertToTasksResponse(BaseModel):
+    created_task_ids: list[uuid.UUID]
+    count: int
+
+
+class ShareVerifyRequest(BaseModel):
+    password: str

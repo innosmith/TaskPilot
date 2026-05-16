@@ -28,6 +28,7 @@ from app.routers import (
     intelligence,
     linkedin,
     memory,
+    mindmaps,
     models,
     notifications,
     onedrive,
@@ -162,6 +163,8 @@ app.include_router(agent_jobs.router)
 app.include_router(tags.router)
 app.include_router(search.router)
 app.include_router(memory.router)
+app.include_router(mindmaps.router)
+app.include_router(mindmaps.public_router)
 app.include_router(user_settings.router)
 app.include_router(unsplash.router)
 app.include_router(uploads.router)

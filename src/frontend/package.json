@@ -20,9 +20,11 @@
     "@tiptap/react": "^3.22.5",
     "@tiptap/starter-kit": "^3.22.5",
     "@types/react-mentions": "^4.4.1",
+    "@xyflow/react": "^12.10.2",
     "lucide-react": "^1.11.0",
     "marked": "^18.0.3",
     "mermaid": "^11.14.0",
+    "nanoid": "^5.1.11",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
@@ -37,7 +39,8 @@
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.2",
     "unified": "^11.0.5",
-    "vite-plugin-pwa": "^1.2.0"
+    "vite-plugin-pwa": "^1.2.0",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

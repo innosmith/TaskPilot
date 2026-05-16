@@ -346,3 +346,60 @@ class AuditLog(Base):
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     details: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class MindmapFolder(Base):
+    __tablename__ = "mindmap_folders"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("mindmap_folders.id", ondelete="CASCADE"))
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    color: Mapped[str | None] = mapped_column(Text)
+    icon_emoji: Mapped[str | None] = mapped_column(Text)
+    position: Mapped[float] = mapped_column(Float, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    children: Mapped[list["MindmapFolder"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+    parent: Mapped["MindmapFolder | None"] = relationship(back_populates="children", remote_side=[id])
+    mindmaps: Mapped[list["Mindmap"]] = relationship(back_populates="folder")
+
+
+class Mindmap(Base):
+    __tablename__ = "mindmaps"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("mindmap_folders.id", ondelete="SET NULL"))
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    visibility: Mapped[str] = mapped_column(Text, nullable=False, server_default="private")
+    flow_data: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    settings: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    background_url: Mapped[str | None] = mapped_column(Text)
+    background_color: Mapped[str | None] = mapped_column(Text)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text)
+    is_template: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    folder: Mapped["MindmapFolder | None"] = relationship(back_populates="mindmaps")
+    project: Mapped["Project | None"] = relationship()
+    shares: Mapped[list["MindmapShare"]] = relationship(back_populates="mindmap", cascade="all, delete-orphan")
+
+
+class MindmapShare(Base):
+    __tablename__ = "mindmap_shares"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    mindmap_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("mindmaps.id", ondelete="CASCADE"), nullable=False)
+    token: Mapped[str] = mapped_column(Text, unique=True, nullable=False, server_default=func.encode(func.gen_random_bytes(24), "hex"))
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    permission: Mapped[str] = mapped_column(Text, nullable=False, server_default="view")
+    label: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    mindmap: Mapped["Mindmap"] = relationship(back_populates="shares")

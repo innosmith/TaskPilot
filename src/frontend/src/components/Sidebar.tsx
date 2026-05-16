@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { BrainCircuit } from 'lucide-react';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -247,6 +248,12 @@ export function Sidebar({
               ))}
 
               {isOwner && (
+                <NavLink to="/mindmaps" className={collapsedLinkClasses} onClick={onClose} title="Mind-Maps">
+                  <BrainCircuit className="h-5 w-5" />
+                </NavLink>
+              )}
+
+              {isOwner && (
                 <>
                   <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
 
@@ -339,6 +346,13 @@ export function Sidebar({
                     ))}
                   </SortableContext>
                 </DndContext>
+              )}
+
+              {isOwner && (
+                <NavLink to="/mindmaps" className={linkClasses} onClick={onClose}>
+                  <BrainCircuit className="h-5 w-5" />
+                  <span className="flex-1">Mind-Maps</span>
+                </NavLink>
               )}
 
               {isOwner && (

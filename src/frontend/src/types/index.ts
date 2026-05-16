@@ -307,3 +307,65 @@ export interface LlmSettings {
   llm_default_model: string | null;
   llm_default_temperature: number | null;
 }
+
+// --- Mind-Maps ---
+
+export interface MindmapFolder {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  color: string | null;
+  icon_emoji: string | null;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MindmapListItem {
+  id: string;
+  title: string;
+  folder_id: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  owner_id: string;
+  visibility: 'private' | 'project' | 'shared';
+  background_url: string | null;
+  background_color: string | null;
+  thumbnail_url: string | null;
+  is_template: boolean;
+  share_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MindmapDetail {
+  id: string;
+  title: string;
+  folder_id: string | null;
+  project_id: string | null;
+  owner_id: string;
+  visibility: 'private' | 'project' | 'shared';
+  flow_data: {
+    nodes: any[];
+    edges: any[];
+    viewport: { x: number; y: number; zoom: number };
+  };
+  settings: Record<string, any>;
+  background_url: string | null;
+  background_color: string | null;
+  thumbnail_url: string | null;
+  is_template: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MindmapShare {
+  id: string;
+  mindmap_id: string;
+  token: string;
+  permission: 'view' | 'edit';
+  label: string | null;
+  expires_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+}
