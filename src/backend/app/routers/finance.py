@@ -15,9 +15,11 @@ from pathlib import Path
 from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from app.auth.deps import get_current_user, require_role
-from app.models import User
+from app.database import async_session
+from app.models import CapacityAllocation, CapacityProject, User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "bexio"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "toggl"))
@@ -442,11 +444,18 @@ class CashflowMonth(BaseModel):
     special_items: list[CashflowSpecialItem] = []
 
 
+class CapacityForecastMonth(BaseModel):
+    month: str
+    revenue: float = 0
+    hours: float = 0
+
+
 class CashflowResponse(BaseModel):
     months: list[CashflowMonth]
     forecast_revenue_monthly: float = 0
     forecast_expenses_monthly: float = 0
     start_balance: float = 0
+    capacity_forecast: list[CapacityForecastMonth] = []
 
 
 class TogglProjectSummary(BaseModel):
@@ -900,11 +909,46 @@ async def get_cashflow(
             special_items=items,
         ))
 
+    # Kapazitätsbasierte Umsatzprognose (bestätigte, fakturierbare Projekte)
+    capacity_forecast: list[CapacityForecastMonth] = []
+    try:
+        async with async_session() as session:
+            cap_stmt = (
+                select(CapacityAllocation, CapacityProject)
+                .join(CapacityProject)
+                .where(CapacityAllocation.week_start >= date.fromisoformat(all_month_keys[0] + "-01"))
+                .where(CapacityAllocation.week_start <= date.fromisoformat(all_month_keys[-1] + "-28"))
+                .where(CapacityProject.status == "bestätigt")
+                .where(CapacityProject.is_billable == True)  # noqa: E712
+                .where(CapacityProject.hourly_rate.isnot(None))
+            )
+            cap_result = await session.execute(cap_stmt)
+            cap_rows = cap_result.all()
+
+        cap_monthly: dict[str, dict[str, float]] = defaultdict(lambda: {"revenue": 0.0, "hours": 0.0})
+        for alloc, proj in cap_rows:
+            mk = alloc.week_start.strftime("%Y-%m")
+            hours = alloc.minutes / 60
+            cap_monthly[mk]["hours"] += hours
+            cap_monthly[mk]["revenue"] += hours * float(proj.hourly_rate or 0)
+
+        capacity_forecast = [
+            CapacityForecastMonth(
+                month=mk,
+                revenue=round(data["revenue"], 2),
+                hours=round(data["hours"], 2),
+            )
+            for mk, data in sorted(cap_monthly.items())
+        ]
+    except Exception as e:
+        logger.warning("Kapazitätsprognose nicht verfügbar: %s", e)
+
     result = CashflowResponse(
         months=months,
         forecast_revenue_monthly=round(forecast_rev, 2),
         forecast_expenses_monthly=round(forecast_exp, 2),
         start_balance=round(start_balance, 2),
+        capacity_forecast=capacity_forecast,
     )
     _cashflow_cache[cache_key] = result
     return result

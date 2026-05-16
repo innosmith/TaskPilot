@@ -187,6 +187,7 @@ export function FinancePage() {
   const [waterfall, setWaterfall] = useState<WaterfallResponse | null>(null);
   const [expenseBreakdown, setExpenseBreakdown] = useState<ExpenseMonthlyBreakdown | null>(null);
   const [marginTrend, setMarginTrend] = useState<MarginTrendResponse | null>(null);
+  const [capacityForecast, setCapacityForecast] = useState<{ month: string; revenue: number; hours: number }[]>([]);
   const [pnlPeriod, setPnlPeriod] = useState('ytd');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -198,7 +199,7 @@ export function FinancePage() {
     setLoading(true);
     setError(null);
     try {
-      const [ov, cf, tp, yoyR, wf, eb, mt] = await Promise.allSettled([
+      const [ov, cf, tp, yoyR, wf, eb, mt, capFc] = await Promise.allSettled([
         api.get<KpiOverview>('/api/finance/overview'),
         api.get<CashflowResponse>('/api/finance/cashflow?months_back=6&months_forward=12'),
         api.get<TogglProject[]>('/api/finance/toggl-summary'),
@@ -206,6 +207,7 @@ export function FinancePage() {
         api.get<WaterfallResponse>(`/api/finance/pnl-waterfall?period=${wfPeriod}`),
         api.get<ExpenseMonthlyBreakdown>('/api/finance/expense-monthly-breakdown'),
         api.get<MarginTrendResponse>('/api/finance/margin-trend'),
+        api.get<{ month: string; revenue: number; hours: number }[]>('/api/capacity/forecast-revenue?from=' + new Date().toISOString().slice(0, 10) + '&to=' + new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10)),
       ]);
       if (ov.status === 'fulfilled') setOverview(ov.value);
       if (cf.status === 'fulfilled') setCashflow(cf.value);
@@ -214,6 +216,7 @@ export function FinancePage() {
       if (wf.status === 'fulfilled') setWaterfall(wf.value);
       if (eb.status === 'fulfilled') setExpenseBreakdown(eb.value);
       if (mt.status === 'fulfilled') setMarginTrend(mt.value);
+      if (capFc.status === 'fulfilled') setCapacityForecast(capFc.value);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Laden fehlgeschlagen');
     } finally {
@@ -474,14 +477,18 @@ export function FinancePage() {
               Cashflow (direkte Methode)
             </h2>
             <ResponsiveContainer width="100%" height={isFinanceMobile ? 280 : 380}>
-              <ComposedChart data={cashflow.months.map(m => ({
-                ...m,
-                label: formatMonthLabel(m.month),
-                opNeg: -m.expenses,
-                finNeg: -(m.fin_outflow || 0),
-                invNeg: -(m.invest_outflow || 0),
-                hasSpecial: (m.special_items?.length ?? 0) > 0,
-              }))}>
+              <ComposedChart data={cashflow.months.map(m => {
+                const capEntry = capacityForecast.find(c => c.month === m.month);
+                return {
+                  ...m,
+                  label: formatMonthLabel(m.month),
+                  opNeg: -m.expenses,
+                  finNeg: -(m.fin_outflow || 0),
+                  invNeg: -(m.invest_outflow || 0),
+                  hasSpecial: (m.special_items?.length ?? 0) > 0,
+                  capacityRevenue: capEntry?.revenue || null,
+                };
+              })}>
                 <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                 <XAxis dataKey="label" tick={{ fontSize: isFinanceMobile ? 9 : 11 }} interval={isFinanceMobile ? 1 : 0} angle={isFinanceMobile ? -45 : 0} textAnchor={isFinanceMobile ? 'end' : 'middle'} height={isFinanceMobile ? 50 : 30} />
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${formatK(v)}`} />
@@ -606,6 +613,17 @@ export function FinancePage() {
                     <Cell key={i} fill={(m.invest_outflow || 0) > 0 ? '#9ca3af' : 'transparent'} />
                   ))}
                 </Bar>
+                {capacityForecast.length > 0 && (
+                  <Line
+                    dataKey="capacityRevenue"
+                    name="Kapazitäts-Prognose"
+                    stroke="#8B5CF6"
+                    strokeWidth={2}
+                    strokeDasharray="6 3"
+                    dot={{ r: 3, fill: '#8B5CF6' }}
+                    connectNulls
+                  />
+                )}
               </ComposedChart>
             </ResponsiveContainer>
             <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
@@ -614,6 +632,9 @@ export function FinancePage() {
               <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-orange-500" /> Finanzierung</span>
               <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-gray-400" /> Investitionen</span>
               <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded border-2 border-dashed border-green-300 bg-green-200/50" /> Prognose</span>
+              {capacityForecast.length > 0 && (
+                <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-purple-500" /> Kapazitäts-Prognose</span>
+              )}
             </div>
           </div>
         )}

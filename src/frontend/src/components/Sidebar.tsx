@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { BrainCircuit } from 'lucide-react';
+import { BrainCircuit, CalendarClock } from 'lucide-react';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -273,6 +273,9 @@ export function Sidebar({
                   <NavLink to="/finanzen" className={collapsedLinkClasses} onClick={onClose} title="Finanzen">
                     <FinanceIcon className="h-5 w-5" />
                   </NavLink>
+                  <NavLink to="/kapazitaet" className={collapsedLinkClasses} onClick={onClose} title="Kapazität">
+                    <CalendarClock className="h-5 w-5" />
+                  </NavLink>
                   <NavLink to="/debitoren" className={collapsedLinkClasses} onClick={onClose} title="Debitoren">
                     <DebtorsIcon className="h-5 w-5" />
                   </NavLink>
@@ -377,6 +380,11 @@ export function Sidebar({
                   <NavLink to="/finanzen" className={linkClasses} onClick={onClose}>
                     <FinanceIcon className="h-5 w-5" />
                     <span className="flex-1">Finanzen</span>
+                  </NavLink>
+
+                  <NavLink to="/kapazitaet" className={linkClasses} onClick={onClose}>
+                    <CalendarClock className="h-5 w-5" />
+                    <span className="flex-1">Kapazität</span>
                   </NavLink>
 
                   <NavLink to="/debitoren" className={linkClasses} onClick={onClose}>

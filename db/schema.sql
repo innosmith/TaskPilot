@@ -431,3 +431,64 @@ CREATE TRIGGER mindmaps_updated_at BEFORE UPDATE ON mindmaps
 
 CREATE TRIGGER mindmaps_notify AFTER INSERT OR UPDATE OR DELETE ON mindmaps
     FOR EACH ROW EXECUTE FUNCTION notify_change('mindmaps_changed');
+
+-- Kapazitätsplanung: Projekte (eigene Entität, entkoppelt von projects)
+CREATE TABLE capacity_projects (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            TEXT NOT NULL,
+    color           TEXT NOT NULL DEFAULT '#3B82F6',
+    icon_url        TEXT,
+    icon_emoji      TEXT,
+    client_name     TEXT,
+    hourly_rate     NUMERIC(10,2),
+    is_billable     BOOLEAN DEFAULT true,
+    status          TEXT NOT NULL DEFAULT 'bestätigt'
+                    CHECK (status IN ('bestätigt', 'vorläufig')),
+    project_id      UUID REFERENCES projects(id) ON DELETE SET NULL,
+    toggl_project_id INT,
+    pipedrive_deal_id INT,
+    sort_order      INT DEFAULT 0,
+    notes           TEXT,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_cap_projects_status ON capacity_projects(status);
+CREATE INDEX idx_cap_projects_project ON capacity_projects(project_id);
+
+-- Kapazitätsplanung: Zuweisungen pro Projekt und Woche
+CREATE TABLE capacity_allocations (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    capacity_project_id UUID NOT NULL REFERENCES capacity_projects(id) ON DELETE CASCADE,
+    week_start          DATE NOT NULL,
+    minutes             INT NOT NULL DEFAULT 0,
+    is_billable         BOOLEAN DEFAULT true,
+    series_id           UUID,
+    notes               TEXT,
+    created_at          TIMESTAMPTZ DEFAULT now(),
+    updated_at          TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(capacity_project_id, week_start)
+);
+
+CREATE INDEX idx_cap_alloc_week ON capacity_allocations(week_start);
+CREATE INDEX idx_cap_alloc_series ON capacity_allocations(series_id);
+CREATE INDEX idx_cap_alloc_project ON capacity_allocations(capacity_project_id);
+
+-- Kapazitätsplanung: Ferien und freie Tage
+CREATE TABLE capacity_time_off (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    date            DATE NOT NULL UNIQUE,
+    type            TEXT DEFAULT 'ferien'
+                    CHECK (type IN ('ferien', 'feiertag', 'krank', 'sonstiges')),
+    label           TEXT,
+    hours           REAL DEFAULT 8.0,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_cap_timeoff_date ON capacity_time_off(date);
+
+CREATE TRIGGER capacity_projects_updated_at BEFORE UPDATE ON capacity_projects
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER capacity_allocations_updated_at BEFORE UPDATE ON capacity_allocations
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();

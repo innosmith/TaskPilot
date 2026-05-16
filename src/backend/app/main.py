@@ -17,6 +17,7 @@ from app.routers import (
     auth,
     bexio,
     calendar,
+    capacity,
     chat,
     code_execute,
     content,
@@ -175,6 +176,7 @@ app.include_router(triage.router)
 app.include_router(models.router)
 app.include_router(pipedrive.router)
 app.include_router(linkedin.router)
+app.include_router(capacity.router)
 app.include_router(toggl.router)
 app.include_router(bexio.router)
 app.include_router(finance.router)

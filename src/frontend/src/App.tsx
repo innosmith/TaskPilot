@@ -21,6 +21,10 @@ import { FinancePage } from './pages/FinancePage';
 import DebtorsPage from './pages/DebtorsPage';
 import CreditorsPage from './pages/CreditorsPage';
 
+const LazyCapacityPage = lazy(() =>
+  import('./pages/CapacityPage').then(m => ({ default: m.CapacityPage })),
+);
+
 const LazyChatPage = lazy(() =>
   import('./pages/ChatPage').then(m => ({ default: m.ChatPage })),
 );
@@ -147,6 +151,7 @@ export default function App() {
             <Route path="/mindmaps/:id" element={<Suspense fallback={<SuspenseFallback />}><LazyMindMapEditorPage /></Suspense>} />
             <Route path="/inbox" element={<OwnerRoute><InboxPage /></OwnerRoute>} />
             <Route path="/signale" element={<OwnerRoute><SignalePage /></OwnerRoute>} />
+            <Route path="/kapazitaet" element={<OwnerRoute><Suspense fallback={<SuspenseFallback />}><LazyCapacityPage /></Suspense></OwnerRoute>} />
             <Route path="/finanzen" element={<OwnerRoute><FinancePage /></OwnerRoute>} />
             <Route path="/debitoren" element={<OwnerRoute><DebtorsPage /></OwnerRoute>} />
             <Route path="/kreditoren" element={<OwnerRoute><CreditorsPage /></OwnerRoute>} />

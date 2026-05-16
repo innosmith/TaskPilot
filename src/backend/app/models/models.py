@@ -403,3 +403,54 @@ class MindmapShare(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     mindmap: Mapped["Mindmap"] = relationship(back_populates="shares")
+
+
+class CapacityProject(Base):
+    __tablename__ = "capacity_projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    color: Mapped[str] = mapped_column(Text, nullable=False, server_default="#3B82F6")
+    icon_url: Mapped[str | None] = mapped_column(Text)
+    icon_emoji: Mapped[str | None] = mapped_column(Text)
+    client_name: Mapped[str | None] = mapped_column(Text)
+    hourly_rate: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    is_billable: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="bestätigt")
+    project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
+    toggl_project_id: Mapped[int | None] = mapped_column(Integer)
+    pipedrive_deal_id: Mapped[int | None] = mapped_column(Integer)
+    sort_order: Mapped[int] = mapped_column(Integer, server_default="0")
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    project: Mapped["Project | None"] = relationship()
+    allocations: Mapped[list["CapacityAllocation"]] = relationship(back_populates="capacity_project", cascade="all, delete-orphan")
+
+
+class CapacityAllocation(Base):
+    __tablename__ = "capacity_allocations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    capacity_project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("capacity_projects.id", ondelete="CASCADE"), nullable=False)
+    week_start: Mapped[date] = mapped_column(Date, nullable=False)
+    minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    is_billable: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    series_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    capacity_project: Mapped["CapacityProject"] = relationship(back_populates="allocations")
+
+
+class CapacityTimeOff(Base):
+    __tablename__ = "capacity_time_off"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    date: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
+    type: Mapped[str] = mapped_column(Text, server_default="ferien")
+    label: Mapped[str | None] = mapped_column(Text)
+    hours: Mapped[float] = mapped_column(Float, server_default="8.0")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
