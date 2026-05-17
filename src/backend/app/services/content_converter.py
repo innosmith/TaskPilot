@@ -9,6 +9,7 @@ Shutdown sauber beendet. Bei Absturz wird automatisch reconnected.
 
 import asyncio
 import logging
+import os
 from contextlib import AsyncExitStack
 from pathlib import Path
 
@@ -43,6 +44,11 @@ async def start_content_converter() -> None:
         server_params = StdioServerParameters(
             command=cconv_bin,
             args=["serve"],
+            env={
+                k: v
+                for k, v in os.environ.items()
+                if k.startswith(("CONTENTCONVERTER_", "PATH", "HOME", "LANG"))
+            },
         )
 
         stdio_transport = await _exit_stack.enter_async_context(
@@ -114,6 +120,13 @@ async def call_tool(tool_name: str, **kwargs) -> dict | str | list:
 
     try:
         result = await session.call_tool(tool_name, arguments=kwargs)
+
+        if getattr(result, "isError", False):
+            error_texts = [
+                c.text for c in (result.content or []) if hasattr(c, "text")
+            ]
+            error_msg = " ".join(error_texts) or "Unbekannter Tool-Fehler"
+            raise RuntimeError(f"MCP-Tool '{tool_name}' fehlgeschlagen: {error_msg}")
 
         if result.content and len(result.content) == 1:
             content = result.content[0]

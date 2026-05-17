@@ -73,6 +73,7 @@ RUN chmod +x /app/entrypoint.sh
 # Template-Pfade (ueberschreibbar via env)
 ENV TP_CONTENTCONVERTER_PATH=/opt/vendor/contentconverter
 ENV TP_CONTENTCONVERTER_CCONV_BIN=/usr/local/bin/cconv
+ENV CONTENTCONVERTER_TEMPLATE_DIR=/opt/vendor/contentconverter/templates
 
 RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
 

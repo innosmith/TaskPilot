@@ -118,13 +118,20 @@ async def _convert_docx_pdf(
     opts: ConvertOptions,
 ) -> FileResponse:
     """Konvertiert als Word oder PDF via contentConverter MCP-Server."""
-    prepared = await cc.call_tool(
-        "prepare_for_word",
-        text=content,
-        title=opts.title,
-        author=opts.author,
-        lang="de-CH",
-    )
+    try:
+        prepared = await cc.call_tool(
+            "prepare_for_word",
+            text=content,
+            title=opts.title,
+            author=opts.author,
+            lang="de-CH",
+        )
+    except Exception as e:
+        logger.error("Markdown-Vorbereitung fehlgeschlagen: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Markdown-Vorbereitung fehlgeschlagen: {e}",
+        )
 
     tmp_md = EXPORT_TMP_DIR / f"{uuid.uuid4().hex}.md"
     tmp_md.write_text(
@@ -142,6 +149,8 @@ async def _convert_docx_pdf(
             author=opts.author,
             title=opts.title,
             template=opts.template,
+            title_page=opts.title_page,
+            toc=opts.toc,
         )
     except Exception as e:
         logger.error("Word-Konvertierung fehlgeschlagen: %s", e)
