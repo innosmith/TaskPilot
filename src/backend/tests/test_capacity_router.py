@@ -81,15 +81,66 @@ async def test_create_allocation_invalid_body_422(client_as_owner):
 
 
 async def test_create_allocation_non_monday_422(client_as_owner):
-    """POST /api/capacity/allocations mit week_start != Montag gibt 422."""
+    """POST /api/capacity/allocations mit week_start != Montag (type=week) gibt 422."""
     body = {
         "capacity_project_id": str(uuid.uuid4()),
         "week_start": "2026-06-03",  # Mittwoch
         "minutes": 480,
+        "allocation_type": "week",
     }
     resp = await client_as_owner.post("/api/capacity/allocations", json=body)
     assert resp.status_code == 422
     assert "Montag" in resp.json()["detail"]
+
+
+async def test_create_day_allocation_wednesday_ok(client_as_owner):
+    """POST /api/capacity/allocations mit type=day an einem Mittwoch ist erlaubt."""
+    body = {
+        "capacity_project_id": str(uuid.uuid4()),
+        "week_start": "2026-06-03",  # Mittwoch
+        "minutes": 480,
+        "allocation_type": "day",
+    }
+    resp = await client_as_owner.post("/api/capacity/allocations", json=body)
+    # 404 ist akzeptabel (Projekt existiert nicht), aber kein 422
+    assert resp.status_code != 422
+
+
+async def test_create_day_allocation_saturday_ok(client_as_owner):
+    """POST /api/capacity/allocations mit type=day an einem Samstag ist erlaubt."""
+    body = {
+        "capacity_project_id": str(uuid.uuid4()),
+        "week_start": "2026-06-06",  # Samstag
+        "minutes": 480,
+        "allocation_type": "day",
+    }
+    resp = await client_as_owner.post("/api/capacity/allocations", json=body)
+    assert resp.status_code != 422
+
+
+async def test_create_day_allocation_sunday_422(client_as_owner):
+    """POST /api/capacity/allocations mit type=day an einem Sonntag gibt 422."""
+    body = {
+        "capacity_project_id": str(uuid.uuid4()),
+        "week_start": "2026-06-07",  # Sonntag
+        "minutes": 480,
+        "allocation_type": "day",
+    }
+    resp = await client_as_owner.post("/api/capacity/allocations", json=body)
+    assert resp.status_code == 422
+    assert "Sonntag" in resp.json()["detail"]
+
+
+async def test_create_allocation_invalid_type_422(client_as_owner):
+    """POST /api/capacity/allocations mit ungültigem allocation_type gibt 422."""
+    body = {
+        "capacity_project_id": str(uuid.uuid4()),
+        "week_start": "2026-06-01",
+        "minutes": 480,
+        "allocation_type": "invalid",
+    }
+    resp = await client_as_owner.post("/api/capacity/allocations", json=body)
+    assert resp.status_code == 422
 
 
 async def test_create_repeat_invalid_end_date_422(client_as_owner):
@@ -251,6 +302,42 @@ async def test_weekly_summary_basic(client_as_owner):
     assert summary[0]["planned_minutes"] == 1200
     assert summary[0]["available_minutes"] == 2400
     assert summary[0]["utilization_pct"] == 50.0
+
+    await client_as_owner.delete(f"/api/capacity/projects/{project_id}")
+
+
+@pytest.mark.db
+async def test_day_allocation_aggregates_to_week(client_as_owner):
+    """Tages-Allocations werden in der Weekly-Summary korrekt zur Woche aggregiert."""
+    proj_resp = await client_as_owner.post(
+        "/api/capacity/projects", json={"name": "Tag-Aggregation-Test", "status": "bestätigt"}
+    )
+    project_id = proj_resp.json()["id"]
+
+    # Mittwoch 10.06.2026 → Woche 08.06.2026
+    await client_as_owner.post("/api/capacity/allocations", json={
+        "capacity_project_id": project_id,
+        "week_start": "2026-06-10",
+        "minutes": 480,
+        "allocation_type": "day",
+    })
+    # Samstag 13.06.2026 → gleiche Woche 08.06.2026
+    await client_as_owner.post("/api/capacity/allocations", json={
+        "capacity_project_id": project_id,
+        "week_start": "2026-06-13",
+        "minutes": 480,
+        "allocation_type": "day",
+    })
+
+    resp = await client_as_owner.get(
+        "/api/capacity/weekly-summary",
+        params={"from": "2026-06-08", "to": "2026-06-14"},
+    )
+    assert resp.status_code == 200
+    summary = resp.json()
+    assert len(summary) == 1
+    assert summary[0]["week_start"] == "2026-06-08"
+    assert summary[0]["planned_minutes"] == 960  # 480 + 480
 
     await client_as_owner.delete(f"/api/capacity/projects/{project_id}")
 

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, require_role
 from app.database import async_session
-from app.models import CapacityAllocation, CapacityProject, CapacityTimeOff, User
+from app.models import CapacityAllocation, CapacityProject, CapacityTimeOff, Project, User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "toggl"))
 from toggl_client import TogglClient, TogglConfig  # noqa: E402
@@ -90,9 +90,9 @@ class CapacityProjectOut(BaseModel):
 
 class AllocationCreate(BaseModel):
     capacity_project_id: str
-    week_start: str  # ISO date (muss ein Montag sein)
+    week_start: str  # ISO date (Montag bei type=week, Mo-Sa bei type=day)
     minutes: int
-    is_billable: bool = True
+    allocation_type: str = "week"  # "week" oder "day"
     notes: str | None = None
 
 
@@ -101,14 +101,14 @@ class AllocationRepeat(BaseModel):
     week_start: str
     end_date: str
     minutes: int
+    allocation_type: str = "week"  # "week" oder "day"
     interval_weeks: int = 1
-    is_billable: bool = True
     notes: str | None = None
 
 
 class AllocationUpdate(BaseModel):
     minutes: int | None = None
-    is_billable: bool | None = None
+    allocation_type: str | None = None
     notes: str | None = None
     week_start: str | None = None
 
@@ -118,7 +118,7 @@ class AllocationOut(BaseModel):
     capacity_project_id: str
     week_start: str
     minutes: int
-    is_billable: bool
+    allocation_type: str
     series_id: str | None
     notes: str | None
     created_at: str
@@ -182,6 +182,20 @@ def _validate_monday(date_str: str) -> date:
     d = date.fromisoformat(date_str)
     if d.weekday() != 0:
         raise HTTPException(status_code=422, detail="week_start muss ein Montag sein")
+    return d
+
+
+def _validate_allocation_date(date_str: str, allocation_type: str) -> date:
+    """Validiert das Datum je nach Typ: Montag für 'week', Mo-Sa für 'day'."""
+    if allocation_type not in ("week", "day"):
+        raise HTTPException(status_code=422, detail="allocation_type muss 'week' oder 'day' sein")
+    d = date.fromisoformat(date_str)
+    if allocation_type == "week":
+        if d.weekday() != 0:
+            raise HTTPException(status_code=422, detail="week_start muss ein Montag sein (Typ 'week')")
+    else:
+        if d.weekday() == 6:  # Sonntag
+            raise HTTPException(status_code=422, detail="Tagesplanung ist Mo-Sa möglich (kein Sonntag)")
     return d
 
 
@@ -322,13 +336,13 @@ async def create_allocation(
     body: AllocationCreate,
     user: User = Depends(require_role("owner")),
 ):
-    ws = _validate_monday(body.week_start)
+    ws = _validate_allocation_date(body.week_start, body.allocation_type)
     async with async_session() as session:
         alloc = CapacityAllocation(
             capacity_project_id=uuid.UUID(body.capacity_project_id),
             week_start=ws,
             minutes=body.minutes,
-            is_billable=body.is_billable,
+            allocation_type=body.allocation_type,
             notes=body.notes,
         )
         session.add(alloc)
@@ -343,7 +357,7 @@ async def create_repeat_allocations(
     user: User = Depends(require_role("owner")),
 ):
     """Erstellt wiederholte Zuweisungen mit gleicher series_id."""
-    ws = _validate_monday(body.week_start)
+    ws = _validate_allocation_date(body.week_start, body.allocation_type)
     end = date.fromisoformat(body.end_date)
     if end < ws:
         raise HTTPException(status_code=422, detail="Enddatum muss nach Startdatum liegen")
@@ -351,16 +365,17 @@ async def create_repeat_allocations(
     series_id = uuid.uuid4()
     allocs: list[CapacityAllocation] = []
     current = ws
+    interval = timedelta(weeks=body.interval_weeks) if body.allocation_type == "week" else timedelta(weeks=body.interval_weeks)
     while current <= end:
         allocs.append(CapacityAllocation(
             capacity_project_id=uuid.UUID(body.capacity_project_id),
             week_start=current,
             minutes=body.minutes,
-            is_billable=body.is_billable,
+            allocation_type=body.allocation_type,
             series_id=series_id,
             notes=body.notes,
         ))
-        current += timedelta(weeks=body.interval_weeks)
+        current += interval
 
     async with async_session() as session:
         session.add_all(allocs)
@@ -382,7 +397,11 @@ async def update_allocation(
             raise HTTPException(status_code=404, detail="Zuweisung nicht gefunden")
         data = body.model_dump(exclude_unset=True)
         if "week_start" in data and data["week_start"]:
-            data["week_start"] = _validate_monday(data["week_start"])
+            alloc_type = data.get("allocation_type") or alloc.allocation_type
+            data["week_start"] = _validate_allocation_date(data["week_start"], alloc_type)
+        if "allocation_type" in data and data["allocation_type"]:
+            if data["allocation_type"] not in ("week", "day"):
+                raise HTTPException(status_code=422, detail="allocation_type muss 'week' oder 'day' sein")
         for key, val in data.items():
             setattr(alloc, key, val)
         await session.commit()
@@ -459,7 +478,7 @@ async def bulk_allocations(
                     capacity_project_id=uuid.UUID(body.target_project_id),
                     week_start=alloc.week_start,
                     minutes=alloc.minutes,
-                    is_billable=alloc.is_billable,
+                    allocation_type=alloc.allocation_type,
                     series_id=new_series,
                     notes=alloc.notes,
                 )
@@ -568,15 +587,17 @@ async def get_weekly_summary(
         timeoff_result = await session.execute(timeoff_stmt)
         time_offs = timeoff_result.scalars().all()
 
-    # Gruppieren
+    # Gruppieren (Tages-Allocations werden ihrer ISO-Woche zugeordnet)
     planned_by_week: dict[date, int] = defaultdict(int)
     tentative_by_week: dict[date, int] = defaultdict(int)
     timeoff_by_week: dict[date, float] = defaultdict(float)
 
     for a in allocs:
-        planned_by_week[a.week_start] += a.minutes
+        week_key = a.week_start if a.allocation_type == "week" else _monday_of(a.week_start)
+        planned_by_week[week_key] += a.minutes
     for a in tent_allocs:
-        tentative_by_week[a.week_start] += a.minutes
+        week_key = a.week_start if a.allocation_type == "week" else _monday_of(a.week_start)
+        tentative_by_week[week_key] += a.minutes
     for t in time_offs:
         week = _monday_of(t.date)
         timeoff_by_week[week] += t.hours * 60
@@ -763,6 +784,100 @@ async def list_toggl_projects(user: User = Depends(require_role("owner"))):
         return []
 
 
+class AvailableProject(BaseModel):
+    name: str
+    source: str  # "both" | "toggl" | "taskpilot"
+    toggl_project_id: int | None = None
+    project_id: str | None = None
+    icon_url: str | None = None
+    icon_emoji: str | None = None
+    color: str = "#3B82F6"
+    client_name: str | None = None
+    billable: bool = True
+
+
+@router.get("/available-projects", response_model=list[AvailableProject])
+async def list_available_projects(user: User = Depends(require_role("owner"))):
+    """Zusammengeführte Liste aus Toggl- und TaskPilot-Projekten (Name-basierter Abgleich)."""
+    # TaskPilot-Projekte laden
+    tp_projects: dict[str, dict] = {}
+    async with async_session() as session:
+        stmt = select(Project).where(Project.status != "archived")
+        result = await session.execute(stmt)
+        for p in result.scalars().all():
+            tp_projects[p.name.strip().lower()] = {
+                "id": str(p.id),
+                "name": p.name,
+                "icon_url": p.icon_url,
+                "icon_emoji": p.icon_emoji,
+                "color": p.color,
+            }
+
+    # Toggl-Projekte laden (aus Cache oder API)
+    cache_key = "toggl_projects_list"
+    toggl_list = _toggl_cache.get(cache_key)
+    if toggl_list is None:
+        client = _get_toggl_client(user)
+        if client:
+            try:
+                raw = await client.list_projects(active=True)
+                toggl_list = [
+                    {
+                        "id": p.get("id"),
+                        "name": p.get("name", ""),
+                        "client": p.get("client_name") or p.get("client") or "",
+                        "billable": p.get("billable", False),
+                        "color": p.get("color", "#3B82F6"),
+                    }
+                    for p in raw
+                    if p.get("id") and p.get("name")
+                ]
+                _toggl_cache[cache_key] = toggl_list
+            except Exception as e:
+                logger.warning("Toggl-Projekte für available-projects: %s", e)
+                toggl_list = []
+        else:
+            toggl_list = []
+
+    # Name-basierter Abgleich
+    merged: dict[str, AvailableProject] = {}
+
+    for tp_key, tp in tp_projects.items():
+        merged[tp_key] = AvailableProject(
+            name=tp["name"],
+            source="taskpilot",
+            project_id=tp["id"],
+            icon_url=tp["icon_url"],
+            icon_emoji=tp["icon_emoji"],
+            color=tp["color"],
+            client_name=None,
+            billable=True,
+        )
+
+    for tg in toggl_list:
+        key = tg["name"].strip().lower()
+        if key in merged:
+            # Match: ergänze Toggl-Daten
+            existing = merged[key]
+            existing.source = "both"
+            existing.toggl_project_id = tg["id"]
+            existing.client_name = tg["client"] or existing.client_name
+            existing.billable = tg["billable"]
+        else:
+            merged[key] = AvailableProject(
+                name=tg["name"],
+                source="toggl",
+                toggl_project_id=tg["id"],
+                icon_url=None,
+                icon_emoji=None,
+                color=tg["color"],
+                client_name=tg["client"] or None,
+                billable=tg["billable"],
+            )
+
+    return sorted(merged.values(), key=lambda p: p.name.lower())
+
+
 # ── Hilfsfunktionen ──────────────────────────────────────────────────────────
 
 
@@ -819,7 +934,7 @@ def _alloc_to_out(a: CapacityAllocation) -> AllocationOut:
         capacity_project_id=str(a.capacity_project_id),
         week_start=a.week_start.isoformat(),
         minutes=a.minutes,
-        is_billable=a.is_billable,
+        allocation_type=a.allocation_type,
         series_id=str(a.series_id) if a.series_id else None,
         notes=a.notes,
         created_at=a.created_at.isoformat() if a.created_at else "",

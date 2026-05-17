@@ -1218,7 +1218,9 @@ Zwei harte Fragen beantworten — bei "Nein" umplanen, bevor Wochen fliessen:
 
 6. **Das "immer klüger werden" hat ein Plateau.** Schneller Fortschritt in den ersten 2–3 Monaten (häufigste Muster). Danach flache Kurve. Für wirklich neue Situationen bleibt der Agent auf Briefing angewiesen — wie ein Mitarbeiter, der Standardabläufe beherrscht, aber strategische Entscheide nie alleine trifft.
 
-7. **Runn-Integration ist unsicher.** API-Umfang von Runn (app.runn.io) muss erst geprüft werden.
+7. **Runn-Integration ist unsicher.** API-Umfang von Runn (app.runn.io) muss erst geprüft werden. **Update Mai 2026:** Eigene Kapazitätsplanung in TaskPilot implementiert (Runn wird nicht mehr benötigt).
+
+8. **Kapazitätsplanung als Sandbox (Architektur-Grundsatz).** Die Kapazitätsplanung liest von externen Systemen (Toggl Track, TaskPilot-Projekte, Pipedrive), schreibt aber **niemals** auf diese zurück. Sie dient ausschliesslich der Simulation und Planung. Änderungen an der Kapazitätsplanung haben keine Auswirkungen auf Toggl (Leistungserfassung), Bexio (Buchhaltung) oder Pipedrive (CRM). Dieser Grundsatz ermöglicht es, Szenarien durchzuspielen (z.B. Was-wäre-wenn bei mehreren Kundenanfragen), ohne operative Systeme zu beeinflussen. Benannte Szenarien-Verwaltung (Varianten speichern/vergleichen) ist für Phase 2 vorgesehen.
 
 **Gegengewicht: Agentic Engineering beschleunigt.** Zeitschätzungen klassischer Software-Entwicklung sind mit AI-Coding-Assistenten (Cursor, Claude) oft deutlich zu pessimistisch. Der Berater hat umfangreiche Erfahrung mit Agentic Engineering und bekannten Komponenten (n8n, Ollama, Graph API, GX10). Die reale Entwicklungsgeschwindigkeit wird wahrscheinlich höher sein als konservative Schätzungen vermuten lassen.
 

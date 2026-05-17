@@ -436,7 +436,7 @@ class CapacityAllocation(Base):
     capacity_project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("capacity_projects.id", ondelete="CASCADE"), nullable=False)
     week_start: Mapped[date] = mapped_column(Date, nullable=False)
     minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    is_billable: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    allocation_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="week")
     series_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())

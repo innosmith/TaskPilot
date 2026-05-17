@@ -456,13 +456,14 @@ CREATE TABLE capacity_projects (
 CREATE INDEX idx_cap_projects_status ON capacity_projects(status);
 CREATE INDEX idx_cap_projects_project ON capacity_projects(project_id);
 
--- Kapazitätsplanung: Zuweisungen pro Projekt und Woche
+-- Kapazitätsplanung: Zuweisungen pro Projekt und Woche/Tag
 CREATE TABLE capacity_allocations (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     capacity_project_id UUID NOT NULL REFERENCES capacity_projects(id) ON DELETE CASCADE,
     week_start          DATE NOT NULL,
     minutes             INT NOT NULL DEFAULT 0,
-    is_billable         BOOLEAN DEFAULT true,
+    allocation_type     TEXT NOT NULL DEFAULT 'week'
+                        CHECK (allocation_type IN ('week', 'day')),
     series_id           UUID,
     notes               TEXT,
     created_at          TIMESTAMPTZ DEFAULT now(),
