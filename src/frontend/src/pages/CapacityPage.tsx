@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  Plus, Trash2, ArrowRightLeft,
+  Plus, Trash2, ArrowRightLeft, Pencil,
   ChevronLeft, ChevronRight, Calendar, X, GripVertical, Palmtree, Unlink,
 } from 'lucide-react';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent, useDroppable, useDraggable } from '@dnd-kit/core';
@@ -301,12 +301,12 @@ function SortableProjectRow({
                 {weekOnlyAllocs.length > 0 && (() => {
                   const isSeries = !!weekOnlyAllocs[0].series_id;
                   const plannedMin = weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0);
-                  const hasActual = isPast && projectActualMin > 0;
+                  const hasActual = isPast && totalMin > 0 && !!project.toggl_project_id;
                   const actualColor = hasActual
-                    ? (totalMin === 0 ? 'bg-blue-500' : projectActualMin > totalMin * 1.1 ? 'bg-red-500' : projectActualMin < totalMin * 0.5 ? 'bg-amber-400' : 'bg-emerald-500')
+                    ? (projectActualMin === 0 ? 'bg-red-500' : projectActualMin > totalMin * 1.1 ? 'bg-red-500' : projectActualMin < totalMin * 0.5 ? 'bg-amber-400' : 'bg-emerald-500')
                     : '';
                   const blockTitle = hasActual
-                    ? (totalMin > 0 ? `Geplant: ${minutesToDisplay(plannedMin)} / Effektiv: ${minutesToDisplay(projectActualMin)}` : `Effektiv: ${minutesToDisplay(projectActualMin)} (ungeplant)`)
+                    ? `Geplant: ${minutesToDisplay(plannedMin)} / Effektiv: ${minutesToDisplay(projectActualMin)}`
                     : minutesToDisplay(plannedMin);
                   return (
                     <DraggableAllocBlock
@@ -476,7 +476,7 @@ function MiniCalendar({ month, year, selectedDays, onToggleDay }: {
 }
 
 function AllocationDialog({
-  open, onClose, onSave, projects, initialProjectId, initialWeek,
+  open, onClose, onSave, projects, initialProjectId, initialWeek, editAllocId, editMinutes,
 }: {
   open: boolean;
   onClose: () => void;
@@ -492,6 +492,8 @@ function AllocationDialog({
   projects: CapProject[];
   initialProjectId: string;
   initialWeek: string;
+  editAllocId?: string;
+  editMinutes?: number;
 }) {
   const [mode, setMode] = useState<'week' | 'calendar'>('week');
   const [projectId, setProjectId] = useState(initialProjectId);
@@ -514,8 +516,13 @@ function AllocationDialog({
   useEffect(() => {
     setProjectId(initialProjectId);
     setMode('week');
-    setHoursInput('8');
-    setMinutesInput('0');
+    if (editMinutes != null) {
+      setHoursInput(String(Math.floor(editMinutes / 60)));
+      setMinutesInput(String(editMinutes % 60));
+    } else {
+      setHoursInput('8');
+      setMinutesInput('0');
+    }
     setRepeat(false);
     setRepeatMode('count');
     setRepeatCount(4);
@@ -525,7 +532,7 @@ function AllocationDialog({
     setDayHours('8');
     const d = new Date(initialWeek + 'T00:00:00');
     setCalMonth({ month: d.getMonth(), year: d.getFullYear() });
-  }, [initialProjectId, initialWeek]);
+  }, [initialProjectId, initialWeek, editMinutes]);
 
   const totalMinutes = useMemo(() => {
     return (parseInt(hoursInput) || 0) * 60 + (parseInt(minutesInput) || 0);
@@ -556,17 +563,19 @@ function AllocationDialog({
         {/* Header */}
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
-            {mode === 'week' ? 'Kapazität planen' : 'Einzeltage planen'}
+            {editAllocId ? 'Stunden ändern' : mode === 'week' ? 'Kapazität planen' : 'Einzeltage planen'}
           </h3>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setMode(mode === 'week' ? 'calendar' : 'week')}
-              className={`rounded-lg p-1.5 transition ${mode === 'calendar' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
-              title={mode === 'week' ? 'Einzeltage planen' : 'Wochenplanung'}
-              data-testid="capacity-dialog-toggle-mode"
-            >
-              <Calendar className="h-4 w-4" />
-            </button>
+            {!editAllocId && (
+              <button
+                onClick={() => setMode(mode === 'week' ? 'calendar' : 'week')}
+                className={`rounded-lg p-1.5 transition ${mode === 'calendar' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
+                title={mode === 'week' ? 'Einzeltage planen' : 'Wochenplanung'}
+                data-testid="capacity-dialog-toggle-mode"
+              >
+                <Calendar className="h-4 w-4" />
+              </button>
+            )}
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" data-testid="capacity-dialog-close">
               <X className="h-5 w-5" />
             </button>
@@ -579,7 +588,8 @@ function AllocationDialog({
           <select
             value={projectId}
             onChange={e => setProjectId(e.target.value)}
-            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+            disabled={!!editAllocId}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-60 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
             data-testid="capacity-dialog-project"
           >
             {projects.map(p => (
@@ -616,8 +626,8 @@ function AllocationDialog({
               )}
             </div>
 
-            {/* Wiederholung */}
-            <div className="mb-4">
+            {/* Wiederholung — im Edit-Modus ausgeblendet */}
+            {!editAllocId && <div className="mb-4">
               <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                 <input type="checkbox" checked={repeat} onChange={e => setRepeat(e.target.checked)} className="rounded border-gray-300" data-testid="capacity-dialog-repeat" />
                 Wiederholen
@@ -647,7 +657,7 @@ function AllocationDialog({
                   </div>
                 </div>
               )}
-            </div>
+            </div>}
 
             {/* Aktionen */}
             <div className="flex justify-end gap-2">
@@ -677,7 +687,7 @@ function AllocationDialog({
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                 data-testid="capacity-dialog-save"
               >
-                Speichern
+                {editAllocId ? 'Übernehmen' : 'Speichern'}
               </button>
             </div>
           </>
@@ -1122,7 +1132,7 @@ function ContextMenu({
   alloc, onAction,
 }: {
   alloc: Allocation;
-  onAction: (action: 'delete' | 'delete_series' | 'delete_from' | 'shift' | 'shift_single', weeks?: number) => void;
+  onAction: (action: 'delete' | 'delete_series' | 'delete_from' | 'shift' | 'shift_single' | 'edit', weeks?: number) => void;
 }) {
   const hasSeries = !!alloc.series_id;
   const btn = "flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 whitespace-nowrap";
@@ -1130,6 +1140,10 @@ function ContextMenu({
 
   return (
     <>
+      <button onClick={() => onAction('edit')} className={btn}>
+        <Pencil className="h-4 w-4" /> Stunden ändern
+      </button>
+      <hr className="my-1 border-gray-200 dark:border-gray-700" />
       <button onClick={() => onAction('delete')} className={btn}>
         <Trash2 className="h-4 w-4" /> Zuweisung löschen
       </button>
@@ -1218,7 +1232,7 @@ export function CapacityPage() {
   };
 
   // Dialogs
-  const [allocDialog, setAllocDialog] = useState<{ open: boolean; projectId: string; weekStart: string }>({ open: false, projectId: '', weekStart: '' });
+  const [allocDialog, setAllocDialog] = useState<{ open: boolean; projectId: string; weekStart: string; editAllocId?: string; editMinutes?: number }>({ open: false, projectId: '', weekStart: '' });
   const [projectDialog, setProjectDialog] = useState<{ open: boolean; editing: CapProject | null }>({ open: false, editing: null });
   const [timeOffDialog, setTimeOffDialog] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; alloc: Allocation } | null>(null);
@@ -1293,7 +1307,9 @@ export function CapacityPage() {
     interval_weeks?: number;
   }) => {
     try {
-      if (data.repeat && data.end_date) {
+      if (allocDialog.editAllocId) {
+        await api.patch(`/api/capacity/allocations/${allocDialog.editAllocId}`, { minutes: data.minutes });
+      } else if (data.repeat && data.end_date) {
         await api.post('/api/capacity/allocations/repeat', {
           capacity_project_id: data.capacity_project_id,
           week_start: data.week_start,
@@ -1766,6 +1782,8 @@ export function CapacityPage() {
         projects={projects}
         initialProjectId={allocDialog.projectId}
         initialWeek={allocDialog.weekStart}
+        editAllocId={allocDialog.editAllocId}
+        editMinutes={allocDialog.editMinutes}
       />
 
       <ProjectDialog
@@ -1797,7 +1815,11 @@ export function CapacityPage() {
               <ContextMenu
                 alloc={cmAlloc}
                 onAction={(action, weeks) => {
-                  if (action === 'delete') act(() => handleDeleteAllocation(cmAlloc.id));
+                  if (action === 'edit') {
+                    close();
+                    setAllocDialog({ open: true, projectId: cmAlloc.capacity_project_id, weekStart: cmAlloc.week_start, editAllocId: cmAlloc.id, editMinutes: cmAlloc.minutes });
+                  }
+                  else if (action === 'delete') act(() => handleDeleteAllocation(cmAlloc.id));
                   else if (action === 'delete_series' && cmAlloc.series_id) act(() => handleBulkAction('delete', cmAlloc.series_id!));
                   else if (action === 'delete_from' && cmAlloc.series_id) act(() => handleBulkAction('delete_from', cmAlloc.series_id!, cmAlloc.week_start));
                   else if (action === 'shift' && cmAlloc.series_id && weeks != null) act(() => handleBulkAction('shift', cmAlloc.series_id!, undefined, weeks));
