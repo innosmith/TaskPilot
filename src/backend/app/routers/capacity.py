@@ -459,12 +459,14 @@ async def bulk_allocations(
             if not body.series_id or body.weeks is None:
                 raise HTTPException(status_code=422, detail="series_id und weeks erforderlich")
             delta = timedelta(weeks=body.weeks)
+            order = CapacityAllocation.week_start.desc() if body.weeks > 0 else CapacityAllocation.week_start.asc()
             stmt = select(CapacityAllocation).where(
                 CapacityAllocation.series_id == uuid.UUID(body.series_id)
-            )
+            ).order_by(order)
             result = await session.execute(stmt)
             for alloc in result.scalars().all():
                 alloc.week_start = alloc.week_start + delta
+                await session.flush()
 
         elif body.action == "clone":
             if not body.ids or not body.target_project_id:

@@ -141,17 +141,35 @@ function DroppableWeekCell({ id, colClass, measureRef, children }: {
   );
 }
 
-function DraggableAllocBlock({ allocId, children }: { allocId: string; children: React.ReactNode }) {
+function DraggableAllocBlock({ allocId, children, onClick, onContextMenu, className, blockStyle, selected }: {
+  allocId: string; children: React.ReactNode;
+  onClick?: (e: React.MouseEvent) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  className?: string;
+  blockStyle?: React.CSSProperties;
+  selected?: boolean;
+}) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: `alloc-${allocId}` });
-  const style: React.CSSProperties = transform ? {
-    transform: `translate3d(${transform.x}px, 0, 0)`,
-    zIndex: isDragging ? 40 : undefined,
-    opacity: isDragging ? 0.7 : 1,
+  const combinedStyle: React.CSSProperties = {
+    ...blockStyle,
+    ...(transform ? {
+      transform: `translate3d(${transform.x}px, 0, 0)`,
+      zIndex: 40,
+      opacity: 0.7,
+    } : {}),
     cursor: 'grab',
-  } : { cursor: 'grab' };
+  };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <div
+      ref={setNodeRef}
+      style={combinedStyle}
+      className={`${className || ''} ${isDragging ? 'shadow-lg' : ''} ${selected ? 'ring-2 ring-white ring-offset-1' : ''}`}
+      {...attributes}
+      {...listeners}
+      onClick={(e) => { if (!isDragging && onClick) { e.stopPropagation(); onClick(e); } }}
+      onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); e.stopPropagation(); onContextMenu(e); } }}
+    >
       {children}
     </div>
   );
@@ -160,7 +178,7 @@ function DraggableAllocBlock({ allocId, children }: { allocId: string; children:
 // ── Sortable Project Row ─────────────────────────────────────────────────────
 
 function SortableProjectRow({
-  project, weeks, allocations, onCellClick, onContextMenu, onEditProject, colClass, viewRange: _viewRange, onAllocDrop, planVsActualByProject,
+  project, weeks, allocations, onCellClick, onContextMenu, onEditProject, colClass, viewRange: _viewRange, onAllocDrop, planVsActualByProject, selectedAllocIds, onToggleSelect,
 }: {
   project: CapProject;
   weeks: Date[];
@@ -172,6 +190,8 @@ function SortableProjectRow({
   onContextMenu: (e: React.MouseEvent, alloc: Allocation) => void;
   onAllocDrop: (allocId: string, targetWeekStr: string) => void;
   planVsActualByProject: Record<string, Record<string, number>>;
+  selectedAllocIds: Set<string>;
+  onToggleSelect: (allocId: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: project.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
@@ -263,52 +283,63 @@ function SortableProjectRow({
             const projectActualMin = planVsActualByProject[project.id]?.[weekStr] || 0;
             return (
               <DroppableWeekCell key={weekStr} id={`drop-${project.id}-${weekStr}`} colClass={colClass} measureRef={idx === 0 ? cellMeasureRef : undefined}>
+                {/* Klick-Hintergrund: nur für leere Zellen → Dialog öffnen */}
                 <div
                   className="absolute inset-0 cursor-pointer"
-                  onClick={(e) => {
-                    if (firstAlloc) {
-                      e.preventDefault();
-                      onContextMenu(e, firstAlloc);
-                    } else {
-                      onCellClick(project.id, weekStr);
-                    }
-                  }}
-                  onContextMenu={firstAlloc ? (e) => { e.preventDefault(); onContextMenu(e, firstAlloc); } : undefined}
+                  onClick={() => { if (!firstAlloc) onCellClick(project.id, weekStr); }}
                   data-testid={`capacity-cell-${project.id}-${weekStr}`}
                 />
                 {/* Wochen-Allocations als draggable Block */}
-                {weekOnlyAllocs.length > 0 && (
-                  <DraggableAllocBlock allocId={weekOnlyAllocs[0].id}>
-                    <div
+                {weekOnlyAllocs.length > 0 && (() => {
+                  const isSeries = !!weekOnlyAllocs[0].series_id;
+                  return (
+                    <DraggableAllocBlock
+                      allocId={weekOnlyAllocs[0].id}
                       className={`absolute inset-0.5 rounded-md flex items-center justify-center font-medium text-white transition-all hover:scale-[1.02] ${cellWidth < 40 ? 'text-[8px]' : cellWidth < 60 ? 'text-[9px]' : 'text-xs'}`}
-                      style={{
+                      blockStyle={{
                         backgroundColor: project.status === 'vorläufig' ? `${project.color}80` : project.color,
                         border: project.status === 'vorläufig' ? `2px dashed ${project.color}` : 'none',
                       }}
-                      title={minutesToDisplay(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0))}
+                      selected={selectedAllocIds.has(weekOnlyAllocs[0].id)}
+                      onClick={(e) => {
+                        if (e.ctrlKey || e.metaKey) { onToggleSelect(weekOnlyAllocs[0].id); }
+                        else { onContextMenu(e, weekOnlyAllocs[0]); }
+                      }}
+                      onContextMenu={(e) => onContextMenu(e, weekOnlyAllocs[0])}
                     >
-                      {cellWidth >= 40 ? (cellWidth >= 60 ? minutesToDisplay(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0)) : `${Math.round(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0) / 60)}h`) : ''}
-                    </div>
-                  </DraggableAllocBlock>
-                )}
+                      <span title={minutesToDisplay(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0))}>
+                        {cellWidth >= 40 ? (cellWidth >= 60 ? minutesToDisplay(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0)) : `${Math.round(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0) / 60)}h`) : ''}
+                      </span>
+                      {isSeries && <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-3 h-[3px] rounded-full bg-white/60" />}
+                    </DraggableAllocBlock>
+                  );
+                })()}
 
                 {/* Tages-Allocations als schmale positionierte Blöcke */}
                 {dayAllocs.length > 0 && showDaySlots && dayAllocs.map(da => {
                   const slotStyle = getDaySlotStyle(da.week_start);
                   return (
-                    <DraggableAllocBlock key={da.id} allocId={da.id}>
-                      <div
-                        className="absolute top-0.5 bottom-0.5 rounded-sm flex items-center justify-center font-medium text-white text-[8px]"
-                        style={{
-                          left: slotStyle.left,
-                          width: slotStyle.width,
-                          backgroundColor: project.status === 'vorläufig' ? `${project.color}80` : project.color,
-                          border: `1px solid ${project.color}`,
-                        }}
-                        title={`${new Date(da.week_start + 'T00:00:00').toLocaleDateString('de-CH', { weekday: 'short' })}: ${minutesToDisplay(da.minutes)}`}
-                      >
+                    <DraggableAllocBlock
+                      key={da.id}
+                      allocId={da.id}
+                      className="absolute top-0.5 bottom-0.5 rounded-sm flex items-center justify-center font-medium text-white text-[8px]"
+                      blockStyle={{
+                        left: slotStyle.left,
+                        width: slotStyle.width,
+                        backgroundColor: project.status === 'vorläufig' ? `${project.color}80` : project.color,
+                        border: `1px solid ${project.color}`,
+                      }}
+                      selected={selectedAllocIds.has(da.id)}
+                      onClick={(e) => {
+                        if (e.ctrlKey || e.metaKey) { onToggleSelect(da.id); }
+                        else { onContextMenu(e, da); }
+                      }}
+                      onContextMenu={(e) => onContextMenu(e, da)}
+                    >
+                      <span title={`${new Date(da.week_start + 'T00:00:00').toLocaleDateString('de-CH', { weekday: 'short' })}: ${minutesToDisplay(da.minutes)}`}>
                         {cellWidth >= 60 ? `${Math.round(da.minutes / 60)}` : ''}
-                      </div>
+                      </span>
+                      {!!da.series_id && <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-2 h-[2px] rounded-full bg-white/60" />}
                     </DraggableAllocBlock>
                   );
                 })}
@@ -323,14 +354,18 @@ function SortableProjectRow({
                 )}
 
                 {/* Inline Ist-Anzeige für vergangene Wochen */}
-                {isPast && totalMin > 0 && projectActualMin > 0 && (
+                {isPast && projectActualMin > 0 && (
                   <div
                     className={`absolute bottom-0 left-0.5 right-0.5 h-[3px] rounded-b-sm ${
+                      totalMin === 0 ? 'bg-blue-400' :
                       projectActualMin > totalMin * 1.05 ? 'bg-red-500' :
                       projectActualMin < totalMin * 0.8 ? 'bg-amber-400' :
                       'bg-emerald-500'
                     }`}
-                    title={`Effektiv: ${minutesToDisplay(projectActualMin)} / Geplant: ${minutesToDisplay(totalMin)}`}
+                    title={totalMin > 0
+                      ? `Effektiv: ${minutesToDisplay(projectActualMin)} / Geplant: ${minutesToDisplay(totalMin)}`
+                      : `Effektiv: ${minutesToDisplay(projectActualMin)} (ungeplant)`
+                    }
                   />
                 )}
 
@@ -1044,45 +1079,26 @@ function ProjectDialog({
 // ── Context Menu ─────────────────────────────────────────────────────────────
 
 function ContextMenu({
-  x, y, alloc, onClose, onDelete, onDeleteSeries, onDeleteFrom, onShift, onShiftSingle,
+  alloc, onAction,
 }: {
-  x: number; y: number;
   alloc: Allocation;
-  onClose: () => void;
-  onDelete: () => void;
-  onDeleteSeries: () => void;
-  onDeleteFrom: () => void;
-  onShift: (weeks: number) => void;
-  onShiftSingle: (allocId: string, weeks: number) => void;
+  onAction: (action: 'delete' | 'delete_series' | 'delete_from' | 'shift' | 'shift_single', weeks?: number) => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [onClose]);
-
   const hasSeries = !!alloc.series_id;
+  const btn = "flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 whitespace-nowrap";
+  const btnRed = "flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 whitespace-nowrap";
 
   return (
-    <div
-      ref={ref}
-      className="fixed z-50 min-w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-800"
-      style={{ left: x, top: y }}
-      data-testid="capacity-context-menu"
-    >
-      <button onClick={onDelete} className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
+    <>
+      <button onClick={() => onAction('delete')} className={btn}>
         <Trash2 className="h-4 w-4" /> Zuweisung löschen
       </button>
       {hasSeries && (
         <>
-          <button onClick={onDeleteSeries} className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20">
+          <button onClick={() => onAction('delete_series')} className={btnRed}>
             <Trash2 className="h-4 w-4" /> Ganze Serie löschen
           </button>
-          <button onClick={onDeleteFrom} className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
+          <button onClick={() => onAction('delete_from')} className={btn}>
             <Trash2 className="h-4 w-4" /> Serie ab hier löschen
           </button>
         </>
@@ -1090,24 +1106,24 @@ function ContextMenu({
       <hr className="my-1 border-gray-200 dark:border-gray-700" />
       {hasSeries ? (
         <>
-          <button onClick={() => onShift(1)} className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
-            <ArrowRightLeft className="h-4 w-4" /> Serie +1 Woche verschieben
+          <button onClick={() => onAction('shift', 1)} className={btn}>
+            <ArrowRightLeft className="h-4 w-4" /> Serie +1 Woche
           </button>
-          <button onClick={() => onShift(-1)} className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
-            <ArrowRightLeft className="h-4 w-4" /> Serie −1 Woche verschieben
+          <button onClick={() => onAction('shift', -1)} className={btn}>
+            <ArrowRightLeft className="h-4 w-4" /> Serie −1 Woche
           </button>
         </>
       ) : (
         <>
-          <button onClick={() => onShiftSingle(alloc.id, 1)} className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
-            <ArrowRightLeft className="h-4 w-4" /> +1 Woche verschieben
+          <button onClick={() => onAction('shift_single', 1)} className={btn}>
+            <ArrowRightLeft className="h-4 w-4" /> +1 Woche
           </button>
-          <button onClick={() => onShiftSingle(alloc.id, -1)} className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700">
-            <ArrowRightLeft className="h-4 w-4" /> −1 Woche verschieben
+          <button onClick={() => onAction('shift_single', -1)} className={btn}>
+            <ArrowRightLeft className="h-4 w-4" /> −1 Woche
           </button>
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -1128,6 +1144,38 @@ export function CapacityPage() {
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const [appLogoUrl, setAppLogoUrl] = useState<string | null>(null);
+
+  // Multi-Select
+  const [selectedAllocIds, setSelectedAllocIds] = useState<Set<string>>(new Set());
+
+  const handleToggleSelect = useCallback((allocId: string) => {
+    setSelectedAllocIds(prev => {
+      const next = new Set(prev);
+      if (next.has(allocId)) next.delete(allocId); else next.add(allocId);
+      return next;
+    });
+  }, []);
+
+  const handleBulkDelete = async () => {
+    if (selectedAllocIds.size === 0) return;
+    await Promise.all([...selectedAllocIds].map(id => api.delete(`/api/capacity/allocations/${id}`)));
+    setSelectedAllocIds(new Set());
+    fetchData();
+  };
+
+  const handleBulkShift = async (weeks: number) => {
+    if (selectedAllocIds.size === 0) return;
+    const updates = [...selectedAllocIds].map(id => {
+      const alloc = allocations.find(a => a.id === id);
+      if (!alloc) return null;
+      const d = new Date(alloc.week_start + 'T00:00:00');
+      const shifted = new Date(d.getFullYear(), d.getMonth(), d.getDate() + weeks * 7);
+      return api.patch(`/api/capacity/allocations/${id}`, { week_start: toIso(shifted) });
+    }).filter(Boolean);
+    await Promise.all(updates);
+    setSelectedAllocIds(new Set());
+    fetchData();
+  };
 
   // Dialogs
   const [allocDialog, setAllocDialog] = useState<{ open: boolean; projectId: string; weekStart: string }>({ open: false, projectId: '', weekStart: '' });
@@ -1250,9 +1298,13 @@ export function CapacityPage() {
   };
 
   const handleBulkAction = async (action: string, seriesId: string, fromWeek?: string, weeks?: number) => {
-    await api.post('/api/capacity/allocations/bulk', {
-      action, series_id: seriesId, from_week: fromWeek, weeks,
-    });
+    try {
+      await api.post('/api/capacity/allocations/bulk', {
+        action, series_id: seriesId, from_week: fromWeek, weeks,
+      });
+    } catch (err) {
+      console.error('Bulk-Aktion fehlgeschlagen:', err);
+    }
     setContextMenu(null);
     fetchData();
   };
@@ -1262,7 +1314,11 @@ export function CapacityPage() {
     if (!alloc) return;
     const d = new Date(alloc.week_start + 'T00:00:00');
     const shifted = new Date(d.getFullYear(), d.getMonth(), d.getDate() + weeks * 7);
-    await api.patch(`/api/capacity/allocations/${allocId}`, { week_start: toIso(shifted) });
+    try {
+      await api.patch(`/api/capacity/allocations/${allocId}`, { week_start: toIso(shifted) });
+    } catch (err) {
+      console.error('Verschieben fehlgeschlagen:', err);
+    }
     setContextMenu(null);
     fetchData();
   };
@@ -1517,7 +1573,7 @@ export function CapacityPage() {
                     <div
                       key={weekStr}
                       className={`relative ${getColClass(viewRange)} flex flex-col items-center justify-center border-r border-white/50 dark:border-gray-900/50 ${bgColor} py-1`}
-                      title={`${formatWeek(week)} — ${Math.round(util)}% (${minutesToDisplay(plannedMin)} geplant${isPast && actualMin > 0 ? `, ${minutesToDisplay(actualMin)} effektiv` : ''} / ${minutesToDisplay(s?.available_minutes || 2400)})`}
+                      title={`${formatWeek(week)} — ${Math.round(util)}% Auslastung\nGeplant: ${minutesToDisplay(plannedMin)} / ${minutesToDisplay(s?.available_minutes || 2400)}${isPast && actualMin > 0 ? `\nEffektiv (Toggl): ${minutesToDisplay(actualMin)}` : ''}`}
                     >
                       {util > 100 && (
                         <div className="absolute inset-x-0 top-0 h-[3px] bg-red-600 dark:bg-red-500" />
@@ -1582,6 +1638,41 @@ export function CapacityPage() {
             </div>
           )}
 
+          {/* Multi-Select Action-Bar */}
+          {selectedAllocIds.size > 0 && (
+            <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-indigo-300 bg-indigo-50 px-4 py-2 dark:border-indigo-700 dark:bg-indigo-900/40">
+              <span className="text-sm font-semibold text-indigo-700 dark:text-indigo-300">
+                {selectedAllocIds.size} ausgewählt
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => handleBulkShift(-1)}
+                  className="rounded-md bg-white px-2.5 py-1 text-xs font-medium text-gray-700 shadow-sm ring-1 ring-gray-300 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-gray-600"
+                >
+                  −1 Woche
+                </button>
+                <button
+                  onClick={() => handleBulkShift(1)}
+                  className="rounded-md bg-white px-2.5 py-1 text-xs font-medium text-gray-700 shadow-sm ring-1 ring-gray-300 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:ring-gray-600"
+                >
+                  +1 Woche
+                </button>
+              </div>
+              <button
+                onClick={handleBulkDelete}
+                className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-700"
+              >
+                Löschen
+              </button>
+              <button
+                onClick={() => setSelectedAllocIds(new Set())}
+                className="ml-auto text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              >
+                Auswahl aufheben
+              </button>
+            </div>
+          )}
+
           {/* Projekte */}
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={projects.map(p => p.id)} strategy={verticalListSortingStrategy}>
@@ -1601,6 +1692,8 @@ export function CapacityPage() {
                   viewRange={viewRange}
                   onAllocDrop={handleAllocDrop}
                   planVsActualByProject={planVsActualByProject}
+                  selectedAllocIds={selectedAllocIds}
+                  onToggleSelect={handleToggleSelect}
                 />
               ))}
             </SortableContext>
@@ -1638,19 +1731,32 @@ export function CapacityPage() {
       />
 
       {/* Context Menu */}
-      {contextMenu && (
-        <ContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          alloc={contextMenu.alloc}
-          onClose={() => setContextMenu(null)}
-          onDelete={() => handleDeleteAllocation(contextMenu.alloc.id)}
-          onDeleteSeries={() => handleBulkAction('delete', contextMenu.alloc.series_id!)}
-          onDeleteFrom={() => handleBulkAction('delete_from', contextMenu.alloc.series_id!, contextMenu.alloc.week_start)}
-          onShift={(w) => handleBulkAction('shift', contextMenu.alloc.series_id!, undefined, w)}
-          onShiftSingle={handleShiftSingle}
-        />
-      )}
+      {contextMenu && (() => {
+        const cmAlloc = contextMenu.alloc;
+        const close = () => setContextMenu(null);
+        const act = async (fn: () => Promise<void>) => { close(); await fn(); };
+        return (
+          <>
+            <div className="fixed inset-0 z-40" onClick={close} />
+            <div
+              className="fixed z-50 min-w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-800"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              data-testid="capacity-context-menu"
+            >
+              <ContextMenu
+                alloc={cmAlloc}
+                onAction={(action, weeks) => {
+                  if (action === 'delete') act(() => handleDeleteAllocation(cmAlloc.id));
+                  else if (action === 'delete_series' && cmAlloc.series_id) act(() => handleBulkAction('delete', cmAlloc.series_id!));
+                  else if (action === 'delete_from' && cmAlloc.series_id) act(() => handleBulkAction('delete_from', cmAlloc.series_id!, cmAlloc.week_start));
+                  else if (action === 'shift' && cmAlloc.series_id && weeks != null) act(() => handleBulkAction('shift', cmAlloc.series_id!, undefined, weeks));
+                  else if (action === 'shift_single' && weeks != null) act(() => handleShiftSingle(cmAlloc.id, weeks));
+                }}
+              />
+            </div>
+          </>
+        );
+      })()}
 
       {/* Ferien-Dialog */}
       {timeOffDialog && (
