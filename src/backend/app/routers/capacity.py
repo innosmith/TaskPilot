@@ -16,7 +16,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from cachetools import TTLCache
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -289,9 +289,9 @@ async def delete_capacity_project(
         await session.commit()
 
 
-@router.patch("/projects/reorder")
+@router.post("/projects/reorder")
 async def reorder_projects(
-    items: list[ReorderItem],
+    items: list[ReorderItem] = Body(...),
     user: User = Depends(require_role("owner")),
 ):
     async with async_session() as session:
@@ -679,6 +679,12 @@ async def get_plan_vs_actual(
     d_to = date.fromisoformat(to_date)
 
     async with async_session() as session:
+        # Alle Capacity-Projekte mit Toggl-Verknüpfung laden
+        proj_stmt = select(CapacityProject).where(CapacityProject.toggl_project_id.isnot(None))
+        proj_result = await session.execute(proj_stmt)
+        toggl_projects = proj_result.scalars().all()
+
+        # Allocations im Zeitraum laden
         stmt = (
             select(CapacityAllocation, CapacityProject)
             .join(CapacityProject)
@@ -692,12 +698,17 @@ async def get_plan_vs_actual(
     # Plan-Daten aggregieren
     plan_by_project_week: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     project_names: dict[int, str] = {}
+    all_toggl_project_ids: list[int] = []
+
+    for proj in toggl_projects:
+        project_names[proj.toggl_project_id] = proj.name
+        all_toggl_project_ids.append(proj.toggl_project_id)
+
     for alloc, proj in rows:
         toggl_id = proj.toggl_project_id
         plan_by_project_week[toggl_id][alloc.week_start.isoformat()] += alloc.minutes
-        project_names[toggl_id] = proj.name
 
-    if not plan_by_project_week:
+    if not all_toggl_project_ids:
         return {"projects": [], "toggl_data_date": None}
 
     # Toggl-Daten (24h-Cache)
@@ -708,12 +719,11 @@ async def get_plan_vs_actual(
         client = _get_toggl_client(user)
         if client:
             try:
-                toggl_project_ids = list(plan_by_project_week.keys())
                 entries = await client.search_time_entries(
                     workspace_id=None,
                     start_date=from_date,
                     end_date=to_date,
-                    project_ids=toggl_project_ids,
+                    project_ids=all_toggl_project_ids,
                 )
                 toggl_data = _aggregate_toggl_weekly(entries, d_from, d_to)
                 _toggl_cache[cache_key] = toggl_data
@@ -723,21 +733,27 @@ async def get_plan_vs_actual(
         else:
             toggl_data = {}
 
-    # Zusammenführen
+    # Zusammenführen: Plan + Ist (auch Wochen nur mit Ist-Daten)
     projects_result = []
-    for toggl_id, weeks in plan_by_project_week.items():
+    all_toggl_ids = set(plan_by_project_week.keys())
+    if toggl_data:
+        all_toggl_ids.update(toggl_data.keys())
+
+    for toggl_id in all_toggl_ids:
+        planned_weeks = plan_by_project_week.get(toggl_id, {})
         actual_weeks = toggl_data.get(toggl_id, {}) if toggl_data else {}
+        all_week_strs = sorted(set(list(planned_weeks.keys()) + list(actual_weeks.keys())))
+
         project_entry = {
             "toggl_project_id": toggl_id,
             "name": project_names.get(toggl_id, ""),
             "weeks": [],
         }
-        for week_str, planned_min in sorted(weeks.items()):
-            actual_min = actual_weeks.get(week_str, 0)
+        for week_str in all_week_strs:
             project_entry["weeks"].append({
                 "week_start": week_str,
-                "planned_minutes": planned_min,
-                "actual_minutes": actual_min,
+                "planned_minutes": planned_weeks.get(week_str, 0),
+                "actual_minutes": actual_weeks.get(week_str, 0),
             })
         projects_result.append(project_entry)
 
@@ -886,25 +902,47 @@ async def list_available_projects(user: User = Depends(require_role("owner"))):
 def _aggregate_toggl_weekly(
     entries: list[dict], d_from: date, d_to: date
 ) -> dict[int, dict[str, int]]:
-    """Aggregiert Toggl-Zeiteinträge pro Projekt pro ISO-Woche (Minuten)."""
+    """Aggregiert Toggl-Zeiteinträge pro Projekt pro ISO-Woche (Minuten).
+
+    Unterstützt zwei Formate:
+    - Flaches Format: entry hat 'seconds' und 'start' direkt
+    - Search-Format: entry hat 'time_entries' als Sub-Array mit 'seconds'/'start'
+    """
     result: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     for entry in entries:
         project_id = entry.get("project_id")
         if not project_id:
             continue
-        seconds = entry.get("seconds") or entry.get("dur") or entry.get("duration") or 0
-        if seconds <= 0:
-            continue
-        start_str = entry.get("start") or entry.get("at") or ""
-        if not start_str:
-            continue
-        try:
-            entry_date = date.fromisoformat(start_str[:10])
-        except (ValueError, TypeError):
-            continue
-        week_monday = _monday_of(entry_date)
-        result[project_id][week_monday.isoformat()] += int(seconds / 60)
+
+        time_entries = entry.get("time_entries")
+        if time_entries and isinstance(time_entries, list):
+            for te in time_entries:
+                seconds = te.get("seconds") or te.get("duration") or 0
+                if seconds <= 0:
+                    continue
+                start_str = te.get("start") or te.get("at") or ""
+                if not start_str:
+                    continue
+                try:
+                    entry_date = date.fromisoformat(start_str[:10])
+                except (ValueError, TypeError):
+                    continue
+                week_monday = _monday_of(entry_date)
+                result[project_id][week_monday.isoformat()] += int(seconds / 60)
+        else:
+            seconds = entry.get("seconds") or entry.get("dur") or entry.get("duration") or 0
+            if seconds <= 0:
+                continue
+            start_str = entry.get("start") or entry.get("at") or ""
+            if not start_str:
+                continue
+            try:
+                entry_date = date.fromisoformat(start_str[:10])
+            except (ValueError, TypeError):
+                continue
+            week_monday = _monday_of(entry_date)
+            result[project_id][week_monday.isoformat()] += int(seconds / 60)
 
     return dict(result)
 

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Plus, Trash2, ArrowRightLeft,
-  ChevronLeft, ChevronRight, Calendar, X, GripVertical, Palmtree,
+  ChevronLeft, ChevronRight, Calendar, X, GripVertical, Palmtree, Unlink,
 } from 'lucide-react';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent, useDroppable, useDraggable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -141,13 +141,14 @@ function DroppableWeekCell({ id, colClass, measureRef, children }: {
   );
 }
 
-function DraggableAllocBlock({ allocId, children, onClick, onContextMenu, className, blockStyle, selected }: {
+function DraggableAllocBlock({ allocId, children, onClick, onContextMenu, className, blockStyle, selected, title }: {
   allocId: string; children: React.ReactNode;
   onClick?: (e: React.MouseEvent) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   className?: string;
   blockStyle?: React.CSSProperties;
   selected?: boolean;
+  title?: string;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: `alloc-${allocId}` });
   const combinedStyle: React.CSSProperties = {
@@ -167,6 +168,7 @@ function DraggableAllocBlock({ allocId, children, onClick, onContextMenu, classN
       className={`${className || ''} ${isDragging ? 'shadow-lg' : ''} ${selected ? 'ring-2 ring-white ring-offset-1' : ''}`}
       {...attributes}
       {...listeners}
+      title={title}
       onClick={(e) => { if (!isDragging && onClick) { e.stopPropagation(); onClick(e); } }}
       onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); e.stopPropagation(); onContextMenu(e); } }}
     >
@@ -178,7 +180,7 @@ function DraggableAllocBlock({ allocId, children, onClick, onContextMenu, classN
 // ── Sortable Project Row ─────────────────────────────────────────────────────
 
 function SortableProjectRow({
-  project, weeks, allocations, onCellClick, onContextMenu, onEditProject, colClass, viewRange: _viewRange, onAllocDrop, planVsActualByProject, selectedAllocIds, onToggleSelect,
+  project, weeks, allocations, onCellClick, onContextMenu, onEditProject, colClass, viewRange: _viewRange, onAllocDrop, planVsActualByProject, selectedAllocIds, onToggleSelect, timeOffWeekMap,
 }: {
   project: CapProject;
   weeks: Date[];
@@ -192,6 +194,7 @@ function SortableProjectRow({
   planVsActualByProject: Record<string, Record<string, number>>;
   selectedAllocIds: Set<string>;
   onToggleSelect: (allocId: string) => void;
+  timeOffWeekMap: Record<string, number>;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: project.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
@@ -234,13 +237,10 @@ function SortableProjectRow({
       data-testid={`capacity-project-row-${project.id}`}
     >
       {/* Projekt-Label */}
-      <div className="flex w-56 min-w-56 shrink-0 items-center gap-2 border-r border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
-        <button {...attributes} {...listeners} className="cursor-grab text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" data-testid="capacity-project-drag">
-          <GripVertical className="h-4 w-4" />
-        </button>
+      <div className="flex w-64 min-w-64 shrink-0 items-center gap-2 border-r border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
         <button
           onClick={() => onEditProject(project)}
-          className="flex flex-1 items-center gap-2 min-w-0 rounded-md px-1 py-0.5 -mx-1 transition hover:bg-gray-100 dark:hover:bg-gray-800"
+          className="flex flex-1 items-center gap-2 min-w-0 rounded-md px-1 py-0.5 transition hover:bg-gray-100 dark:hover:bg-gray-800"
           data-testid="capacity-project-edit-btn"
         >
           <ProjectIcon iconUrl={project.icon_url} iconEmoji={project.icon_emoji} color={project.color} size={20} />
@@ -252,10 +252,18 @@ function SortableProjectRow({
           </div>
         </button>
         {project.status === 'vorläufig' && (
-          <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+          <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
             vorl.
           </span>
         )}
+        {!project.toggl_project_id && (
+          <span title="Kein Toggl-Projekt verknüpft — Ist-Vergleich nicht möglich" className="text-gray-400 dark:text-gray-500">
+            <Unlink className="h-3 w-3" />
+          </span>
+        )}
+        <button {...attributes} {...listeners} className="cursor-grab text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" data-testid="capacity-project-drag">
+          <GripVertical className="h-4 w-4" />
+        </button>
       </div>
 
       {/* Wochen-Zellen mit Allocation-DnD */}
@@ -292,28 +300,54 @@ function SortableProjectRow({
                 {/* Wochen-Allocations als draggable Block */}
                 {weekOnlyAllocs.length > 0 && (() => {
                   const isSeries = !!weekOnlyAllocs[0].series_id;
+                  const plannedMin = weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0);
+                  const hasActual = isPast && projectActualMin > 0;
+                  const actualColor = hasActual
+                    ? (totalMin === 0 ? 'bg-blue-500' : projectActualMin > totalMin * 1.1 ? 'bg-red-500' : projectActualMin < totalMin * 0.5 ? 'bg-amber-400' : 'bg-emerald-500')
+                    : '';
+                  const blockTitle = hasActual
+                    ? (totalMin > 0 ? `Geplant: ${minutesToDisplay(plannedMin)} / Effektiv: ${minutesToDisplay(projectActualMin)}` : `Effektiv: ${minutesToDisplay(projectActualMin)} (ungeplant)`)
+                    : minutesToDisplay(plannedMin);
                   return (
                     <DraggableAllocBlock
                       allocId={weekOnlyAllocs[0].id}
-                      className={`absolute inset-0.5 rounded-md flex items-center justify-center font-medium text-white transition-all hover:scale-[1.02] ${cellWidth < 40 ? 'text-[8px]' : cellWidth < 60 ? 'text-[9px]' : 'text-xs'}`}
+                      className={`absolute inset-0.5 rounded-md flex flex-col items-center justify-center font-medium text-white transition-all hover:scale-[1.02] ${cellWidth < 40 ? 'text-[8px]' : cellWidth < 60 ? 'text-[9px]' : 'text-xs'}`}
                       blockStyle={{
                         backgroundColor: project.status === 'vorläufig' ? `${project.color}80` : project.color,
                         border: project.status === 'vorläufig' ? `2px dashed ${project.color}` : 'none',
                       }}
                       selected={selectedAllocIds.has(weekOnlyAllocs[0].id)}
+                      title={blockTitle}
                       onClick={(e) => {
                         if (e.ctrlKey || e.metaKey) { onToggleSelect(weekOnlyAllocs[0].id); }
                         else { onContextMenu(e, weekOnlyAllocs[0]); }
                       }}
                       onContextMenu={(e) => onContextMenu(e, weekOnlyAllocs[0])}
                     >
-                      <span title={minutesToDisplay(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0))}>
-                        {cellWidth >= 40 ? (cellWidth >= 60 ? minutesToDisplay(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0)) : `${Math.round(weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0) / 60)}h`) : ''}
+                      <span>
+                        {cellWidth >= 40 ? (cellWidth >= 60 ? minutesToDisplay(plannedMin) : `${Math.round(plannedMin / 60)}h`) : ''}
                       </span>
-                      {isSeries && <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-3 h-[3px] rounded-full bg-white/60" />}
+                      {hasActual && (
+                        <span className={`absolute bottom-0 left-0 right-0 h-[35%] rounded-b-md ${actualColor} flex items-center justify-center`} title={blockTitle}>
+                          {cellWidth >= 60 && <span className="text-[9px] font-semibold text-white/90 drop-shadow-sm">{minutesToDisplay(projectActualMin)}</span>}
+                          {cellWidth >= 40 && cellWidth < 60 && <span className="text-[8px] font-semibold text-white/90">{Math.round(projectActualMin / 60)}h</span>}
+                        </span>
+                      )}
+                      {isSeries && !hasActual && <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-3 h-[3px] rounded-full bg-white/60" />}
                     </DraggableAllocBlock>
                   );
                 })()}
+
+                {/* Ungeplante Ist-Arbeit (kein Plan-Block, aber Toggl-Daten vorhanden) */}
+                {weekOnlyAllocs.length === 0 && dayAllocs.length === 0 && isPast && projectActualMin > 0 && (
+                  <div
+                    className="absolute inset-0.5 rounded-md flex items-center justify-center bg-blue-500/30 border border-blue-400/50 border-dashed"
+                    title={`Effektiv: ${minutesToDisplay(projectActualMin)} (ungeplant)`}
+                  >
+                    {cellWidth >= 60 && <span className="text-[9px] font-medium text-blue-700 dark:text-blue-300">{minutesToDisplay(projectActualMin)}</span>}
+                    {cellWidth >= 40 && cellWidth < 60 && <span className="text-[8px] font-medium text-blue-700 dark:text-blue-300">{Math.round(projectActualMin / 60)}h</span>}
+                  </div>
+                )}
 
                 {/* Tages-Allocations als schmale positionierte Blöcke */}
                 {dayAllocs.length > 0 && showDaySlots && dayAllocs.map(da => {
@@ -330,13 +364,14 @@ function SortableProjectRow({
                         border: `1px solid ${project.color}`,
                       }}
                       selected={selectedAllocIds.has(da.id)}
+                      title={`${new Date(da.week_start + 'T00:00:00').toLocaleDateString('de-CH', { weekday: 'short', day: 'numeric', month: 'short' })}: ${minutesToDisplay(da.minutes)}`}
                       onClick={(e) => {
                         if (e.ctrlKey || e.metaKey) { onToggleSelect(da.id); }
                         else { onContextMenu(e, da); }
                       }}
                       onContextMenu={(e) => onContextMenu(e, da)}
                     >
-                      <span title={`${new Date(da.week_start + 'T00:00:00').toLocaleDateString('de-CH', { weekday: 'short' })}: ${minutesToDisplay(da.minutes)}`}>
+                      <span>
                         {cellWidth >= 60 ? `${Math.round(da.minutes / 60)}` : ''}
                       </span>
                       {!!da.series_id && <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-2 h-[2px] rounded-full bg-white/60" />}
@@ -353,25 +388,30 @@ function SortableProjectRow({
                   />
                 )}
 
-                {/* Inline Ist-Anzeige für vergangene Wochen */}
-                {isPast && projectActualMin > 0 && (
-                  <div
-                    className={`absolute bottom-0 left-0.5 right-0.5 h-[3px] rounded-b-sm ${
-                      totalMin === 0 ? 'bg-blue-400' :
-                      projectActualMin > totalMin * 1.05 ? 'bg-red-500' :
-                      projectActualMin < totalMin * 0.8 ? 'bg-amber-400' :
-                      'bg-emerald-500'
-                    }`}
-                    title={totalMin > 0
-                      ? `Effektiv: ${minutesToDisplay(projectActualMin)} / Geplant: ${minutesToDisplay(totalMin)}`
-                      : `Effektiv: ${minutesToDisplay(projectActualMin)} (ungeplant)`
-                    }
-                  />
-                )}
-
                 {todayOffset !== null && (
                   <div className="absolute top-0 bottom-0 w-[2px] bg-red-500 dark:bg-red-400 z-10 pointer-events-none" style={{ left: `${todayOffset}%` }} />
                 )}
+
+                {/* Ferien-Overlay */}
+                {(() => {
+                  const hoursOff = timeOffWeekMap[weekStr] || 0;
+                  if (hoursOff <= 0) return null;
+                  if (hoursOff >= 40) {
+                    return (
+                      <div
+                        className="absolute inset-0 z-20 pointer-events-none rounded-md bg-black/30 dark:bg-black/40"
+                        style={{ backgroundImage: 'repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(0,0,0,0.15) 4px, rgba(0,0,0,0.15) 8px)' }}
+                        title={`Ferien: ${hoursOff}h — keine Kapazität verfügbar`}
+                      />
+                    );
+                  }
+                  return (
+                    <div
+                      className="absolute inset-x-0 top-0 h-1.5 z-20 pointer-events-none bg-amber-500/80 dark:bg-amber-400/70 rounded-t-md"
+                      title={`Ferien: ${hoursOff}h — reduzierte Kapazität`}
+                    />
+                  );
+                })()}
               </DroppableWeekCell>
             );
           })}
@@ -964,7 +1004,7 @@ function ProjectDialog({
                 {colors.map(c => (
                   <button
                     key={c}
-                    onClick={() => { setColor(c); setIconEmoji(''); setIconUrl(''); }}
+                    onClick={() => setColor(c)}
                     className={`h-5 w-5 rounded-full border-2 transition ${color === c && !iconEmoji && !iconUrl ? 'border-gray-800 dark:border-white scale-110' : 'border-transparent'}`}
                     style={{ backgroundColor: c }}
                   />
@@ -1338,7 +1378,12 @@ export function CapacityPage() {
     const reordered = arrayMove(projects, oldIndex, newIndex);
     setProjects(reordered);
     const items = reordered.map((p, i) => ({ id: p.id, sort_order: i }));
-    await api.patch('/api/capacity/projects/reorder', items);
+    try {
+      await api.post('/api/capacity/projects/reorder', items);
+    } catch (err) {
+      console.error('Reihenfolge speichern fehlgeschlagen:', err);
+      fetchData();
+    }
   };
 
   const handleBgSelect = async (url: string | null, _type?: string | null) => {
@@ -1503,7 +1548,7 @@ export function CapacityPage() {
           <div className="sticky top-0 z-20 border-b border-gray-200 bg-white/95 backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
             {/* Wochenlabels */}
             <div className="flex">
-              <div className="flex w-56 min-w-56 shrink-0 items-end border-r border-gray-200 bg-white px-3 pb-1 dark:border-gray-700 dark:bg-gray-900">
+              <div className="flex w-64 min-w-64 shrink-0 items-end border-r border-gray-200 bg-white px-3 pb-1 dark:border-gray-700 dark:bg-gray-900">
                 <span className="text-[10px] font-semibold text-gray-500 uppercase dark:text-gray-400">Woche</span>
               </div>
               <div className="flex flex-1">
@@ -1536,7 +1581,7 @@ export function CapacityPage() {
             </div>
             {/* Auslastungs-Blöcke */}
             <div className="flex">
-              <div className="flex w-56 min-w-56 shrink-0 items-center border-r border-gray-200 bg-white px-3 py-1.5 dark:border-gray-700 dark:bg-gray-900">
+              <div className="flex w-64 min-w-64 shrink-0 items-center border-r border-gray-200 bg-white px-3 py-1.5 dark:border-gray-700 dark:bg-gray-900">
                 <span className="text-[10px] font-semibold text-gray-500 uppercase dark:text-gray-400">Auslastung</span>
               </div>
               <div className="flex flex-1">
@@ -1569,33 +1614,31 @@ export function CapacityPage() {
                     textColor = 'text-red-800 dark:text-red-200';
                   }
 
+                  const availMin = s?.available_minutes || 2400;
+                  const actualPct = availMin > 0 ? Math.round((actualMin / availMin) * 100) : 0;
+                  const actualTextColor = isPast && actualMin > 0
+                    ? (actualMin > plannedMin * 1.1 ? 'text-red-600 dark:text-red-400' : actualMin < plannedMin * 0.5 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400')
+                    : '';
+
                   return (
                     <div
                       key={weekStr}
-                      className={`relative ${getColClass(viewRange)} flex flex-col items-center justify-center border-r border-white/50 dark:border-gray-900/50 ${bgColor} py-1`}
-                      title={`${formatWeek(week)} — ${Math.round(util)}% Auslastung\nGeplant: ${minutesToDisplay(plannedMin)} / ${minutesToDisplay(s?.available_minutes || 2400)}${isPast && actualMin > 0 ? `\nEffektiv (Toggl): ${minutesToDisplay(actualMin)}` : ''}`}
+                      className={`relative ${getColClass(viewRange)} flex flex-col items-center justify-center border-r border-white/50 dark:border-gray-900/50 ${bgColor} py-0.5`}
+                      title={`${formatWeek(week)} — ${Math.round(util)}% Auslastung\nGeplant: ${minutesToDisplay(plannedMin)} / ${minutesToDisplay(availMin)}${isPast && actualMin > 0 ? `\nEffektiv (Toggl): ${minutesToDisplay(actualMin)} (${actualPct}%)` : ''}`}
                     >
                       {util > 100 && (
                         <div className="absolute inset-x-0 top-0 h-[3px] bg-red-600 dark:bg-red-500" />
                       )}
-                      {!isYear && (
-                        <span className={`text-[10px] font-bold leading-tight ${textColor} ${isHalf ? 'text-[9px]' : ''}`}>
-                          {Math.round(util)}%
-                        </span>
-                      )}
-                      {isYear && util > 0 && (
-                        <div
-                          className={`h-2 w-2 rounded-full ${util > 100 ? 'bg-red-500' : util > 85 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                        />
-                      )}
+                      <span className={`text-[10px] font-bold leading-none ${textColor} ${isHalf ? 'text-[9px]' : ''} ${isYear ? 'text-[7px]' : ''}`}>
+                        {Math.round(util)}%
+                      </span>
                       {isPast && actualMin > 0 && !isYear && (
-                        <span className={`text-[8px] leading-tight ${
-                          actualMin > plannedMin * 1.05 ? 'text-red-600 dark:text-red-400' :
-                          actualMin < plannedMin * 0.8 ? 'text-amber-600 dark:text-amber-400' :
-                          'text-emerald-600 dark:text-emerald-400'
-                        }`}>
-                          {Math.round(actualMin / 60)}h
+                        <span className={`text-[9px] font-semibold leading-none mt-0.5 ${actualTextColor} ${isHalf ? 'text-[8px]' : ''}`}>
+                          {isHalf ? `${actualPct}%` : `${actualPct}% Ist`}
                         </span>
+                      )}
+                      {isYear && isPast && actualMin > 0 && (
+                        <div className={`h-1 w-1 rounded-full mt-0.5 ${actualMin > plannedMin * 1.1 ? 'bg-red-500' : actualMin < plannedMin * 0.5 ? 'bg-amber-400' : 'bg-emerald-500'}`} />
                       )}
                       {(() => {
                         const offset = getTodayOffset(week);
@@ -1612,7 +1655,7 @@ export function CapacityPage() {
           {/* Ferien-Zeile */}
           {timeOff.length > 0 && (
             <div className="flex items-stretch border-b border-amber-200 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-900/10">
-              <div className="flex w-56 min-w-56 shrink-0 items-center gap-2 border-r border-gray-200 bg-amber-50 px-3 py-1.5 dark:border-gray-700 dark:bg-amber-900/20">
+              <div className="flex w-64 min-w-64 shrink-0 items-center gap-2 border-r border-gray-200 bg-amber-50 px-3 py-1.5 dark:border-gray-700 dark:bg-amber-900/20">
                 <Palmtree className="h-4 w-4 text-amber-500" />
                 <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Ferien / Frei</span>
               </div>
@@ -1622,11 +1665,18 @@ export function CapacityPage() {
                   const hoursOff = timeOffWeekMap[weekStr] || 0;
                   const todayOffset = getTodayOffset(week);
                   return (
-                    <div key={weekStr} className={`relative flex ${getColClass(viewRange)} items-center justify-center border-r border-amber-100 dark:border-amber-900/30`}>
-                      {hoursOff > 0 && (
-                        <div className={`rounded px-1 py-0.5 text-[9px] font-medium ${hoursOff >= 40 ? 'bg-amber-200 text-amber-800 dark:bg-amber-800/40 dark:text-amber-300' : 'bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400'}`}>
-                          {viewRange === '1y' ? '' : `${hoursOff}h`}
-                        </div>
+                    <div
+                      key={weekStr}
+                      className={`relative flex ${getColClass(viewRange)} items-center justify-center border-r border-amber-100 dark:border-amber-900/30 ${hoursOff > 0 ? (hoursOff >= 40 ? 'bg-amber-300/60 dark:bg-amber-700/40' : 'bg-amber-200/50 dark:bg-amber-800/30') : ''}`}
+                      title={hoursOff > 0 ? `${formatWeek(week)}: ${hoursOff}h frei` : undefined}
+                    >
+                      {hoursOff > 0 && viewRange !== '1y' && (
+                        <span className={`text-[9px] font-medium ${hoursOff >= 40 ? 'text-amber-800 dark:text-amber-300' : 'text-amber-600 dark:text-amber-400'}`}>
+                          {hoursOff}h
+                        </span>
+                      )}
+                      {hoursOff > 0 && viewRange === '1y' && (
+                        <div className={`h-2 w-full rounded-sm ${hoursOff >= 40 ? 'bg-amber-400 dark:bg-amber-500' : 'bg-amber-300 dark:bg-amber-600'}`} />
                       )}
                       {todayOffset !== null && (
                         <div className="absolute top-0 bottom-0 w-[2px] bg-red-500 dark:bg-red-400 z-10 pointer-events-none" style={{ left: `${todayOffset}%` }} />
@@ -1694,6 +1744,7 @@ export function CapacityPage() {
                   planVsActualByProject={planVsActualByProject}
                   selectedAllocIds={selectedAllocIds}
                   onToggleSelect={handleToggleSelect}
+                  timeOffWeekMap={timeOffWeekMap}
                 />
               ))}
             </SortableContext>
@@ -1778,7 +1829,7 @@ export function CapacityPage() {
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Bis (optional)</label>
-                  <input type="date" value={toToDate} onChange={e => setToToDate(e.target.value)}
+                  <input type="date" value={toToDate} min={toFromDate || undefined} onChange={e => setToToDate(e.target.value)}
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
                     data-testid="capacity-timeoff-to" />
                 </div>
