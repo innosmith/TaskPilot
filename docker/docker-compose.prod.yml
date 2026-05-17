@@ -69,6 +69,8 @@ services:
     build:
       context: ../src/frontend
       dockerfile: ../../docker/Dockerfile.frontend
+      args:
+        CACHEBUST: ${CACHEBUST:-1}
     container_name: taskpilot-frontend-prod
     ports:
       - "127.0.0.1:3200:80"

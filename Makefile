@@ -36,7 +36,7 @@ dev: infra ## Dev-Infra starten (Backend+Frontend laufen bare-metal)
 # ── Integration ──────────────────────────────────────────
 
 int: infra ## Integration starten (Full Docker + ClamAV)
-	$(COMPOSE_INT) up -d --build
+	CACHEBUST=$$(date +%s) $(COMPOSE_INT) up -d --build
 
 int-down: ## Integration stoppen (Shared Infra bleibt)
 	$(COMPOSE_INT) down --remove-orphans
@@ -44,7 +44,7 @@ int-down: ## Integration stoppen (Shared Infra bleibt)
 # ── Produktion ───────────────────────────────────────────
 
 prod: ## Produktion starten (Standalone, eigene DB + ClamAV)
-	$(COMPOSE_PROD) up -d --build
+	CACHEBUST=$$(date +%s) $(COMPOSE_PROD) up -d --build
 
 prod-down: ## Produktion stoppen
 	$(COMPOSE_PROD) down

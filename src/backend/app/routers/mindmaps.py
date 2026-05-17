@@ -376,7 +376,6 @@ async def convert_to_tasks(
             project_id=body.project_id,
             board_column_id=body.board_column_id,
             board_position=current_pos,
-            created_by=user.id,
         )
         db.add(task)
         await db.flush()

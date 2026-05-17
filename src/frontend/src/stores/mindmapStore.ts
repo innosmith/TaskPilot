@@ -22,6 +22,7 @@ export interface MindMapNodeData {
   fontWeight?: string;
   icon?: string;
   isCollapsed?: boolean;
+  side?: 'left' | 'right' | 'auto';
   [key: string]: unknown;
 }
 
@@ -45,25 +46,24 @@ interface MindmapState {
   deleteNode: (nodeId: string) => void;
   toggleCollapse: (nodeId: string) => void;
   setSelectedNodeIds: (ids: string[]) => void;
+  clearNodeAndEdgeStyles: () => void;
   markClean: () => void;
 }
 
-const NODE_COLORS = [
-  '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
-  '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1',
-  '#14B8A6', '#E11D48',
-];
-
-function getColorForDepth(depth: number): string {
-  return NODE_COLORS[depth % NODE_COLORS.length];
+function getParentId(nodeId: string, edges: Edge[]): string | null {
+  const parentEdge = edges.find(e => e.target === nodeId);
+  return parentEdge?.source ?? null;
 }
 
-function getNodeDepth(nodeId: string, edges: Edge[], visited = new Set<string>()): number {
-  if (visited.has(nodeId)) return 0;
-  visited.add(nodeId);
-  const parentEdge = edges.find(e => e.target === nodeId);
-  if (!parentEdge) return 0;
-  return 1 + getNodeDepth(parentEdge.source, edges, visited);
+function getChildIds(nodeId: string, edges: Edge[]): string[] {
+  return edges.filter(e => e.source === nodeId).map(e => e.target);
+}
+
+function getSiblingIds(nodeId: string, nodes: Node<MindMapNodeData>[], edges: Edge[]): string[] {
+  const parentId = getParentId(nodeId, edges);
+  if (!parentId) return [];
+  const childIds = getChildIds(parentId, edges);
+  return childIds.filter(id => nodes.some(n => n.id === id));
 }
 
 export const useMindmapStore = create<MindmapState>((set, get) => ({
@@ -71,15 +71,38 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   edges: [],
   selectedNodeIds: [],
   isDirty: false,
-  currentThemeId: 'meister',
+  currentThemeId: 'clean',
 
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
   setCurrentThemeId: (id) => set({ currentThemeId: id }),
 
   onNodesChange: (changes) => {
+    const updated = applyNodeChanges(changes, get().nodes) as Node<MindMapNodeData>[];
+    const root = updated.find(n => n.id === 'root');
+    let currentEdges = get().edges;
+    let edgesChanged = false;
+    if (root) {
+      for (const node of updated) {
+        if (node.id === 'root') continue;
+        const parentEdge = currentEdges.find(e => e.target === node.id);
+        if (parentEdge?.source === 'root') {
+          const newSide = node.position.x < root.position.x ? 'left' : 'right';
+          if (node.data?.side !== newSide) {
+            node.data = { ...node.data, side: newSide };
+            currentEdges = currentEdges.map(e =>
+              e.target === node.id && e.source === 'root'
+                ? { ...e, sourceHandle: newSide }
+                : e
+            );
+            edgesChanged = true;
+          }
+        }
+      }
+    }
     set({
-      nodes: applyNodeChanges(changes, get().nodes) as Node<MindMapNodeData>[],
+      nodes: updated,
+      ...(edgesChanged ? { edges: currentEdges } : {}),
       isDirty: true,
     });
   },
@@ -104,19 +127,40 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     if (!parent) return null;
 
     const newId = nanoid(8);
-    const childCount = edges.filter(e => e.source === parentId).length;
-    const depth = getNodeDepth(parentId, edges) + 1;
+    const isRoot = parentId === 'root';
+
+    let side: 'left' | 'right';
+    if (isRoot) {
+      const existingChildren = edges.filter(e => e.source === 'root');
+      const rightCount = existingChildren.filter(e => {
+        const child = nodes.find(n => n.id === e.target);
+        return child?.data?.side !== 'left';
+      }).length;
+      const leftCount = existingChildren.length - rightCount;
+      side = rightCount <= leftCount ? 'right' : 'left';
+    } else {
+      side = parent.data?.side === 'left' ? 'left' : 'right';
+    }
+
+    const sameParentSameSide = edges
+      .filter(e => e.source === parentId)
+      .filter(e => {
+        const child = nodes.find(n => n.id === e.target);
+        return side === 'left' ? child?.data?.side === 'left' : child?.data?.side !== 'left';
+      }).length;
+
+    const xOffset = side === 'left' ? -250 : 250;
 
     const newNode: Node<MindMapNodeData> = {
       id: newId,
       type: 'mindmapNode',
       position: {
-        x: parent.position.x + 250,
-        y: parent.position.y + childCount * 80 - 40,
+        x: parent.position.x + xOffset,
+        y: parent.position.y + sameParentSameSide * 80 - 40,
       },
       data: {
         label: '',
-        color: getColorForDepth(depth),
+        side,
       },
     };
 
@@ -125,11 +169,11 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       source: parentId,
       target: newId,
       type: 'mindmapEdge',
-      style: { stroke: getColorForDepth(depth), strokeWidth: 2 },
+      ...(isRoot ? { sourceHandle: side } : {}),
     };
 
     set({
-      nodes: [...nodes, newNode],
+      nodes: [...nodes.map(n => ({ ...n, selected: false })), { ...newNode, selected: true }],
       edges: [...edges, newEdge],
       selectedNodeIds: [newId],
       isDirty: true,
@@ -155,7 +199,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   deleteNode: (nodeId) => {
     if (nodeId === 'root') return;
-    const { nodes, edges } = get();
+    const { nodes, edges, selectedNodeIds } = get();
     const descendantIds = new Set<string>();
     const findDescendants = (id: string) => {
       edges.filter(e => e.source === id).forEach(e => {
@@ -169,6 +213,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     set({
       nodes: nodes.filter(n => !descendantIds.has(n.id)),
       edges: edges.filter(e => !descendantIds.has(e.source) && !descendantIds.has(e.target)),
+      selectedNodeIds: selectedNodeIds.filter(id => !descendantIds.has(id)),
       isDirty: true,
     });
   },
@@ -186,5 +231,23 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   },
 
   setSelectedNodeIds: (ids) => set({ selectedNodeIds: ids }),
+
+  clearNodeAndEdgeStyles: () => {
+    const { nodes, edges } = get();
+    set({
+      nodes: nodes.map(n => {
+        const { color, textColor, fontSize, fontFamily, fontWeight, ...restData } = n.data;
+        return { ...n, data: restData as MindMapNodeData };
+      }),
+      edges: edges.map(e => {
+        const { style: _s, ...rest } = e;
+        return rest;
+      }),
+      isDirty: true,
+    });
+  },
+
   markClean: () => set({ isDirty: false }),
 }));
+
+export { getParentId, getChildIds, getSiblingIds };

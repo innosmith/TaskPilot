@@ -11,7 +11,8 @@ import {
   type Node,
 } from '@xyflow/react';
 import { api } from '../api/client';
-import { useMindmapStore } from '../stores/mindmapStore';
+import { useMindmapStore, getParentId, getChildIds, getSiblingIds } from '../stores/mindmapStore';
+import type { MindMapNodeData } from '../stores/mindmapStore';
 import { MindMapNode } from '../components/mindmap/MindMapNode';
 import { MindMapEdge } from '../components/mindmap/MindMapEdge';
 import { MindMapToolbar } from '../components/mindmap/MindMapToolbar';
@@ -34,7 +35,8 @@ function MindMapEditorInner() {
     nodes, edges, isDirty,
     setNodes, setEdges, onNodesChange, onEdgesChange, onConnect,
     addChildNode, addSiblingNode, deleteNode, updateNodeData,
-    setSelectedNodeIds, selectedNodeIds, markClean, setCurrentThemeId: setStoreThemeId,
+    setSelectedNodeIds, selectedNodeIds, markClean,
+    setCurrentThemeId: setStoreThemeId, clearNodeAndEdgeStyles,
   } = useMindmapStore();
 
   const [title, setTitle] = useState('');
@@ -59,6 +61,21 @@ function MindMapEditorInner() {
     return (node?.data as any)?.color || null;
   }, [selectedNodeIds, nodes]);
 
+  const rootLabel = useMemo(() => {
+    const root = nodes.find(n => n.id === 'root');
+    return (root?.data as any)?.label || '';
+  }, [nodes]);
+
+  useEffect(() => {
+    if (!rootLabel || loading) return;
+    if (rootLabel !== title && rootLabel !== 'Neuer Knoten') {
+      setTitle(rootLabel);
+      if (id) {
+        api.patch(`/api/mindmaps/${id}`, { title: rootLabel }).catch(() => {});
+      }
+    }
+  }, [rootLabel]);
+
   useEffect(() => {
     if (!id) return;
     setLoading(true);
@@ -72,8 +89,33 @@ function MindMapEditorInner() {
           setCurrentThemeId(data.settings.theme);
           setStoreThemeId(data.settings.theme);
         }
-        setNodes(data.flow_data.nodes || []);
-        setEdges(data.flow_data.edges || []);
+        const loadedNodes = (data.flow_data.nodes || []).map((n: any) => ({
+          ...n,
+          type: n.type || 'mindmapNode',
+          selected: false,
+          data: {
+            label: n.data?.label || 'Neuer Knoten',
+            notes: n.data?.notes,
+            url: n.data?.url,
+            isCollapsed: n.data?.isCollapsed,
+            side: n.data?.side,
+            icon: n.data?.icon,
+          },
+        }));
+        const rootNode = loadedNodes.find((n: any) => n.id === 'root');
+        if (rootNode) rootNode.data.label = data.title;
+
+        const loadedEdges = (data.flow_data.edges || []).map((e: any) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          type: e.type || 'mindmapEdge',
+          sourceHandle: e.sourceHandle,
+          targetHandle: e.targetHandle,
+        }));
+
+        setNodes(loadedNodes);
+        setEdges(loadedEdges);
         markClean();
         lastSavedRef.current = JSON.stringify(data.flow_data);
         setTimeout(() => fitView({ padding: 0.2 }), 100);
@@ -114,6 +156,10 @@ function MindMapEditorInner() {
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [isDirty, nodes, edges, saveNow, id]);
 
+  const selectSingleNode = useCallback((targetId: string) => {
+    setSelectedNodeIds([targetId]);
+  }, [setSelectedNodeIds]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -146,29 +192,80 @@ function MindMapEditorInner() {
         }
         return;
       }
-      if (e.key === 'Delete' && selectedNodeIds.length === 1 && !isInput) {
-        deleteNode(selectedNodeIds[0]);
+      if ((e.key === 'Backspace' || e.key === 'Delete') && selectedNodeIds.length >= 1 && !isInput) {
+        e.preventDefault();
+        selectedNodeIds.forEach(nid => deleteNode(nid));
         return;
       }
-      if (e.key === 'F2' && selectedNodeIds.length === 1) {
+      if (e.key === 'F2' && selectedNodeIds.length === 1 && !isInput) {
         e.preventDefault();
         const nodeEl = document.querySelector(`[data-testid="mindmap-node-${selectedNodeIds[0]}"]`);
         if (nodeEl) {
           const label = nodeEl.querySelector('.cursor-text');
           if (label) (label as HTMLElement).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
         }
+        return;
+      }
+
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && !isInput) {
+        if (selectedNodeIds.length !== 1) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const currentId = selectedNodeIds[0];
+        const { nodes: sNodes, edges: sEdges } = useMindmapStore.getState();
+        const currentNode = sNodes.find(n => n.id === currentId);
+        if (!currentNode) return;
+
+        const isOnLeft = (currentNode.data as MindMapNodeData)?.side === 'left';
+        let targetId: string | null = null;
+
+        if (e.key === 'ArrowLeft') {
+          if (isOnLeft || currentId === 'root') {
+            const children = getChildIds(currentId, sEdges);
+            const leftChildren = children.filter(cid => {
+              const cn = sNodes.find(n => n.id === cid);
+              return (cn?.data as MindMapNodeData)?.side === 'left';
+            });
+            targetId = leftChildren[0] || children[0] || null;
+          } else {
+            targetId = getParentId(currentId, sEdges);
+          }
+        } else if (e.key === 'ArrowRight') {
+          if (!isOnLeft || currentId === 'root') {
+            const children = getChildIds(currentId, sEdges);
+            const rightChildren = children.filter(cid => {
+              const cn = sNodes.find(n => n.id === cid);
+              return (cn?.data as MindMapNodeData)?.side !== 'left';
+            });
+            targetId = rightChildren[0] || children[0] || null;
+          } else {
+            targetId = getParentId(currentId, sEdges);
+          }
+        } else {
+          const siblings = getSiblingIds(currentId, sNodes, sEdges);
+          const idx = siblings.indexOf(currentId);
+          if (idx !== -1) {
+            const nextIdx = e.key === 'ArrowUp' ? idx - 1 : idx + 1;
+            if (nextIdx >= 0 && nextIdx < siblings.length) {
+              targetId = siblings[nextIdx];
+            }
+          }
+        }
+
+        if (targetId) selectSingleNode(targetId);
       }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [selectedNodeIds, addChildNode, addSiblingNode, deleteNode, saveNow]);
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [selectedNodeIds, addChildNode, addSiblingNode, deleteNode, saveNow, selectSingleNode]);
 
   const handleTitleChange = useCallback(async (newTitle: string) => {
     setTitle(newTitle);
+    updateNodeData('root', { label: newTitle });
     if (id) {
       try { await api.patch(`/api/mindmaps/${id}`, { title: newTitle }); } catch {}
     }
-  }, [id]);
+  }, [id, updateNodeData]);
 
   const handleVisibilityChange = useCallback(async (v: string, newProjectId?: string) => {
     setVisibility(v);
@@ -198,18 +295,51 @@ function MindMapEditorInner() {
   const handleThemeChange = useCallback(async (themeId: string) => {
     setCurrentThemeId(themeId);
     setStoreThemeId(themeId);
+    clearNodeAndEdgeStyles();
     if (id) {
       try { await api.patch(`/api/mindmaps/${id}`, { settings: { theme: themeId } }); } catch {}
     }
-  }, [id, setStoreThemeId]);
+  }, [id, setStoreThemeId, clearNodeAndEdgeStyles]);
 
   const handleNodeColorChange = useCallback((color: string) => {
     selectedNodeIds.forEach(nid => updateNodeData(nid, { color }));
   }, [selectedNodeIds, updateNodeData]);
 
-  const handleSelectionChange = useCallback(({ nodes: selNodes }: { nodes: Node[] }) => {
-    setSelectedNodeIds(selNodes.map(n => n.id));
-  }, [setSelectedNodeIds]);
+  const handleNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
+    if (_event.shiftKey && selectedNodeIds.length >= 1) {
+      const lastSelected = selectedNodeIds[selectedNodeIds.length - 1];
+      const lastParentEdge = edges.find(e => e.target === lastSelected);
+      const clickedParentEdge = edges.find(e => e.target === node.id);
+
+      let targetIds: string[];
+      if (lastParentEdge && clickedParentEdge && lastParentEdge.source === clickedParentEdge.source) {
+        const siblings = edges
+          .filter(e => e.source === lastParentEdge.source)
+          .map(e => e.target);
+        const idxA = siblings.indexOf(lastSelected);
+        const idxB = siblings.indexOf(node.id);
+        if (idxA !== -1 && idxB !== -1) {
+          const from = Math.min(idxA, idxB);
+          const to = Math.max(idxA, idxB);
+          const rangeIds = siblings.slice(from, to + 1);
+          targetIds = Array.from(new Set([...selectedNodeIds, ...rangeIds]));
+        } else {
+          targetIds = [...selectedNodeIds, node.id];
+        }
+      } else {
+        targetIds = [...selectedNodeIds, node.id];
+      }
+      setSelectedNodeIds(Array.from(new Set(targetIds)));
+    } else if (_event.metaKey || _event.ctrlKey) {
+      if (selectedNodeIds.includes(node.id)) {
+        setSelectedNodeIds(selectedNodeIds.filter(nid => nid !== node.id));
+      } else {
+        setSelectedNodeIds([...selectedNodeIds, node.id]);
+      }
+    } else {
+      setSelectedNodeIds([node.id]);
+    }
+  }, [selectedNodeIds, edges, setSelectedNodeIds]);
 
   const handleNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
     event.preventDefault();
@@ -218,7 +348,8 @@ function MindMapEditorInner() {
 
   const handlePaneClick = useCallback(() => {
     setContextMenu(null);
-  }, []);
+    setSelectedNodeIds([]);
+  }, [setSelectedNodeIds]);
 
   const handleContextMenuColorChange = useCallback((nodeId: string) => {
     setSelectedNodeIds([nodeId]);
@@ -247,11 +378,6 @@ function MindMapEditorInner() {
     }
     return style;
   }, [backgroundUrl, currentTheme]);
-
-  const handleAddUrl = useCallback((nodeId: string) => {
-    const url = prompt('URL eingeben:');
-    if (url !== null) updateNodeData(nodeId, { url });
-  }, [updateNodeData]);
 
   if (loading) {
     return (
@@ -285,13 +411,15 @@ function MindMapEditorInner() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
-            onSelectionChange={handleSelectionChange}
+            onNodeClick={handleNodeClick}
             onNodeContextMenu={handleNodeContextMenu}
             onPaneClick={handlePaneClick}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             fitView
-            multiSelectionKeyCode="Shift"
+            colorMode="light"
+            nodesFocusable={false}
+            multiSelectionKeyCode="Meta"
             deleteKeyCode={null}
             style={reactFlowStyle}
           >
@@ -301,7 +429,7 @@ function MindMapEditorInner() {
               className="!rounded-xl !border-gray-200 !shadow-lg dark:!border-gray-700 dark:!bg-gray-900"
             />
             <MiniMap
-              nodeColor={(n) => (n.data as any)?.color || '#3B82F6'}
+              nodeColor={() => currentTheme.nodeColors[0]}
               className="!rounded-xl !border-gray-200 !shadow-lg dark:!border-gray-700 dark:!bg-gray-900"
               maskColor="rgba(0,0,0,0.08)"
             />
@@ -315,7 +443,6 @@ function MindMapEditorInner() {
               onClose={() => setContextMenu(null)}
               onColorChange={handleContextMenuColorChange}
               onAddNote={handleAddNote}
-              onAddUrl={handleAddUrl}
             />
           )}
         </div>

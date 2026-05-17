@@ -1,8 +1,17 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:where(.dark, .dark *));
+
+.react-flow__node-mindmapNode {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
 
 html, body, #root {
   overflow-x: hidden;

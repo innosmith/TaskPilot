@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Plus, Trash2, Palette, StickyNote, Link, ChevronRight } from 'lucide-react';
+import { Plus, Trash2, Palette, StickyNote, ChevronRight } from 'lucide-react';
 import { useMindmapStore } from '../../stores/mindmapStore';
 
 interface Props {
@@ -9,10 +9,9 @@ interface Props {
   onClose: () => void;
   onColorChange: (nodeId: string) => void;
   onAddNote: (nodeId: string) => void;
-  onAddUrl: (nodeId: string) => void;
 }
 
-export function NodeContextMenu({ nodeId, x, y, onClose, onColorChange, onAddNote, onAddUrl }: Props) {
+export function NodeContextMenu({ nodeId, x, y, onClose, onColorChange, onAddNote }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const { addChildNode, addSiblingNode, deleteNode } = useMindmapStore();
 
@@ -30,7 +29,6 @@ export function NodeContextMenu({ nodeId, x, y, onClose, onColorChange, onAddNot
     null,
     { icon: Palette, label: 'Farbe ändern', action: () => { onColorChange(nodeId); onClose(); } },
     { icon: StickyNote, label: 'Notiz hinzufügen', action: () => { onAddNote(nodeId); onClose(); } },
-    { icon: Link, label: 'URL hinzufügen', action: () => { onAddUrl(nodeId); onClose(); } },
     null,
     { icon: Trash2, label: 'Löschen', action: () => { deleteNode(nodeId); onClose(); }, danger: true, shortcut: 'Del' },
   ];

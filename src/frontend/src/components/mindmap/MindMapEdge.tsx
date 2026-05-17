@@ -8,11 +8,22 @@ import {
 import { useMindmapStore } from '../../stores/mindmapStore';
 import { getThemeById } from './themes';
 
+function getTargetDepth(targetId: string, edges: { source: string; target: string }[]): number {
+  const parentEdge = edges.find(e => e.target === targetId);
+  if (!parentEdge) return 0;
+  return 1 + getTargetDepth(parentEdge.source, edges);
+}
+
 function MindMapEdgeComponent({
-  id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style,
+  id, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition,
 }: EdgeProps) {
   const themeId = useMindmapStore(s => s.currentThemeId);
   const theme = getThemeById(themeId);
+  const edges = useMindmapStore(s => s.edges);
+
+  const depth = getTargetDepth(target, edges);
+  const colorIdx = depth % theme.edgeColors.length;
+  const edgeColor = theme.edgeColors[colorIdx] || '#94A3B8';
 
   let edgePath: string;
   switch (theme.edgeType) {
@@ -31,10 +42,14 @@ function MindMapEdgeComponent({
       id={id}
       d={edgePath}
       fill="none"
-      strokeWidth={style?.strokeWidth || 2}
-      stroke={String(style?.stroke || theme.edgeColors[0] || '#94A3B8')}
-      strokeLinecap="round"
       className="react-flow__edge-path"
+      style={{
+        stroke: edgeColor,
+        strokeWidth: theme.edgeWidth,
+        opacity: theme.edgeOpacity,
+        strokeLinecap: 'round',
+        strokeDasharray: theme.edgeDashArray || undefined,
+      }}
     />
   );
 }

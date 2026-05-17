@@ -1,9 +1,41 @@
-import { memo, useState, useCallback, useRef, useEffect } from 'react';
+import { memo, useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { ChevronRight, ChevronDown, StickyNote, ExternalLink } from 'lucide-react';
 import type { MindMapNodeData } from '../../stores/mindmapStore';
 import { useMindmapStore } from '../../stores/mindmapStore';
 import { getThemeById } from './themes';
+
+const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+
+function renderLabelWithLinks(text: string, textColor: string): ReactNode {
+  const parts = text.split(URL_REGEX);
+  if (parts.length === 1) return text;
+
+  return parts.map((part, i) => {
+    if (URL_REGEX.test(part)) {
+      URL_REGEX.lastIndex = 0;
+      const href = part.startsWith('http') ? part : `https://${part}`;
+      let hostname: string;
+      try { hostname = new URL(href).hostname; } catch { hostname = part; }
+      return (
+        <a
+          key={i}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-0.5 underline decoration-1 underline-offset-2 opacity-85 hover:opacity-100"
+          style={{ color: textColor }}
+          onClick={e => e.stopPropagation()}
+        >
+          <ExternalLink size={10} className="inline shrink-0" />
+          {hostname}
+        </a>
+      );
+    }
+    URL_REGEX.lastIndex = 0;
+    return part || null;
+  });
+}
 
 function getNodeDepthFromEdges(nodeId: string, edges: { source: string; target: string }[]): number {
   const parentEdge = edges.find(e => e.target === nodeId);
@@ -11,7 +43,7 @@ function getNodeDepthFromEdges(nodeId: string, edges: { source: string; target: 
   return 1 + getNodeDepthFromEdges(parentEdge.source, edges);
 }
 
-function MindMapNodeComponent({ id, data, selected }: NodeProps) {
+function MindMapNodeComponent({ id, data }: NodeProps) {
   const nodeData = data as MindMapNodeData;
   const [editing, setEditing] = useState(!nodeData.label);
   const [editValue, setEditValue] = useState(nodeData.label || '');
@@ -19,12 +51,15 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
   const updateNodeData = useMindmapStore(s => s.updateNodeData);
   const toggleCollapse = useMindmapStore(s => s.toggleCollapse);
   const edges = useMindmapStore(s => s.edges);
+  const selectedNodeIds = useMindmapStore(s => s.selectedNodeIds);
   const themeId = useMindmapStore(s => s.currentThemeId);
   const theme = getThemeById(themeId);
+  const isSelected = selectedNodeIds.includes(id);
 
   const hasChildren = edges.some(e => e.source === id);
   const isRoot = id === 'root';
   const depth = getNodeDepthFromEdges(id, edges);
+  const side = (nodeData.side === 'left') ? 'left' : 'right';
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -50,25 +85,40 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
   }, [confirmEdit, nodeData.label]);
 
   const themeColorIdx = depth % theme.nodeColors.length;
-  const bgColor = nodeData.color || theme.nodeColors[themeColorIdx];
-  const textColor = nodeData.textColor || theme.textColors[themeColorIdx] || '#FFFFFF';
+  const nodeColor = (nodeData.color && typeof nodeData.color === 'string' && nodeData.color.startsWith('#'))
+    ? nodeData.color
+    : theme.nodeColors[themeColorIdx];
+  const textColor = (nodeData.textColor && typeof nodeData.textColor === 'string' && nodeData.textColor.startsWith('#'))
+    ? nodeData.textColor
+    : (theme.textColors[themeColorIdx] || '#FFFFFF');
   const fontSize = nodeData.fontSize || (isRoot ? theme.fontSize.root : depth === 1 ? theme.fontSize.child : theme.fontSize.leaf);
   const fontWeight = nodeData.fontWeight || (isRoot ? '700' : '500');
   const fontFamily = nodeData.fontFamily || theme.fontFamily;
   const borderRadius = theme.borderRadius;
 
+  const isDashed = theme.borderStyle.includes('dashed');
+
+  const containerStyle: React.CSSProperties = {
+    fontFamily,
+    borderRadius,
+    boxShadow: theme.shadowStyle !== 'none' ? theme.shadowStyle : undefined,
+    backgroundColor: isDashed ? 'transparent' : nodeColor,
+    border: isDashed ? theme.borderStyle : (theme.borderStyle !== 'none' ? theme.borderStyle : undefined),
+    borderColor: isDashed ? nodeColor : undefined,
+    outline: isSelected ? '3px solid #818CF8' : undefined,
+    outlineOffset: isSelected ? '2px' : undefined,
+  };
+
   return (
     <div
       data-testid={`mindmap-node-${id}`}
-      className={`group relative shadow-md transition-all duration-200 ${
-        selected ? 'ring-2 ring-indigo-400 ring-offset-2 dark:ring-offset-gray-900' : ''
-      } ${isRoot ? 'min-w-[180px]' : 'min-w-[120px]'}`}
-      style={{ backgroundColor: bgColor, fontFamily, borderRadius }}
+      className={`group relative transition-all duration-200 ${isRoot ? 'min-w-[180px]' : 'min-w-[120px]'}`}
+      style={containerStyle}
     >
       {!isRoot && (
         <Handle
           type="target"
-          position={Position.Left}
+          position={side === 'left' ? Position.Right : Position.Left}
           className="!w-2 !h-2 !bg-gray-400 !border-0"
         />
       )}
@@ -91,24 +141,8 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
             className="cursor-text text-center select-none"
             style={{ color: textColor, fontSize, fontWeight: fontWeight as any }}
           >
-            {nodeData.label || 'Neuer Knoten'}
+            {renderLabelWithLinks(nodeData.label || 'Neuer Knoten', textColor)}
           </div>
-        )}
-
-        {nodeData.url && (
-          <a
-            href={nodeData.url.startsWith('http') ? nodeData.url : `https://${nodeData.url}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-1 flex items-center justify-center gap-1 text-xs opacity-80 hover:opacity-100 transition-opacity"
-            style={{ color: textColor }}
-            onClick={e => e.stopPropagation()}
-          >
-            <ExternalLink size={10} />
-            <span className="truncate max-w-[150px]">
-              {(() => { try { return new URL(nodeData.url.startsWith('http') ? nodeData.url : `https://${nodeData.url}`).hostname; } catch { return nodeData.url; } })()}
-            </span>
-          </a>
         )}
 
         <div className="flex items-center justify-center gap-1 mt-1">
@@ -120,16 +154,23 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
         </div>
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!w-2 !h-2 !bg-gray-400 !border-0"
-      />
+      {isRoot ? (
+        <>
+          <Handle type="source" position={Position.Right} id="right" className="!w-2 !h-2 !bg-gray-400 !border-0" />
+          <Handle type="source" position={Position.Left} id="left" className="!w-2 !h-2 !bg-gray-400 !border-0" />
+        </>
+      ) : (
+        <Handle
+          type="source"
+          position={side === 'left' ? Position.Left : Position.Right}
+          className="!w-2 !h-2 !bg-gray-400 !border-0"
+        />
+      )}
 
       {hasChildren && (
         <button
           onClick={(e) => { e.stopPropagation(); toggleCollapse(id); }}
-          className="absolute -right-3 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-white dark:bg-gray-800 shadow border border-gray-200 dark:border-gray-700 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+          className={`absolute ${side === 'left' && !isRoot ? '-left-3' : '-right-3'} top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-white dark:bg-gray-800 shadow border border-gray-200 dark:border-gray-700 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity`}
           data-testid={`mindmap-node-collapse-${id}`}
         >
           {nodeData.isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}

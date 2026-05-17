@@ -19,7 +19,11 @@ export function ThemePreview({ theme, isActive }: ThemePreviewProps) {
   const child1 = theme.nodeColors[1];
   const child2 = theme.nodeColors[2];
   const child3 = theme.nodeColors[3] || theme.nodeColors[1];
-  const edgeColor = theme.edgeColors[0] || '#999';
+  const edge1 = theme.edgeColors[1] || theme.edgeColors[0];
+  const edge2 = theme.edgeColors[2] || theme.edgeColors[0];
+  const edge3 = theme.edgeColors[3] || theme.edgeColors[0];
+  const isDashed = theme.borderStyle.includes('dashed');
+  const dashArray = theme.edgeDashArray || undefined;
 
   return (
     <div
@@ -35,21 +39,25 @@ export function ThemePreview({ theme, isActive }: ThemePreviewProps) {
         className="w-full rounded-md"
         style={{ backgroundColor: theme.background }}
       >
-        {/* Edge: root -> child1 */}
-        <line x1="42" y1="40" x2="72" y2="18" stroke={edgeColor} strokeWidth="1.5" strokeOpacity="0.6" />
-        {/* Edge: root -> child2 */}
-        <line x1="42" y1="40" x2="72" y2="40" stroke={edgeColor} strokeWidth="1.5" strokeOpacity="0.6" />
-        {/* Edge: root -> child3 */}
-        <line x1="42" y1="40" x2="72" y2="62" stroke={edgeColor} strokeWidth="1.5" strokeOpacity="0.6" />
+        <line x1="42" y1="40" x2="72" y2="18" stroke={edge1} strokeWidth={theme.edgeWidth} strokeOpacity={theme.edgeOpacity} strokeDasharray={dashArray} />
+        <line x1="42" y1="40" x2="72" y2="40" stroke={edge2} strokeWidth={theme.edgeWidth} strokeOpacity={theme.edgeOpacity} strokeDasharray={dashArray} />
+        <line x1="42" y1="40" x2="72" y2="62" stroke={edge3} strokeWidth={theme.edgeWidth} strokeOpacity={theme.edgeOpacity} strokeDasharray={dashArray} />
 
-        {/* Root node */}
-        <rect x="14" y="30" width="28" height="20" rx={rx} fill={rootColor} />
-        {/* Child 1 */}
-        <rect x="72" y="10" width="34" height="16" rx={rx} fill={child1} />
-        {/* Child 2 */}
-        <rect x="72" y="32" width="34" height="16" rx={rx} fill={child2} />
-        {/* Child 3 */}
-        <rect x="72" y="54" width="34" height="16" rx={rx} fill={child3} />
+        {isDashed ? (
+          <>
+            <rect x="14" y="30" width="28" height="20" rx={rx} fill="none" stroke={rootColor} strokeWidth="1.5" strokeDasharray="4 2" />
+            <rect x="72" y="10" width="34" height="16" rx={rx} fill="none" stroke={child1} strokeWidth="1.5" strokeDasharray="4 2" />
+            <rect x="72" y="32" width="34" height="16" rx={rx} fill="none" stroke={child2} strokeWidth="1.5" strokeDasharray="4 2" />
+            <rect x="72" y="54" width="34" height="16" rx={rx} fill="none" stroke={child3} strokeWidth="1.5" strokeDasharray="4 2" />
+          </>
+        ) : (
+          <>
+            <rect x="14" y="30" width="28" height="20" rx={rx} fill={rootColor} />
+            <rect x="72" y="10" width="34" height="16" rx={rx} fill={child1} />
+            <rect x="72" y="32" width="34" height="16" rx={rx} fill={child2} />
+            <rect x="72" y="54" width="34" height="16" rx={rx} fill={child3} />
+          </>
+        )}
       </svg>
 
       <div className="absolute inset-x-0 bottom-0 rounded-b-md bg-gradient-to-t from-black/50 to-transparent px-2 py-1">
