@@ -10,6 +10,22 @@ import { TracePanel } from '../components/TracePanel';
 import { useSSE } from '../hooks/useSSE';
 import type { AgentJob, TaskCard, PipelineData } from '../types';
 
+interface SignaSignal {
+  id: number;
+  title: string;
+  source_name: string;
+  url: string | null;
+  type: string | null;
+  description: string | null;
+  ai_reason: string | null;
+  full_content: string | null;
+  has_full_content: boolean;
+  thumbnail_url: string | null;
+  published_at: string | null;
+  total_score: number;
+  topic_name: string | null;
+}
+
 interface DraftPreview {
   draft_id: string;
   subject: string | null;
@@ -110,7 +126,7 @@ export const JOB_TYPE_LABELS: Record<string, string> = {
 
 function formatTime(iso: string | null): string {
   if (!iso) return '';
-  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+  const d = new Date(iso);
   return d.toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' });
 }
 
@@ -137,8 +153,9 @@ export function CockpitPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const [approvalJobs, setApprovalJobs] = useState<AgentJob[]>([]);
-  const [activeJobs, setActiveJobs] = useState<AgentJob[]>([]);
   const [focusTasks, setFocusTasks] = useState<TaskCard[]>([]);
+  const [weekTasks, setWeekTasks] = useState<TaskCard[]>([]);
+  const [overdueTasks, setOverdueTasks] = useState<TaskCard[]>([]);
   const [pendingReview, setPendingReview] = useState<PendingReviewTask[]>([]);
   const [_triageStats, setTriageStats] = useState<TriageStats | null>(null);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
@@ -161,6 +178,11 @@ export function CockpitPage() {
   const [reviewTaskId, setReviewTaskId] = useState<string | null>(null);
   const [senderAvatars, setSenderAvatars] = useState<Record<string, { pic_url: string | null; person_id: number | null; name: string | null }>>({});
   const lookedUpEmails = useRef<Set<string>>(new Set());
+
+  const [signaSignals, setSignaSignals] = useState<SignaSignal[]>([]);
+  const [signaModalSignal, setSignaModalSignal] = useState<SignaSignal | null>(null);
+  const [signaModalLoading, setSignaModalLoading] = useState(false);
+  const [weekCapacity, setWeekCapacity] = useState<{ freeHours: number; meetingHours: number; blockerHours: number } | null>(null);
 
   const fetchPipedriveData = useCallback(async () => {
     try {
@@ -202,15 +224,13 @@ export function CockpitPage() {
       ]);
 
       const awaitingApproval = jobsData.filter(j => j.status === 'awaiting_approval');
-      const active = jobsData.filter(j => ['queued', 'running'].includes(j.status));
       setApprovalJobs(awaitingApproval);
-      setActiveJobs(active);
       setPendingReview(reviewData);
       setTriageStats(triageData);
       setCalendarEvents(calData.filter(ev => {
         if (ev.is_all_day) return true;
         if (!ev.end) return true;
-        const endTime = new Date(ev.end.endsWith('Z') ? ev.end : ev.end + 'Z');
+        const endTime = new Date(ev.end);
         return endTime > now;
       }));
       setFlaggedEmails(flaggedData);
@@ -219,12 +239,81 @@ export function CockpitPage() {
       if (pipelineData?.columns) {
         const focusCol = pipelineData.columns.find(c => c.position === 0) || pipelineData.columns[0];
         setFocusTasks(focusCol?.tasks ?? []);
+        const weekCol = pipelineData.columns.find(c => c.position === 1);
+        setWeekTasks(weekCol?.tasks ?? []);
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const allTasks = pipelineData.columns.flatMap(c => c.tasks);
+        const overdue = allTasks.filter(t => t.due_date && !t.is_completed && new Date(t.due_date) < today);
+        overdue.sort((a, b) => new Date(a.due_date!).getTime() - new Date(b.due_date!).getTime());
+        setOverdueTasks(overdue);
       }
     } catch { /* */ }
     finally { setLoading(false); }
+
+    api.get<{ signals: SignaSignal[]; total: number }>('/api/signa/signals?min_score=8.0&since=2weeks&status=relevant&limit=10')
+      .then(data => setSignaSignals(data.signals))
+      .catch(() => {});
+
+    // Wochenkapazität berechnen: Events der Restwoche laden
+    const now2 = new Date();
+    const dayOfWeek = now2.getDay(); // 0=So, 1=Mo, ...
+    const daysUntilFriday = dayOfWeek <= 5 ? 5 - dayOfWeek : 0;
+    const fridayEnd = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate() + daysUntilFriday, 18, 0, 0);
+    if (fridayEnd > now2) {
+      const weekStart = now2.toISOString();
+      const weekEnd = fridayEnd.toISOString();
+      api.get<CalendarEvent[]>(`/api/calendar/events?start=${encodeURIComponent(weekStart)}&end=${encodeURIComponent(weekEnd)}&hide_free=true&hide_private=false&top=100`)
+        .then(events => {
+          let meetingMin = 0;
+          let blockerMin = 0;
+          for (const ev of events) {
+            if (ev.is_all_day) continue;
+            if (!ev.start || !ev.end) continue;
+            const start = new Date(ev.start);
+            const end = new Date(ev.end);
+            const durMin = Math.max(0, (end.getTime() - start.getTime()) / 60000);
+            if (ev.attendees_count > 1) {
+              meetingMin += durMin;
+            } else {
+              blockerMin += durMin;
+            }
+          }
+          // Verbleibende Arbeitsstunden bis Freitag 18:00 (8h/Tag)
+          const currentHour = now2.getHours() + now2.getMinutes() / 60;
+          const hoursLeftToday = Math.max(0, Math.min(18, 18) - Math.max(8, currentHour));
+          const fullDaysLeft = daysUntilFriday > 0 ? daysUntilFriday - (currentHour < 18 ? 0 : 1) : 0;
+          const totalAvailMin = (hoursLeftToday + fullDaysLeft * 8) * 60;
+          const freeMin = Math.max(0, totalAvailMin - meetingMin - blockerMin);
+          setWeekCapacity({
+            freeHours: Math.round(freeMin / 60 * 10) / 10,
+            meetingHours: Math.round(meetingMin / 60 * 10) / 10,
+            blockerHours: Math.round(blockerMin / 60 * 10) / 10,
+          });
+        })
+        .catch(() => {});
+    }
   }, []);
 
   useEffect(() => { fetchAppData(); fetchPipedriveData(); }, [fetchAppData, fetchPipedriveData]);
+
+  const openSignalModal = useCallback(async (signal: SignaSignal) => {
+    if (signal.has_full_content && !signal.full_content) {
+      setSignaModalLoading(true);
+      setSignaModalSignal(signal);
+      try {
+        const detail = await api.get<SignaSignal>(`/api/signa/signals/${signal.id}`);
+        setSignaModalSignal(detail);
+      } catch {
+        setSignaModalSignal(signal);
+      } finally {
+        setSignaModalLoading(false);
+      }
+    } else {
+      setSignaModalSignal(signal);
+    }
+  }, []);
 
   useSSE((event) => {
     if (['agent_jobs_changed', 'tasks_changed', 'email_triage_changed'].includes(event)) {
@@ -432,21 +521,20 @@ export function CockpitPage() {
         <div className="mx-auto max-w-6xl space-y-4 lg:space-y-6">
 
           {/* ── Zone 1: KPI-Übersicht ── */}
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
             <KpiCard label="Entscheidungen" value={pendingDecisions} accent="rose" hasBg={hasBg} />
-            <KpiCard label="Aktive Agenten" value={activeJobs.length} accent="indigo" hasBg={hasBg} />
             <KpiCard label="Fokus-Aufgaben" value={focusTasks.length} accent="amber" hasBg={hasBg} />
-            <KpiCard label="Markierte E-Mails" value={flaggedEmails.length} accent="sky" hasBg={hasBg} />
+            <WeekCapacityCard capacity={weekCapacity} hasBg={hasBg} />
           </div>
 
-          {/* ── Zone 2: Fokus | Kalender | Markierte E-Mails ── */}
+          {/* ── Zone 2: Aufgaben (Fokus | Überfällig | Diese Woche) | Kalender | Markierte E-Mails ── */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
-            {/* Spalte 1: Fokus-Aufgaben */}
+            {/* Spalte 1: Aufgaben mit drei Abschnitten */}
             <section className={`rounded-xl border p-4 ${cardClass}`}>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-                  Fokus-Aufgaben
+                  Aufgaben
                 </h2>
                 <button
                   onClick={() => navigate('/pipeline')}
@@ -455,41 +543,87 @@ export function CockpitPage() {
                   Agenda öffnen →
                 </button>
               </div>
-              {focusTasks.length === 0 ? (
-                <div className={`flex h-20 items-center justify-center rounded-lg text-sm ${textMuted}`}>
-                  Keine Fokus-Aufgaben
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {focusTasks.map(task => {
-                    const overdue = task.due_date && new Date(task.due_date) < new Date();
-                    return (
+
+              {/* Fokus */}
+              <div className="mb-3">
+                <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-amber-300' : 'text-amber-600 dark:text-amber-400'}`}>
+                  Fokus ({focusTasks.length})
+                </h3>
+                {focusTasks.length === 0 ? (
+                  <p className={`text-xs ${textMuted}`}>Keine Fokus-Aufgaben</p>
+                ) : (
+                  <div className="space-y-1">
+                    {focusTasks.slice(0, 6).map(task => (
                       <div
                         key={task.id}
-                        className={`flex items-center gap-2.5 rounded-lg p-2.5 transition-colors cursor-pointer ${
-                          hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                        }`}
+                        className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
                         onClick={() => setSelectedTaskId(task.id)}
                       >
-                        <div className={`h-2 w-2 rounded-full shrink-0 ${overdue ? 'bg-red-500' : 'bg-amber-400'}`} />
-                        <div className="min-w-0 flex-1">
-                          <div className={`text-sm font-medium truncate ${textPrimary}`}>{task.title}</div>
-                          {task.due_date && (
-                            <div className={`text-[11px] ${overdue ? 'text-red-500 font-medium' : textMuted}`}>
-                              {overdue ? 'Überfällig' : `Fällig: ${new Date(task.due_date).toLocaleDateString('de-CH')}`}
-                            </div>
-                          )}
-                        </div>
-                        {task.checklist_total > 0 && (
-                          <span className={`shrink-0 text-[11px] ${textMuted}`}>
-                            {task.checklist_done}/{task.checklist_total}
-                          </span>
-                        )}
+                        <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-amber-400" />
+                        <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
                       </div>
-                    );
-                  })}
+                    ))}
+                    {focusTasks.length > 6 && (
+                      <p className={`text-xs pl-5 ${textMuted}`}>+{focusTasks.length - 6} weitere</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Überfällig */}
+              {overdueTasks.length > 0 && (
+                <div className="mb-3">
+                  <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-red-300' : 'text-red-600 dark:text-red-400'}`}>
+                    Überfällig ({overdueTasks.length})
+                  </h3>
+                  <div className="space-y-1">
+                    {overdueTasks.slice(0, 6).map(task => (
+                      <div
+                        key={task.id}
+                        className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                        onClick={() => setSelectedTaskId(task.id)}
+                      >
+                        <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-red-500" />
+                        <div className="min-w-0 flex-1 flex items-center gap-2">
+                          <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
+                          <span className={`shrink-0 text-[10px] font-medium text-red-500`}>
+                            {new Date(task.due_date!).toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                    {overdueTasks.length > 6 && (
+                      <p className={`text-xs pl-5 ${textMuted}`}>+{overdueTasks.length - 6} weitere</p>
+                    )}
+                  </div>
                 </div>
               )}
+
+              {/* Diese Woche */}
+              <div>
+                <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-blue-300' : 'text-blue-600 dark:text-blue-400'}`}>
+                  Diese Woche ({weekTasks.length})
+                </h3>
+                {weekTasks.length === 0 ? (
+                  <p className={`text-xs ${textMuted}`}>Keine Aufgaben diese Woche</p>
+                ) : (
+                  <div className="space-y-1">
+                    {weekTasks.slice(0, 6).map(task => (
+                      <div
+                        key={task.id}
+                        className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                        onClick={() => setSelectedTaskId(task.id)}
+                      >
+                        <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-blue-400" />
+                        <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
+                      </div>
+                    ))}
+                    {weekTasks.length > 6 && (
+                      <p className={`text-xs pl-5 ${textMuted}`}>+{weekTasks.length - 6} weitere</p>
+                    )}
+                  </div>
+                )}
+              </div>
             </section>
 
             {/* Spalte 2: Kalender heute */}
@@ -593,9 +727,6 @@ export function CockpitPage() {
               )}
             </section>
           </div>
-
-          {/* ── Zone 2b: Fällige Kreditoren-Zahlungen ── */}
-          <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
 
           {/* ── Zone 3: Freigaben (kompakt, aufklappbar) ── */}
           {approvalJobs.length > 0 && (
@@ -888,6 +1019,50 @@ export function CockpitPage() {
             </section>
           )}
 
+          {/* ── SIGNA-Signale ── */}
+          {signaSignals.length > 0 && (
+            <section className={`rounded-xl border p-4 ${cardClass}`}>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+                  Signale
+                </h2>
+                <button
+                  onClick={() => navigate('/signale')}
+                  className={`text-xs font-medium ${hasBg ? 'text-white/60 hover:text-white' : 'text-indigo-600 hover:text-indigo-800 dark:text-indigo-400'}`}
+                >
+                  Alle Signale →
+                </button>
+              </div>
+              <div className="space-y-1.5">
+                {signaSignals.slice(0, 8).map(signal => (
+                  <div
+                    key={signal.id}
+                    className={`flex items-start gap-2.5 rounded-lg px-2.5 py-2 cursor-pointer transition-colors ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                    onClick={() => openSignalModal(signal)}
+                  >
+                    <span className="mt-0.5 shrink-0 text-sm">
+                      {signal.type === 'youtube' ? '🎬' : signal.type === 'rss' ? '📰' : '🌐'}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm font-medium truncate ${textPrimary}`}>{signal.title}</div>
+                      <div className={`text-[11px] ${textMuted} flex items-center gap-2 mt-0.5`}>
+                        <span>{signal.source_name}</span>
+                        {signal.topic_name && <span>· {signal.topic_name}</span>}
+                        {signal.published_at && <span>· {relativeDate(signal.published_at)}</span>}
+                        <span className="ml-auto shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                          {signal.total_score.toFixed(1)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* ── Fällige Kreditoren-Zahlungen ── */}
+          <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
+
           {/* ── Zone 4: CRM / Pipedrive ── */}
           {pipedriveConnected && (
             <section>
@@ -1033,7 +1208,7 @@ export function CockpitPage() {
 
 
           {/* Alles erledigt */}
-          {pendingDecisions === 0 && activeJobs.length === 0 && focusTasks.length === 0 && flaggedEmails.length === 0 && calendarEvents.length === 0 && (
+          {pendingDecisions === 0 && focusTasks.length === 0 && flaggedEmails.length === 0 && calendarEvents.length === 0 && (
             <div className={`flex flex-col items-center justify-center rounded-xl border p-12 ${cardClass}`}>
               <CheckCircleIcon className={`h-12 w-12 mb-3 ${hasBg ? 'text-white/40' : 'text-emerald-300 dark:text-emerald-700'}`} />
               <p className={`text-lg font-medium ${textPrimary}`}>Alles erledigt</p>
@@ -1065,6 +1240,91 @@ export function CockpitPage() {
         currentUrl={bgUrl}
         onSelect={(url) => { handleBgSelect(url); setBgPickerOpen(false); }}
       />
+
+      {/* SIGNA Signal Detail Modal */}
+      {signaModalSignal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setSignaModalSignal(null)}>
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" />
+          <div
+            className="relative z-10 max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-2xl border bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setSignaModalSignal(null)}
+              className="absolute right-4 top-4 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+            <div className="mb-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-lg">
+                  {signaModalSignal.type === 'youtube' ? '🎬' : signaModalSignal.type === 'rss' ? '📰' : '🌐'}
+                </span>
+                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                  Score: {signaModalSignal.total_score.toFixed(1)}
+                </span>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{signaModalSignal.title}</h3>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <span>{signaModalSignal.source_name}</span>
+                {signaModalSignal.topic_name && <span>· {signaModalSignal.topic_name}</span>}
+                {signaModalSignal.published_at && <span>· {new Date(signaModalSignal.published_at).toLocaleDateString('de-CH', { day: 'numeric', month: 'long', year: 'numeric' })}</span>}
+              </div>
+            </div>
+
+            {signaModalLoading ? (
+              <div className="flex h-24 items-center justify-center">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {signaModalSignal.ai_reason && (
+                  <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-4 dark:border-indigo-900/30 dark:bg-indigo-950/20">
+                    <h4 className="mb-1 text-xs font-semibold uppercase text-indigo-600 dark:text-indigo-400">KI-Einschätzung</h4>
+                    <p className="text-sm text-gray-700 dark:text-gray-300">{signaModalSignal.ai_reason}</p>
+                  </div>
+                )}
+
+                {signaModalSignal.type === 'youtube' && signaModalSignal.url && (
+                  <div className="aspect-video w-full overflow-hidden rounded-lg">
+                    <iframe
+                      className="h-full w-full"
+                      src={`https://www.youtube.com/embed/${new URL(signaModalSignal.url).searchParams.get('v') || signaModalSignal.url.split('/').pop()}`}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                )}
+
+                {signaModalSignal.full_content && (
+                  <div className="max-h-80 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                    {/<[a-z][\s\S]*>/i.test(signaModalSignal.full_content) ? (
+                      <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: signaModalSignal.full_content }} />
+                    ) : (
+                      <p className="whitespace-pre-wrap">{signaModalSignal.full_content}</p>
+                    )}
+                  </div>
+                )}
+
+                {!signaModalSignal.full_content && signaModalSignal.description && (
+                  <p className="text-sm text-gray-600 dark:text-gray-400">{signaModalSignal.description}</p>
+                )}
+
+                {signaModalSignal.url && signaModalSignal.type !== 'youtube' && (
+                  <a
+                    href={signaModalSignal.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
+                  >
+                    Artikel lesen ↗
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1104,6 +1364,49 @@ function KpiCard({
       <div className={`mt-1 text-[11px] font-medium lg:text-xs ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
         {label}
       </div>
+    </div>
+  );
+}
+
+/* ── Week Capacity Card ── */
+
+function WeekCapacityCard({ capacity, hasBg }: { capacity: { freeHours: number; meetingHours: number; blockerHours: number } | null; hasBg: boolean }) {
+  return (
+    <div className={`rounded-xl border p-3 lg:p-4 ${
+      hasBg
+        ? 'bg-white/10 backdrop-blur-md border-white/20'
+        : 'bg-white border-gray-200 dark:bg-gray-900 dark:border-gray-800'
+    }`}>
+      <div className={`mb-1 text-[11px] font-medium lg:text-xs ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
+        Woche
+      </div>
+      {capacity ? (
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+            <span className={`text-base font-bold ${hasBg ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'}`}>
+              {capacity.freeHours}h
+            </span>
+            <span className={`text-[10px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`}>frei</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-orange-400 shrink-0" />
+            <span className={`text-xs font-medium ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>
+              {capacity.meetingHours}h
+            </span>
+            <span className={`text-[10px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`}>Meetings</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-blue-400 shrink-0" />
+            <span className={`text-xs font-medium ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>
+              {capacity.blockerHours}h
+            </span>
+            <span className={`text-[10px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`}>Blocker</span>
+          </div>
+        </div>
+      ) : (
+        <div className={`text-xs ${hasBg ? 'text-white/40' : 'text-gray-400'}`}>Laden…</div>
+      )}
     </div>
   );
 }
@@ -1219,6 +1522,14 @@ function ChevronUpIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+    </svg>
+  );
+}
+
+function XMarkIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
     </svg>
   );
 }
