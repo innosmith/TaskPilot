@@ -1,8 +1,11 @@
 """FastAPI-Router für Kalender-Zugriff via Microsoft Graph API."""
 
+import calendar as cal_mod
 import logging
 import os
 import sys
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -201,3 +204,182 @@ async def delete_event(
     except PermissionError as e:
         logger.warning("Kalender delete_event: Zugriff verweigert: %s", e)
         raise HTTPException(status_code=403, detail="Zugriff auf den Kalender verweigert")
+
+
+# ── Capacity ──────────────────────────────────────────────────
+
+_TZ = ZoneInfo("Europe/Zurich")
+_WORK_START = 8
+_WORK_END = 18
+_HOURS_PER_DAY = 8.0
+
+
+class CapacityPeriod(BaseModel):
+    total_hours: float
+    booked_hours: float
+    meeting_hours: float
+    blocker_hours: float
+    free_hours: float
+    work_days: int
+
+
+class CapacityResponse(BaseModel):
+    week: CapacityPeriod
+    month: CapacityPeriod
+    generated_at: datetime
+
+
+def _count_workdays(start_date, end_date) -> int:
+    """Zählt Werktage (Mo-Fr) von start_date bis einschliesslich end_date."""
+    count = 0
+    d = start_date
+    while d <= end_date:
+        if d.weekday() < 5:
+            count += 1
+        d += timedelta(days=1)
+    return count
+
+
+def _parse_graph_datetime(dt_str: str) -> datetime:
+    """Parst Graph API Datetime-Strings robust (truncate nanoseconds)."""
+    if '.' in dt_str:
+        base, frac = dt_str.split('.', 1)
+        frac_clean = frac[:6]
+        dt_str = f"{base}.{frac_clean}"
+    return datetime.fromisoformat(dt_str)
+
+
+def _event_booked_minutes(ev: dict, period_start: datetime, period_end: datetime) -> float:
+    """Berechnet wie viele Minuten ein Event innerhalb der Arbeitszeit (Mo-Fr 08-18) belegt."""
+    is_all_day = ev.get("isAllDay", False)
+    start_str = ev.get("start", {}).get("dateTime")
+    end_str = ev.get("end", {}).get("dateTime")
+
+    if not start_str or not end_str:
+        return 0.0
+
+    ev_start = _parse_graph_datetime(start_str).replace(tzinfo=_TZ)
+    ev_end = _parse_graph_datetime(end_str).replace(tzinfo=_TZ)
+
+    if is_all_day:
+        days = 0
+        d = ev_start.date()
+        while d < ev_end.date():
+            if d.weekday() < 5 and period_start.date() <= d <= period_end.date():
+                days += 1
+            d += timedelta(days=1)
+        return days * _HOURS_PER_DAY * 60
+
+    total_min = 0.0
+    current = max(ev_start, period_start)
+    end = min(ev_end, period_end)
+
+    while current < end:
+        if current.weekday() < 5:
+            day_work_start = current.replace(hour=_WORK_START, minute=0, second=0, microsecond=0)
+            day_work_end = current.replace(hour=_WORK_END, minute=0, second=0, microsecond=0)
+
+            overlap_start = max(current, day_work_start)
+            overlap_end = min(end, day_work_end)
+
+            if overlap_start < overlap_end:
+                total_min += (overlap_end - overlap_start).total_seconds() / 60
+
+        current = (current + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+    return total_min
+
+
+def _calc_period(now: datetime, period_end_date, events: list[dict]) -> CapacityPeriod:
+    """Berechnet Kapazität für eine Periode (Woche oder Monat)."""
+    today = now.date()
+    is_workday_today = today.weekday() < 5
+    current_hour = now.hour + now.minute / 60
+
+    today_remaining = 0.0
+    if is_workday_today and current_hour < _WORK_END:
+        remaining_window = max(0.0, _WORK_END - max(_WORK_START, current_hour))
+        today_remaining = remaining_window * (_HOURS_PER_DAY / (_WORK_END - _WORK_START))
+
+    tomorrow = today + timedelta(days=1)
+    future_workdays = _count_workdays(tomorrow, period_end_date)
+    total_hours = today_remaining + future_workdays * _HOURS_PER_DAY
+    work_days = future_workdays + (1 if is_workday_today and current_hour < _WORK_END else 0)
+
+    period_start = now
+    period_end = datetime.combine(period_end_date, datetime.max.time()).replace(tzinfo=_TZ)
+
+    booked_min = 0.0
+    meeting_min = 0.0
+    for ev in events:
+        if ev.get("isCancelled", False):
+            continue
+        if ev.get("showAs") == "free":
+            continue
+        try:
+            minutes = _event_booked_minutes(ev, period_start, period_end)
+            booked_min += minutes
+            attendees = ev.get("attendees", []) or []
+            if len(attendees) > 1:
+                meeting_min += minutes
+        except Exception:
+            logger.warning("Event konnte nicht verarbeitet werden: %s", ev.get("subject", "?"))
+            continue
+
+    blocker_min = booked_min - meeting_min
+    booked_hours = booked_min / 60
+    free_hours = max(0.0, total_hours - booked_hours)
+
+    return CapacityPeriod(
+        total_hours=round(total_hours, 1),
+        booked_hours=round(booked_hours, 1),
+        meeting_hours=round(meeting_min / 60, 1),
+        blocker_hours=round(blocker_min / 60, 1),
+        free_hours=round(free_hours, 1),
+        work_days=work_days,
+    )
+
+
+@router.get("/capacity", response_model=CapacityResponse)
+async def get_capacity(
+    user: User = Depends(get_current_user),
+) -> CapacityResponse:
+    """Serverseitige Kapazitätsberechnung (Mo-Fr, 8h/Tag, Europe/Zurich)."""
+    _require_owner(user)
+    _check_configured()
+    client = _get_graph_client()
+
+    now = datetime.now(_TZ)
+    today = now.date()
+
+    week_day = today.weekday()
+    days_until_friday = max(0, 4 - week_day)
+    week_end_date = today + timedelta(days=days_until_friday)
+
+    last_day = cal_mod.monthrange(today.year, today.month)[1]
+    month_end_date = today.replace(day=last_day)
+
+    start_iso = now.isoformat()
+    month_end_dt = datetime.combine(month_end_date, datetime.max.time()).replace(tzinfo=_TZ)
+    end_iso = month_end_dt.isoformat()
+
+    try:
+        events = await client.list_events(start_iso, end_iso, top=500)
+    except PermissionError as e:
+        logger.warning("Kalender capacity: Zugriff verweigert: %s", e)
+        raise HTTPException(status_code=403, detail="Zugriff auf den Kalender verweigert")
+
+    week = _calc_period(now, week_end_date, events)
+    month = _calc_period(now, month_end_date, events)
+
+    if month.free_hours < week.free_hours:
+        month = CapacityPeriod(
+            total_hours=month.total_hours,
+            booked_hours=month.booked_hours,
+            free_hours=week.free_hours,
+            work_days=month.work_days,
+        )
+
+    return CapacityResponse(week=week, month=month, generated_at=now)

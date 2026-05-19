@@ -25,6 +25,102 @@ logger = logging.getLogger("taskpilot.agent_jobs")
 router = APIRouter(prefix="/api/agent-jobs", tags=["agent-jobs"])
 
 
+# ── Stats ─────────────────────────────────────────────────────
+
+class AiJobBreakdown(BaseModel):
+    triage: int
+    drafts: int
+    suggestions: int
+    other: int
+
+
+class AiStatsResponse(BaseModel):
+    pending_decisions: int
+    completed_week: int
+    completed_month: int
+    breakdown_week: AiJobBreakdown
+
+
+@router.get("/stats", response_model=AiStatsResponse)
+async def get_ai_stats(
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> AiStatsResponse:
+    """Aggregierte AI-Job-Statistiken für das Cockpit."""
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/Zurich")
+    now = datetime.now(tz)
+
+    week_start = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    pending_jobs = await db.execute(
+        select(func.count()).where(AgentJob.status == "awaiting_approval").select_from(AgentJob)
+    )
+    pending_tasks = await db.execute(
+        select(func.count()).where(Task.needs_review == True).select_from(Task)  # noqa: E712
+    )
+    pending_decisions = (pending_jobs.scalar_one() or 0) + (pending_tasks.scalar_one() or 0)
+
+    week_result = await db.execute(
+        select(func.count()).where(
+            and_(AgentJob.status == "completed", AgentJob.completed_at >= week_start)
+        ).select_from(AgentJob)
+    )
+    completed_week = week_result.scalar_one() or 0
+
+    month_result = await db.execute(
+        select(func.count()).where(
+            and_(AgentJob.status == "completed", AgentJob.completed_at >= month_start)
+        ).select_from(AgentJob)
+    )
+    completed_month = month_result.scalar_one() or 0
+
+    triage_result = await db.execute(
+        select(func.count()).where(
+            and_(
+                AgentJob.status == "completed",
+                AgentJob.completed_at >= week_start,
+                AgentJob.job_type.in_(["email_triage", "chat_triage"]),
+            )
+        ).select_from(AgentJob)
+    )
+    triage_count = triage_result.scalar_one() or 0
+
+    drafts_result = await db.execute(
+        select(func.count()).where(
+            and_(
+                AgentJob.status == "completed",
+                AgentJob.completed_at >= week_start,
+                AgentJob.job_type == "send_email",
+            )
+        ).select_from(AgentJob)
+    )
+    drafts_count = drafts_result.scalar_one() or 0
+
+    suggestions_result = await db.execute(
+        select(func.count()).where(Task.needs_review == True).select_from(Task)  # noqa: E712
+    )
+    suggestions_count = suggestions_result.scalar_one() or 0
+
+    other_count = completed_week - triage_count - drafts_count
+
+    return AiStatsResponse(
+        pending_decisions=pending_decisions,
+        completed_week=completed_week,
+        completed_month=completed_month,
+        breakdown_week=AiJobBreakdown(
+            triage=triage_count,
+            drafts=drafts_count,
+            suggestions=suggestions_count,
+            other=max(0, other_count),
+        ),
+    )
+
+
 def _get_email_client() -> GraphClient | None:
     s = get_settings()
     if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):

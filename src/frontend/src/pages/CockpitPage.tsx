@@ -84,29 +84,6 @@ interface CockpitSettings {
   cockpit_calendar_hide_private: boolean | null;
 }
 
-interface PipedriveLeadSummary {
-  id: string;
-  title: string;
-  person_id: number | null;
-  person_name: string | null;
-  organization_id: number | null;
-  org_name: string | null;
-  expected_close_date: string | null;
-  value: number | null;
-  currency: string | null;
-}
-
-interface PipedriveDealSummary {
-  id: number;
-  title: string;
-  status: string | null;
-  value: number | null;
-  currency: string | null;
-  stage_id: number | null;
-  person_name: string | null;
-  org_name: string | null;
-}
-
 interface PipedriveActivitySummary {
   id: number;
   subject: string;
@@ -160,12 +137,8 @@ export function CockpitPage() {
   const [_triageStats, setTriageStats] = useState<TriageStats | null>(null);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [flaggedEmails, setFlaggedEmails] = useState<FlaggedEmail[]>([]);
-  const [_recentJobs, setRecentJobs] = useState<AgentJob[]>([]);
 
-  const [pipedriveDeals, setPipedriveDeals] = useState<PipedriveDealSummary[]>([]);
-  const [pipedriveLeads, setPipedriveLeads] = useState<PipedriveLeadSummary[]>([]);
   const [pipedriveActivities, setPipedriveActivities] = useState<PipedriveActivitySummary[]>([]);
-  const [pipedriveConnected, setPipedriveConnected] = useState(false);
 
   const [previews, setPreviews] = useState<Record<string, DraftPreview>>({});
   const [loadingPreviews, setLoadingPreviews] = useState<Set<string>>(new Set());
@@ -180,25 +153,40 @@ export function CockpitPage() {
   const lookedUpEmails = useRef<Set<string>>(new Set());
 
   const [signaSignals, setSignaSignals] = useState<SignaSignal[]>([]);
+  const [signaHasMore, setSignaHasMore] = useState(true);
+  const [signaLoading, setSignaLoading] = useState(false);
+  const signaOffsetRef = useRef(0);
+  const signaObserverRef = useRef<HTMLDivElement | null>(null);
   const [signaModalSignal, setSignaModalSignal] = useState<SignaSignal | null>(null);
   const [signaModalLoading, setSignaModalLoading] = useState(false);
-  const [weekCapacity, setWeekCapacity] = useState<{ freeHours: number; meetingHours: number; blockerHours: number } | null>(null);
+  const [weekCapacity, setWeekCapacity] = useState<{ total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number } | null>(null);
+  const [monthCapacity, setMonthCapacity] = useState<{ total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number } | null>(null);
+  const [aiStats, setAiStats] = useState<{ pending_decisions: number; completed_week: number; completed_month: number; breakdown_week: { triage: number; drafts: number; suggestions: number; other: number } } | null>(null);
+
+  const loadSignaSignals = useCallback(async (reset = false) => {
+    if (signaLoading) return;
+    setSignaLoading(true);
+    const offset = reset ? 0 : signaOffsetRef.current;
+    try {
+      const data = await api.get<{ signals: SignaSignal[]; total: number }>(
+        `/api/signa/signals?min_score=8.0&since=2weeks&status=relevant&limit=10&offset=${offset}`
+      );
+      if (reset) {
+        setSignaSignals(data.signals);
+      } else {
+        setSignaSignals(prev => [...prev, ...data.signals]);
+      }
+      signaOffsetRef.current = offset + data.signals.length;
+      setSignaHasMore(signaOffsetRef.current < data.total);
+    } catch { /* ignore */ }
+    setSignaLoading(false);
+  }, [signaLoading]);
 
   const fetchPipedriveData = useCallback(async () => {
     try {
-      const [pdDeals, pdLeads, pdActs] = await Promise.allSettled([
-        api.get<PipedriveDealSummary[]>('/api/pipedrive/deals?status=open&limit=20'),
-        api.get<PipedriveLeadSummary[]>('/api/pipedrive/leads?limit=100'),
-        api.get<PipedriveActivitySummary[]>('/api/pipedrive/activities?done=false&limit=8'),
-      ]);
-      let anyOk = false;
-      if (pdDeals.status === 'fulfilled') { setPipedriveDeals(pdDeals.value); anyOk = true; }
-      if (pdLeads.status === 'fulfilled') { setPipedriveLeads(pdLeads.value); anyOk = true; }
-      if (pdActs.status === 'fulfilled') { setPipedriveActivities(pdActs.value); anyOk = true; }
-      setPipedriveConnected(anyOk);
-    } catch {
-      setPipedriveConnected(false);
-    }
+      const acts = await api.get<PipedriveActivitySummary[]>('/api/pipedrive/activities?done=false&limit=8');
+      setPipedriveActivities(acts);
+    } catch { /* Pipedrive optional */ }
   }, []);
 
   const fetchAppData = useCallback(async () => {
@@ -213,14 +201,13 @@ export function CockpitPage() {
       const excludeCats = settingsData.cockpit_calendar_exclude_categories ?? 'Transfer, Privat';
       const hidePrivate = settingsData.cockpit_calendar_hide_private ?? true;
 
-      const [jobsData, reviewData, triageData, pipelineData, calData, flaggedData, recentData] = await Promise.all([
+      const [jobsData, reviewData, triageData, pipelineData, calData, flaggedData] = await Promise.all([
         api.get<AgentJob[]>('/api/agent-jobs'),
         api.get<PendingReviewTask[]>('/api/tasks/pending-review').catch(() => [] as PendingReviewTask[]),
         api.get<TriageStats>('/api/triage/stats').catch(() => null),
         api.get<PipelineData>('/api/pipeline').catch(() => null),
         api.get<CalendarEvent[]>(`/api/calendar/events?start=${encodeURIComponent(startOfDay)}&end=${encodeURIComponent(endOfDay)}&exclude_categories=${encodeURIComponent(excludeCats)}&hide_private=${hidePrivate}&hide_free=true`).catch(() => [] as CalendarEvent[]),
         api.get<FlaggedEmail[]>('/api/emails/flagged?top=10').catch(() => [] as FlaggedEmail[]),
-        api.get<AgentJob[]>('/api/agent-jobs?status=completed&limit=8').catch(() => [] as AgentJob[]),
       ]);
 
       const awaitingApproval = jobsData.filter(j => j.status === 'awaiting_approval');
@@ -234,13 +221,14 @@ export function CockpitPage() {
         return endTime > now;
       }));
       setFlaggedEmails(flaggedData);
-      setRecentJobs(recentData.slice(0, 8));
 
       if (pipelineData?.columns) {
-        const focusCol = pipelineData.columns.find(c => c.position === 0) || pipelineData.columns[0];
-        setFocusTasks(focusCol?.tasks ?? []);
-        const weekCol = pipelineData.columns.find(c => c.position === 1);
-        setWeekTasks(weekCol?.tasks ?? []);
+        const sorted = [...pipelineData.columns].sort((a, b) => a.position - b.position);
+        const fokus = sorted[0]?.tasks ?? [];
+        setFocusTasks(fokus);
+        const fokusIds = new Set(fokus.map(t => t.id));
+        const week = (sorted[1]?.tasks ?? []).filter(t => !fokusIds.has(t.id));
+        setWeekTasks(week);
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -252,51 +240,33 @@ export function CockpitPage() {
     } catch { /* */ }
     finally { setLoading(false); }
 
-    api.get<{ signals: SignaSignal[]; total: number }>('/api/signa/signals?min_score=8.0&since=2weeks&status=relevant&limit=10')
-      .then(data => setSignaSignals(data.signals))
+    loadSignaSignals(true);
+
+    // Kapazität und AI-Stats vom Backend laden
+    api.get<{ week: { total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number }; month: { total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number } }>('/api/calendar/capacity')
+      .then(data => {
+        setWeekCapacity(data.week);
+        setMonthCapacity(data.month);
+      })
       .catch(() => {});
 
-    // Wochenkapazität berechnen: Events der Restwoche laden
-    const now2 = new Date();
-    const dayOfWeek = now2.getDay(); // 0=So, 1=Mo, ...
-    const daysUntilFriday = dayOfWeek <= 5 ? 5 - dayOfWeek : 0;
-    const fridayEnd = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate() + daysUntilFriday, 18, 0, 0);
-    if (fridayEnd > now2) {
-      const weekStart = now2.toISOString();
-      const weekEnd = fridayEnd.toISOString();
-      api.get<CalendarEvent[]>(`/api/calendar/events?start=${encodeURIComponent(weekStart)}&end=${encodeURIComponent(weekEnd)}&hide_free=true&hide_private=false&top=100`)
-        .then(events => {
-          let meetingMin = 0;
-          let blockerMin = 0;
-          for (const ev of events) {
-            if (ev.is_all_day) continue;
-            if (!ev.start || !ev.end) continue;
-            const start = new Date(ev.start);
-            const end = new Date(ev.end);
-            const durMin = Math.max(0, (end.getTime() - start.getTime()) / 60000);
-            if (ev.attendees_count > 1) {
-              meetingMin += durMin;
-            } else {
-              blockerMin += durMin;
-            }
-          }
-          // Verbleibende Arbeitsstunden bis Freitag 18:00 (8h/Tag)
-          const currentHour = now2.getHours() + now2.getMinutes() / 60;
-          const hoursLeftToday = Math.max(0, Math.min(18, 18) - Math.max(8, currentHour));
-          const fullDaysLeft = daysUntilFriday > 0 ? daysUntilFriday - (currentHour < 18 ? 0 : 1) : 0;
-          const totalAvailMin = (hoursLeftToday + fullDaysLeft * 8) * 60;
-          const freeMin = Math.max(0, totalAvailMin - meetingMin - blockerMin);
-          setWeekCapacity({
-            freeHours: Math.round(freeMin / 60 * 10) / 10,
-            meetingHours: Math.round(meetingMin / 60 * 10) / 10,
-            blockerHours: Math.round(blockerMin / 60 * 10) / 10,
-          });
-        })
-        .catch(() => {});
-    }
+    api.get<{ pending_decisions: number; completed_week: number; completed_month: number; breakdown_week: { triage: number; drafts: number; suggestions: number; other: number } }>('/api/agent-jobs/stats')
+      .then(data => setAiStats(data))
+      .catch(() => {});
   }, []);
 
   useEffect(() => { fetchAppData(); fetchPipedriveData(); }, [fetchAppData, fetchPipedriveData]);
+
+  useEffect(() => {
+    const el = signaObserverRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      entries => { if (entries[0]?.isIntersecting && signaHasMore && !signaLoading) loadSignaSignals(); },
+      { threshold: 0.1 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [signaHasMore, signaLoading, loadSignaSignals]);
 
   const openSignalModal = useCallback(async (signal: SignaSignal) => {
     if (signal.has_full_content && !signal.full_content) {
@@ -522,19 +492,19 @@ export function CockpitPage() {
 
           {/* ── Zone 1: KPI-Übersicht ── */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-            <KpiCard label="Entscheidungen" value={pendingDecisions} accent="rose" hasBg={hasBg} />
-            <KpiCard label="Fokus-Aufgaben" value={focusTasks.length} accent="amber" hasBg={hasBg} />
-            <WeekCapacityCard capacity={weekCapacity} hasBg={hasBg} />
+            <AiFreigabenCard stats={aiStats} hasBg={hasBg} />
+            <AgendaKpiCard fokus={focusTasks.length} overdue={overdueTasks.length} week={weekTasks.length} hasBg={hasBg} />
+            <CapacityCard weekCapacity={weekCapacity} monthCapacity={monthCapacity} hasBg={hasBg} />
           </div>
 
-          {/* ── Zone 2: Aufgaben (Fokus | Überfällig | Diese Woche) | Kalender | Markierte E-Mails ── */}
+          {/* ── Zone 2: Aufgaben (Fokus | Überfällig | Diese Woche) | Kalender | E-Mails & Aufgaben ── */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
-            {/* Spalte 1: Aufgaben mit drei Abschnitten */}
+            {/* Spalte 1: Agenda */}
             <section className={`rounded-xl border p-4 ${cardClass}`}>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-                  Aufgaben
+                  Agenda
                 </h2>
                 <button
                   onClick={() => navigate('/pipeline')}
@@ -683,48 +653,85 @@ export function CockpitPage() {
               )}
             </section>
 
-            {/* Spalte 3: Markierte E-Mails */}
+            {/* Spalte 3: E-Mails & CRM */}
             <section className={`rounded-xl border p-4 ${cardClass}`}>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-                  Markierte E-Mails
+                  E-Mails & CRM
                 </h2>
-                <button
-                  onClick={() => navigate('/inbox')}
-                  className={`text-xs font-medium ${hasBg ? 'text-white/60 hover:text-white' : 'text-indigo-600 hover:text-indigo-800 dark:text-indigo-400'}`}
-                >
-                  Posteingang →
-                </button>
-              </div>
-              {flaggedEmails.length === 0 ? (
-                <div className={`flex h-20 items-center justify-center rounded-lg text-sm ${textMuted}`}>
-                  Keine markierten E-Mails
+                <div className={`flex items-center gap-1.5 text-xs font-medium`}>
+                  <button
+                    onClick={() => navigate('/inbox')}
+                    className={`${hasBg ? 'text-white/60 hover:text-white' : 'text-indigo-600 hover:text-indigo-800 dark:text-indigo-400'}`}
+                  >
+                    Posteingang
+                  </button>
+                  <span className={`${hasBg ? 'text-white/30' : 'text-gray-300 dark:text-gray-600'}`}>·</span>
+                  <a
+                    href="https://innosmith.pipedrive.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`${hasBg ? 'text-white/60 hover:text-white' : 'text-green-600 hover:text-green-800 dark:text-green-400'}`}
+                  >
+                    Pipedrive
+                  </a>
                 </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {flaggedEmails.map(email => (
-                    <div
-                      key={email.id}
-                      className={`flex items-start gap-2.5 rounded-lg p-2.5 cursor-pointer transition-colors ${
+              </div>
+              <div className="space-y-1.5 max-h-80 overflow-y-auto">
+                {flaggedEmails.map(email => (
+                  <div
+                    key={email.id}
+                    className={`flex items-start gap-2.5 rounded-lg p-2.5 cursor-pointer transition-colors ${
+                      hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+                    }`}
+                    onClick={() => navigate('/inbox')}
+                  >
+                    <FlagIcon className={`mt-0.5 h-4 w-4 shrink-0 ${hasBg ? 'text-orange-300' : 'text-orange-500 dark:text-orange-400'}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm font-medium truncate ${textPrimary}`}>{email.subject || 'Kein Betreff'}</div>
+                      <div className={`text-[11px] ${textMuted}`}>
+                        {email.from_name || email.from_address}
+                        {email.received_at && ` · ${relativeDate(email.received_at)}`}
+                      </div>
+                    </div>
+                    {email.has_attachments && (
+                      <PaperclipIcon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${textMuted}`} />
+                    )}
+                  </div>
+                ))}
+                {pipedriveActivities.length > 0 && flaggedEmails.length > 0 && (
+                  <div className={`my-2 border-t ${hasBg ? 'border-white/10' : 'border-gray-100 dark:border-gray-800'}`} />
+                )}
+                {pipedriveActivities.map(act => {
+                  const isOverdue = act.due_date && new Date(act.due_date) < new Date();
+                  return (
+                    <a
+                      key={`pd-${act.id}`}
+                      href={`https://innosmith.pipedrive.com/activities/${act.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`flex items-start gap-2.5 rounded-lg p-2.5 transition-colors ${
                         hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
                       }`}
-                      onClick={() => navigate('/inbox')}
                     >
-                      <FlagIcon className={`mt-0.5 h-4 w-4 shrink-0 ${hasBg ? 'text-orange-300' : 'text-orange-500 dark:text-orange-400'}`} />
+                      <div className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${isOverdue ? 'bg-red-500' : 'bg-orange-400'}`} />
                       <div className="min-w-0 flex-1">
-                        <div className={`text-sm font-medium truncate ${textPrimary}`}>{email.subject || 'Kein Betreff'}</div>
-                        <div className={`text-[11px] ${textMuted}`}>
-                          {email.from_name || email.from_address}
-                          {email.received_at && ` · ${relativeDate(email.received_at)}`}
+                        <div className={`text-sm font-medium truncate ${textPrimary}`}>{act.subject}</div>
+                        <div className={`text-[11px] ${isOverdue ? 'text-red-500 font-medium' : textMuted}`}>
+                          {act.type || 'Aufgabe'}
+                          {act.due_date && ` · ${isOverdue ? 'Überfällig' : new Date(act.due_date).toLocaleDateString('de-CH')}`}
+                          {act.person_name && ` · ${act.person_name}`}
                         </div>
                       </div>
-                      {email.has_attachments && (
-                        <PaperclipIcon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${textMuted}`} />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
+                    </a>
+                  );
+                })}
+                {flaggedEmails.length === 0 && pipedriveActivities.length === 0 && (
+                  <div className={`flex h-20 items-center justify-center rounded-lg text-sm ${textMuted}`}>
+                    Keine E-Mails oder Aufgaben
+                  </div>
+                )}
+              </div>
             </section>
           </div>
 
@@ -1019,6 +1026,9 @@ export function CockpitPage() {
             </section>
           )}
 
+          {/* ── Fällige Kreditoren-Zahlungen ── */}
+          <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
+
           {/* ── SIGNA-Signale ── */}
           {signaSignals.length > 0 && (
             <section className={`rounded-xl border p-4 ${cardClass}`}>
@@ -1033,8 +1043,8 @@ export function CockpitPage() {
                   Alle Signale →
                 </button>
               </div>
-              <div className="space-y-1.5">
-                {signaSignals.slice(0, 8).map(signal => (
+              <div className="max-h-96 overflow-y-auto space-y-1.5">
+                {signaSignals.map(signal => (
                   <div
                     key={signal.id}
                     className={`flex items-start gap-2.5 rounded-lg px-2.5 py-2 cursor-pointer transition-colors ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
@@ -1056,152 +1066,11 @@ export function CockpitPage() {
                     </div>
                   </div>
                 ))}
-              </div>
-            </section>
-          )}
-
-          {/* ── Fällige Kreditoren-Zahlungen ── */}
-          <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
-
-          {/* ── Zone 4: CRM / Pipedrive ── */}
-          {pipedriveConnected && (
-            <section>
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-                  <span className="inline-flex items-center gap-1.5">
-                    <CrmIcon className={`h-4 w-4 ${hasBg ? 'text-green-300' : 'text-green-600 dark:text-green-400'}`} />
-                    Pipedrive CRM
-                  </span>
-                </h2>
-                <a
-                  href="https://innosmith.pipedrive.com"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`text-xs font-medium ${hasBg ? 'text-white/60 hover:text-white' : 'text-green-600 hover:text-green-800 dark:text-green-400'}`}
-                >
-                  Pipedrive öffnen →
-                </a>
-              </div>
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                {/* Leads (links) */}
-                <div className={`rounded-xl border p-4 ${cardClass}`}>
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className={`text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Leads</span>
-                    <span className={`text-[11px] ${textMuted}`}>{pipedriveLeads.length}</span>
+                {signaHasMore && (
+                  <div ref={signaObserverRef} className="flex justify-center py-2">
+                    {signaLoading && <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />}
                   </div>
-                  {pipedriveLeads.length === 0 ? (
-                    <div className={`flex h-14 items-center justify-center rounded-lg text-xs ${textMuted}`}>
-                      Keine offenen Leads
-                    </div>
-                  ) : (
-                    <div className="max-h-64 space-y-1 overflow-y-auto">
-                      {pipedriveLeads.map(lead => (
-                        <a
-                          key={lead.id}
-                          href={`https://innosmith.pipedrive.com/leads/inbox/${lead.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`flex items-center gap-2 rounded-lg p-2 transition-colors ${
-                            hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                          }`}
-                        >
-                          <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-amber-400" />
-                          <div className="min-w-0 flex-1">
-                            <div className={`text-sm font-medium truncate ${textPrimary}`}>{lead.title}</div>
-                            <div className={`text-[11px] ${textMuted}`}>
-                              {lead.person_name || lead.org_name || ''}
-                            </div>
-                          </div>
-                          {lead.value != null && lead.value > 0 && (
-                            <span className={`shrink-0 text-[11px] font-medium ${textMuted}`}>
-                              {lead.currency || 'CHF'} {lead.value.toLocaleString('de-CH')}
-                            </span>
-                          )}
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Offene Deals (Mitte) */}
-                <div className={`rounded-xl border p-4 ${cardClass}`}>
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className={`text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Deals</span>
-                    <span className={`text-[11px] ${textMuted}`}>{pipedriveDeals.length}</span>
-                  </div>
-                  {pipedriveDeals.length === 0 ? (
-                    <div className={`flex h-14 items-center justify-center rounded-lg text-xs ${textMuted}`}>
-                      Keine offenen Deals
-                    </div>
-                  ) : (
-                    <div className="max-h-64 space-y-1 overflow-y-auto">
-                      {pipedriveDeals.map(deal => (
-                        <a
-                          key={deal.id}
-                          href={`https://innosmith.pipedrive.com/deal/${deal.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`flex items-center gap-2 rounded-lg p-2 transition-colors ${
-                            hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                          }`}
-                        >
-                          <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-green-500" />
-                          <div className="min-w-0 flex-1">
-                            <div className={`text-sm font-medium truncate ${textPrimary}`}>{deal.title}</div>
-                            <div className={`text-[11px] ${textMuted}`}>
-                              {deal.person_name || deal.org_name || ''}
-                            </div>
-                          </div>
-                          {deal.value != null && deal.value > 0 && (
-                            <span className={`shrink-0 text-[11px] font-semibold ${hasBg ? 'text-green-300' : 'text-green-600 dark:text-green-400'}`}>
-                              {deal.currency || 'CHF'} {deal.value.toLocaleString('de-CH')}
-                            </span>
-                          )}
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* CRM-Aktivitäten (rechts) */}
-                <div className={`rounded-xl border p-4 ${cardClass}`}>
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className={`text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Aufgaben</span>
-                    <span className={`text-[11px] ${textMuted}`}>{pipedriveActivities.length}</span>
-                  </div>
-                  {pipedriveActivities.length === 0 ? (
-                    <div className={`flex h-14 items-center justify-center rounded-lg text-xs ${textMuted}`}>
-                      Keine offenen CRM-Aufgaben
-                    </div>
-                  ) : (
-                    <div className="max-h-64 space-y-1 overflow-y-auto">
-                      {pipedriveActivities.map(act => {
-                        const isOverdue = act.due_date && new Date(act.due_date) < new Date();
-                        return (
-                          <a
-                            key={act.id}
-                            href={`https://innosmith.pipedrive.com/activities/${act.id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className={`flex items-center gap-2 rounded-lg p-2 transition-colors ${
-                              hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                            }`}
-                          >
-                            <div className={`h-1.5 w-1.5 rounded-full shrink-0 ${isOverdue ? 'bg-red-500' : 'bg-orange-400'}`} />
-                            <div className="min-w-0 flex-1">
-                              <div className={`text-sm font-medium truncate ${textPrimary}`}>{act.subject}</div>
-                              <div className={`text-[11px] ${isOverdue ? 'text-red-500 font-medium' : textMuted}`}>
-                                {act.type || 'Aufgabe'}
-                                {act.due_date && ` · ${isOverdue ? 'Überfällig' : new Date(act.due_date).toLocaleDateString('de-CH')}`}
-                                {act.person_name && ` · ${act.person_name}`}
-                              </div>
-                            </div>
-                          </a>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
             </section>
           )}
@@ -1278,13 +1147,6 @@ export function CockpitPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {signaModalSignal.ai_reason && (
-                  <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-4 dark:border-indigo-900/30 dark:bg-indigo-950/20">
-                    <h4 className="mb-1 text-xs font-semibold uppercase text-indigo-600 dark:text-indigo-400">KI-Einschätzung</h4>
-                    <p className="text-sm text-gray-700 dark:text-gray-300">{signaModalSignal.ai_reason}</p>
-                  </div>
-                )}
-
                 {signaModalSignal.type === 'youtube' && signaModalSignal.url && (
                   <div className="aspect-video w-full overflow-hidden rounded-lg">
                     <iframe
@@ -1296,7 +1158,11 @@ export function CockpitPage() {
                   </div>
                 )}
 
-                {signaModalSignal.full_content && (
+                {signaModalSignal.ai_reason && (
+                  <p className="text-sm text-gray-700 dark:text-gray-300">{signaModalSignal.ai_reason}</p>
+                )}
+
+                {signaModalSignal.full_content && signaModalSignal.type !== 'youtube' && (
                   <div className="max-h-80 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
                     {/<[a-z][\s\S]*>/i.test(signaModalSignal.full_content) ? (
                       <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: signaModalSignal.full_content }} />
@@ -1304,10 +1170,6 @@ export function CockpitPage() {
                       <p className="whitespace-pre-wrap">{signaModalSignal.full_content}</p>
                     )}
                   </div>
-                )}
-
-                {!signaModalSignal.full_content && signaModalSignal.description && (
-                  <p className="text-sm text-gray-600 dark:text-gray-400">{signaModalSignal.description}</p>
                 )}
 
                 {signaModalSignal.url && signaModalSignal.type !== 'youtube' && (
@@ -1329,84 +1191,146 @@ export function CockpitPage() {
   );
 }
 
-/* ── KPI Card ── */
+/* ── AI-Freigaben Card (Split-Layout mit Breakdown) ── */
 
-function KpiCard({
-  label,
-  value,
-  accent,
-  hasBg,
-}: {
-  label: string;
-  value: number;
-  accent: 'rose' | 'indigo' | 'amber' | 'emerald' | 'sky';
-  hasBg: boolean;
-}) {
-  const accentMap = {
-    rose: { text: 'text-rose-600 dark:text-rose-400', bg: 'bg-rose-100 dark:bg-rose-900/40' },
-    indigo: { text: 'text-indigo-600 dark:text-indigo-400', bg: 'bg-indigo-100 dark:bg-indigo-900/40' },
-    amber: { text: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-100 dark:bg-amber-900/40' },
-    emerald: { text: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-100 dark:bg-emerald-900/40' },
-    sky: { text: 'text-sky-600 dark:text-sky-400', bg: 'bg-sky-100 dark:bg-sky-900/40' },
-  };
+type AiStats = { pending_decisions: number; completed_week: number; completed_month: number; breakdown_week: { triage: number; drafts: number; suggestions: number; other: number } };
 
-  const a = accentMap[accent];
+function AiFreigabenCard({ stats, hasBg }: { stats: AiStats | null; hasBg: boolean }) {
+  const pending = stats?.pending_decisions ?? 0;
+  const week = stats?.completed_week ?? 0;
+  const month = stats?.completed_month ?? 0;
+  const bd = stats?.breakdown_week;
+
+  const pendingColor = pending > 0
+    ? (hasBg ? 'text-amber-300' : 'text-amber-600 dark:text-amber-400')
+    : (hasBg ? 'text-white' : 'text-gray-700 dark:text-gray-300');
+  const labelClass = `text-[10px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`;
+  const valueClass = `text-xs font-medium ${hasBg ? 'text-white/90' : 'text-gray-700 dark:text-gray-300'}`;
 
   return (
     <div className={`rounded-xl border p-3 lg:p-4 ${
-      hasBg
-        ? 'bg-white/10 backdrop-blur-md border-white/20'
-        : 'bg-white border-gray-200 dark:bg-gray-900 dark:border-gray-800'
+      hasBg ? 'bg-white/10 backdrop-blur-md border-white/20' : 'bg-white border-gray-200 dark:bg-gray-900 dark:border-gray-800'
     }`}>
-      <div className={`text-2xl font-bold lg:text-3xl ${hasBg ? 'text-white' : a.text}`}>
-        {value}
+      <div className={`mb-1.5 text-[10px] font-semibold uppercase tracking-wide ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
+        AI-Aktivität
       </div>
-      <div className={`mt-1 text-[11px] font-medium lg:text-xs ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
-        {label}
+      <div className="flex gap-3 h-full">
+        {/* Links: Freigaben offen */}
+        <div className={`flex flex-col justify-center border-r pr-3 min-w-[60px] ${hasBg ? 'border-white/10' : 'border-gray-100 dark:border-gray-800'}`}>
+          <div className={`text-2xl font-bold lg:text-3xl ${pendingColor}`}>{pending}</div>
+          <div className={labelClass}>Freigaben{'\n'}offen</div>
+        </div>
+        {/* Rechts: Woche / Monat + Breakdown */}
+        <div className="flex flex-col justify-center gap-1 min-w-0">
+          <div className="flex items-baseline gap-1">
+            <span className={valueClass}>{week}</span>
+            <span className={labelClass}>diese Woche</span>
+          </div>
+          <div className="flex items-baseline gap-1">
+            <span className={valueClass}>{month}</span>
+            <span className={labelClass}>dieser Monat</span>
+          </div>
+          {bd && (bd.triage > 0 || bd.drafts > 0 || bd.suggestions > 0 || bd.other > 0) && (
+            <div className={`text-[9px] mt-0.5 ${hasBg ? 'text-white/40' : 'text-gray-400 dark:text-gray-500'}`}>
+              {[
+                bd.triage > 0 && `${bd.triage} Triage`,
+                bd.suggestions > 0 && `${bd.suggestions} Vorschläge`,
+                bd.drafts > 0 && `${bd.drafts} Drafts`,
+                bd.other > 0 && `${bd.other} Andere`,
+              ].filter(Boolean).join(' · ')}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-/* ── Week Capacity Card ── */
+/* ── Agenda KPI Card ── */
 
-function WeekCapacityCard({ capacity, hasBg }: { capacity: { freeHours: number; meetingHours: number; blockerHours: number } | null; hasBg: boolean }) {
+function AgendaKpiCard({ fokus, overdue, week, hasBg }: { fokus: number; overdue: number; week: number; hasBg: boolean }) {
+  const valClass = `text-xs font-medium ${hasBg ? 'text-white/90' : 'text-gray-700 dark:text-gray-300'}`;
+  const labelClass = `text-[10px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`;
+  return (
+    <div className={`rounded-xl border p-3 lg:p-4 ${
+      hasBg ? 'bg-white/10 backdrop-blur-md border-white/20' : 'bg-white border-gray-200 dark:bg-gray-900 dark:border-gray-800'
+    }`}>
+      <div className={`mb-1.5 text-[10px] font-semibold uppercase tracking-wide ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
+        Agenda
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center gap-1.5">
+          <div className="h-2 w-2 rounded-full bg-amber-500 shrink-0" />
+          <span className={valClass}>{fokus}</span>
+          <span className={labelClass}>Fokus</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="h-2 w-2 rounded-full bg-red-500 shrink-0" />
+          <span className={valClass}>{overdue}</span>
+          <span className={labelClass}>Überfällig</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="h-2 w-2 rounded-full bg-blue-500 shrink-0" />
+          <span className={valClass}>{week}</span>
+          <span className={labelClass}>Diese Woche</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Capacity Card (Woche + Monat) ── */
+
+type CapData = { total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number };
+
+function CapacityCard({ weekCapacity, monthCapacity, hasBg }: { weekCapacity: CapData | null; monthCapacity: CapData | null; hasBg: boolean }) {
+  const labelClass = `text-[10px] whitespace-nowrap ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`;
+  const valueClass = `text-xs font-medium ${hasBg ? 'text-white/90' : 'text-gray-700 dark:text-gray-300'}`;
+
+  const renderCol = (label: string, data: CapData | null) => (
+    <div>
+      <div className={`mb-1 text-[10px] font-semibold uppercase tracking-wide ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
+        {label}
+      </div>
+      {data ? (
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-1">
+            <div className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+            <span className={valueClass}>{data.free_hours}h</span>
+            <span className={labelClass}>frei</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="h-2 w-2 rounded-full bg-orange-400 shrink-0" />
+            <span className={valueClass}>{data.meeting_hours}h</span>
+            <span className={labelClass}>Meetings</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="h-2 w-2 rounded-full bg-blue-400 shrink-0" />
+            <span className={valueClass}>{data.blocker_hours}h</span>
+            <span className={labelClass}>verplant</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="h-2 w-2 rounded-full bg-gray-400 shrink-0" />
+            <span className={valueClass}>{data.work_days}</span>
+            <span className={labelClass}>Arbeitstage</span>
+          </div>
+        </div>
+      ) : (
+        <div className={`text-[10px] ${hasBg ? 'text-white/40' : 'text-gray-400'}`}>…</div>
+      )}
+    </div>
+  );
+
   return (
     <div className={`rounded-xl border p-3 lg:p-4 ${
       hasBg
         ? 'bg-white/10 backdrop-blur-md border-white/20'
         : 'bg-white border-gray-200 dark:bg-gray-900 dark:border-gray-800'
     }`}>
-      <div className={`mb-1 text-[11px] font-medium lg:text-xs ${hasBg ? 'text-white/60' : 'text-gray-500 dark:text-gray-400'}`}>
-        Woche
+      <div className="grid grid-cols-2 gap-3">
+        {renderCol('Woche', weekCapacity)}
+        {renderCol('Monat', monthCapacity)}
       </div>
-      {capacity ? (
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-1.5">
-            <div className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
-            <span className={`text-base font-bold ${hasBg ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'}`}>
-              {capacity.freeHours}h
-            </span>
-            <span className={`text-[10px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`}>frei</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="h-2 w-2 rounded-full bg-orange-400 shrink-0" />
-            <span className={`text-xs font-medium ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>
-              {capacity.meetingHours}h
-            </span>
-            <span className={`text-[10px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`}>Meetings</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="h-2 w-2 rounded-full bg-blue-400 shrink-0" />
-            <span className={`text-xs font-medium ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>
-              {capacity.blockerHours}h
-            </span>
-            <span className={`text-[10px] ${hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500'}`}>Blocker</span>
-          </div>
-        </div>
-      ) : (
-        <div className={`text-xs ${hasBg ? 'text-white/40' : 'text-gray-400'}`}>Laden…</div>
-      )}
     </div>
   );
 }
@@ -1498,14 +1422,6 @@ function PaperclipIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" />
-    </svg>
-  );
-}
-
-function CrmIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z" />
     </svg>
   );
 }

@@ -120,6 +120,10 @@ export default function DebtorsPage() {
   const [debtorSort, setDebtorSort] = useState<'revenue' | 'open' | 'name'>('revenue');
   const [expandedDebtor, setExpandedDebtor] = useState<number | null>(null);
 
+  const [pipedriveLeads, setPipedriveLeads] = useState<{ id: string; title: string; person_name: string | null; org_name: string | null; value: number | null; currency: string | null }[]>([]);
+  const [pipedriveDeals, setPipedriveDeals] = useState<{ id: number; title: string; value: number | null; currency: string | null; person_name: string | null; org_name: string | null }[]>([]);
+  const [pipedriveActivities, setPipedriveActivities] = useState<{ id: number; subject: string; type: string | null; due_date: string | null; person_name: string | null }[]>([]);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -138,6 +142,16 @@ export default function DebtorsPage() {
     api.get<{ debtors_background_url: string | null }>('/api/settings')
       .then(s => { if (s.debtors_background_url) setBgUrl(s.debtors_background_url); })
       .catch(() => {});
+    // Pipedrive-Daten laden
+    Promise.allSettled([
+      api.get<{ id: number; title: string; value: number | null; currency: string | null; person_name: string | null; org_name: string | null }[]>('/api/pipedrive/deals?status=open&limit=20'),
+      api.get<{ id: string; title: string; person_name: string | null; org_name: string | null; value: number | null; currency: string | null }[]>('/api/pipedrive/leads?limit=100'),
+      api.get<{ id: number; subject: string; type: string | null; due_date: string | null; person_name: string | null }[]>('/api/pipedrive/activities?done=false&limit=15'),
+    ]).then(([deals, leads, acts]) => {
+      if (deals.status === 'fulfilled') setPipedriveDeals(deals.value);
+      if (leads.status === 'fulfilled') setPipedriveLeads(leads.value);
+      if (acts.status === 'fulfilled') setPipedriveActivities(acts.value);
+    });
   }, [loadData]);
 
   const handleRefresh = async () => {
@@ -238,6 +252,107 @@ export default function DebtorsPage() {
         {toggl && toggl.projects.length > 0 && (
           <MonthCockpit toggl={toggl} monthProgress={monthProgress} hasBg={hasBg}
             sectionClass={sectionClass} textPrimary={textPrimary} textSecondary={textSecondary} textMuted={textMuted} />
+        )}
+
+        {/* ── Pipedrive: Leads, Deals & Aufgaben ── */}
+        {(pipedriveLeads.length > 0 || pipedriveDeals.length > 0 || pipedriveActivities.length > 0) && (
+          <div className={`mb-6 ${sectionClass}`}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className={`text-sm font-semibold ${textPrimary}`}>Pipedrive CRM</h3>
+              <a
+                href="https://innosmith.pipedrive.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`text-xs font-medium ${textSecondary} hover:underline`}
+              >
+                Pipedrive öffnen →
+              </a>
+            </div>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              {/* Leads */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className={`text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Leads</span>
+                  <span className={`text-[11px] ${textMuted}`}>{pipedriveLeads.length}</span>
+                </div>
+                {pipedriveLeads.length === 0 ? (
+                  <p className={`text-xs ${textMuted}`}>Keine offenen Leads</p>
+                ) : (
+                  <div className="max-h-56 space-y-1 overflow-y-auto">
+                    {pipedriveLeads.map(lead => (
+                      <a key={lead.id} href={`https://innosmith.pipedrive.com/leads/inbox/${lead.id}`} target="_blank" rel="noopener noreferrer"
+                        className={`flex items-center gap-2 rounded-lg p-2 transition-colors ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+                        <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-amber-400" />
+                        <div className="min-w-0 flex-1">
+                          <div className={`text-sm font-medium truncate ${textPrimary}`}>{lead.title}</div>
+                          <div className={`text-[11px] ${textMuted}`}>{lead.person_name || lead.org_name || ''}</div>
+                        </div>
+                        {lead.value != null && lead.value > 0 && (
+                          <span className={`shrink-0 text-[11px] font-medium ${textMuted}`}>{lead.currency || 'CHF'} {lead.value.toLocaleString('de-CH')}</span>
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Deals */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className={`text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Deals</span>
+                  <span className={`text-[11px] ${textMuted}`}>{pipedriveDeals.length}</span>
+                </div>
+                {pipedriveDeals.length === 0 ? (
+                  <p className={`text-xs ${textMuted}`}>Keine offenen Deals</p>
+                ) : (
+                  <div className="max-h-56 space-y-1 overflow-y-auto">
+                    {pipedriveDeals.map(deal => (
+                      <a key={deal.id} href={`https://innosmith.pipedrive.com/deal/${deal.id}`} target="_blank" rel="noopener noreferrer"
+                        className={`flex items-center gap-2 rounded-lg p-2 transition-colors ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+                        <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-green-500" />
+                        <div className="min-w-0 flex-1">
+                          <div className={`text-sm font-medium truncate ${textPrimary}`}>{deal.title}</div>
+                          <div className={`text-[11px] ${textMuted}`}>{deal.person_name || deal.org_name || ''}</div>
+                        </div>
+                        {deal.value != null && deal.value > 0 && (
+                          <span className={`shrink-0 text-[11px] font-semibold ${hasBg ? 'text-green-300' : 'text-green-600 dark:text-green-400'}`}>{deal.currency || 'CHF'} {deal.value.toLocaleString('de-CH')}</span>
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Aktivitäten */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className={`text-xs font-semibold uppercase tracking-wider ${textMuted}`}>Aufgaben</span>
+                  <span className={`text-[11px] ${textMuted}`}>{pipedriveActivities.length}</span>
+                </div>
+                {pipedriveActivities.length === 0 ? (
+                  <p className={`text-xs ${textMuted}`}>Keine offenen CRM-Aufgaben</p>
+                ) : (
+                  <div className="max-h-56 space-y-1 overflow-y-auto">
+                    {pipedriveActivities.map(act => {
+                      const isOverdue = act.due_date && new Date(act.due_date) < new Date();
+                      return (
+                        <a key={act.id} href={`https://innosmith.pipedrive.com/activities/${act.id}`} target="_blank" rel="noopener noreferrer"
+                          className={`flex items-center gap-2 rounded-lg p-2 transition-colors ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+                          <div className={`h-1.5 w-1.5 rounded-full shrink-0 ${isOverdue ? 'bg-red-500' : 'bg-orange-400'}`} />
+                          <div className="min-w-0 flex-1">
+                            <div className={`text-sm font-medium truncate ${textPrimary}`}>{act.subject}</div>
+                            <div className={`text-[11px] ${isOverdue ? 'text-red-500 font-medium' : textMuted}`}>
+                              {act.type || 'Aufgabe'}
+                              {act.due_date && ` · ${isOverdue ? 'Überfällig' : new Date(act.due_date).toLocaleDateString('de-CH')}`}
+                              {act.person_name && ` · ${act.person_name}`}
+                            </div>
+                          </div>
+                        </a>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         )}
 
         {toggl && agingData.length > 0 && (
