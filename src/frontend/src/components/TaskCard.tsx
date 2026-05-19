@@ -45,8 +45,9 @@ export function TaskCard({
   };
 
   const hasChecklist = task.checklist_total > 0;
-  const isOverdue =
-    task.due_date && new Date(task.due_date) < new Date() && !task.is_completed;
+  const todayStr = new Date().toISOString().split('T')[0];
+  const isOverdue = task.due_date && task.due_date < todayStr && !task.is_completed;
+  const isDueToday = task.due_date === todayStr && !task.is_completed;
 
   const handleArchive = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -66,11 +67,19 @@ export function TaskCard({
       className={`group relative cursor-pointer rounded-xl border p-3 shadow-sm transition-all hover:shadow-md ${
         fading ? 'scale-95 opacity-0' : ''
       } ${
-        isOverdue
-          ? 'border-amber-200 bg-amber-50/80 dark:border-amber-900/40 dark:bg-amber-950/20'
-          : hasBg
-            ? 'border-white/10 bg-white/75 backdrop-blur-sm dark:bg-gray-900/75'
-            : 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900'
+        hasBg
+          ? `backdrop-blur-sm ${
+              isOverdue
+                ? 'border-white/10 border-l-[3px] border-l-red-500 bg-white/75 bg-gradient-to-r from-red-500/5 to-transparent dark:bg-gray-900/75 dark:from-red-500/10'
+                : isDueToday
+                  ? 'border-white/10 border-l-[3px] border-l-amber-400 bg-white/75 bg-gradient-to-r from-amber-400/5 to-transparent dark:bg-gray-900/75 dark:from-amber-400/10'
+                  : 'border-white/10 bg-white/75 dark:bg-gray-900/75'
+            }`
+          : isOverdue
+            ? 'border-gray-200 border-l-[3px] border-l-red-500 bg-gradient-to-r from-red-50 to-white dark:border-gray-700 dark:border-l-red-500 dark:bg-gray-900 dark:from-red-950/30 dark:to-gray-900'
+            : isDueToday
+              ? 'border-gray-200 border-l-[3px] border-l-amber-400 bg-gradient-to-r from-amber-50 to-white dark:border-gray-700 dark:border-l-amber-400 dark:bg-gray-900 dark:from-amber-950/30 dark:to-gray-900'
+              : 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900'
       } ${isDragging ? 'z-50 rotate-2 scale-105 opacity-50 shadow-xl' : ''} ${
         task.is_completed ? 'opacity-60' : ''
       }`}
@@ -134,7 +143,11 @@ export function TaskCard({
         {task.due_date && (
           <span
             className={`flex items-center gap-1 ${
-              isOverdue ? 'font-medium text-red-500' : ''
+              isOverdue
+                ? 'font-medium text-red-500'
+                : isDueToday
+                  ? 'font-medium text-amber-500'
+                  : ''
             }`}
           >
             <CalendarIcon className="h-3.5 w-3.5" />
