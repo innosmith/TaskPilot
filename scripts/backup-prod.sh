@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TaskPilot Produktions-Backup (verschluesselt mit age)
+# TaskPilot Produktions-Backup (verschluesselt mit gpg)
 #
 # Sichert alle produktionsrelevanten Daten als verschluesseltes Archiv auf OneDrive:
 #   - PostgreSQL-Datenbank (pg_dump)
@@ -7,7 +7,7 @@
 #   - Nanobot-Workspace (Skills, Memory, Sessions)
 #   - Konfigurationsdateien (.env.prod, nanobot-config, secrets)
 #
-# Voraussetzung: Prod-Container laufen (make prod), age installiert, TP_BACKUP_PASSPHRASE gesetzt
+# Voraussetzung: Prod-Container laufen (make prod), gpg installiert, TP_BACKUP_PASSPHRASE gesetzt
 # Aufruf: ./scripts/backup-prod.sh  oder  make backup-prod
 
 set -euo pipefail
@@ -60,8 +60,8 @@ trap cleanup EXIT
 
 log_step "Voraussetzungen pruefen"
 
-if ! command -v age &>/dev/null; then
-    log_error "'age' ist nicht installiert. Bitte: sudo apt install age"
+if ! command -v gpg &>/dev/null; then
+    log_error "'gpg' ist nicht installiert. Bitte: sudo apt install gnupg"
     exit 1
 fi
 
@@ -180,7 +180,7 @@ DURATION=$((END_TIME - START_TIME))
     echo "Timestamp:  ${TIMESTAMP}"
     echo "Host:       $(hostname)"
     echo "Dauer:      ${DURATION}s"
-    echo "Verschl.:   age (passphrase)"
+    echo "Verschl.:   gpg (AES-256, symmetric)"
     echo "Ziel:       ${BACKUP_DIR}"
     echo ""
     echo "Dateien im Archiv:"
@@ -208,13 +208,14 @@ tar -czf "${ARCHIVE_PATH}" -C "${WORK_DIR}" .
 ARCHIVE_SIZE=$(du -h "${ARCHIVE_PATH}" | cut -f1)
 log_info "Archiv erstellt: ${ARCHIVE_SIZE}"
 
-AGE_PASSPHRASE="${TP_BACKUP_PASSPHRASE}" age -e -p \
-    -o "${BACKUP_DIR}/${ARCHIVE_NAME}.age" \
+gpg --batch --yes --passphrase "${TP_BACKUP_PASSPHRASE}" \
+    --symmetric --cipher-algo AES256 --compress-algo none \
+    -o "${BACKUP_DIR}/${ARCHIVE_NAME}.gpg" \
     "${ARCHIVE_PATH}"
 
 rm -f "${ARCHIVE_PATH}"
 
-ENCRYPTED_SIZE=$(du -h "${BACKUP_DIR}/${ARCHIVE_NAME}.age" | cut -f1)
+ENCRYPTED_SIZE=$(du -h "${BACKUP_DIR}/${ARCHIVE_NAME}.gpg" | cut -f1)
 log_info "Verschluesselt: ${ENCRYPTED_SIZE}"
 
 cp "${WORK_DIR}/backup.log" "${BACKUP_DIR}/backup.log"
@@ -236,11 +237,11 @@ fi
 echo ""
 echo -e "${GREEN}${BOLD}Backup erfolgreich abgeschlossen (verschluesselt)${NC}"
 echo -e "  Verzeichnis:  ${BACKUP_DIR}"
-echo -e "  Archiv:       ${ARCHIVE_NAME}.age (${ENCRYPTED_SIZE})"
+echo -e "  Archiv:       ${ARCHIVE_NAME}.gpg (${ENCRYPTED_SIZE})"
 echo -e "  Dauer:        ${DURATION}s"
 echo ""
 echo "Entschluesselung:"
-echo "  age -d -o backup.tar.gz ${ARCHIVE_NAME}.age"
+echo "  gpg --batch --passphrase \"\$TP_BACKUP_PASSPHRASE\" -d ${ARCHIVE_NAME}.gpg > backup.tar.gz"
 echo "  tar xzf backup.tar.gz"
 echo ""
 cat "${BACKUP_DIR}/backup.log"

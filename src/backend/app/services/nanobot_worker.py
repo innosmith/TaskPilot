@@ -119,6 +119,7 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     preview = meta.get("body_preview", "")
     inference = meta.get("inference_classification", "")
     conversation_id = meta.get("conversation_id", "")
+    recipient_type = meta.get("recipient_type", "unknown")
 
     thread_hint = ""
     if conversation_id:
@@ -127,6 +128,15 @@ async def _build_triage_prompt(job: AgentJob) -> str:
 → Lade den Thread mit get_thread("{conversation_id}") für vollständigen Kontext.
 → Lade die Absender-History mit search_sender_history("{from_addr}") um Kommunikationsmuster zu erkennen.
 """
+
+    recipient_hint = ""
+    if recipient_type == "cc":
+        recipient_hint = (
+            "\n⚠️ **ACHTUNG: Anthony ist bei dieser E-Mail NUR im CC, NICHT im TO.**\n"
+            "→ Beachte die CC-Regeln in Abschnitt 2b des Skills!\n"
+            "→ Default: triage_class=fyi, KEIN auto_reply, KEIN task — "
+            "es sei denn, Anthony wird im Body direkt angesprochen.\n"
+        )
 
     return f"""## TRIAGE-INSTRUKTIONEN (STRIKT befolgen!)
 
@@ -146,9 +156,10 @@ Du hast einen email_triage Job erhalten. Führe den kompletten Triage-Ablauf gem
 **E-Mail Message-ID:** {email_id}
 **Betreff:** {subject}
 **Von:** {from_name} <{from_addr}>
+**Empfänger-Typ:** {recipient_type} {"(Anthony ist direkter Empfänger im TO)" if recipient_type == "to" else "(Anthony ist NUR im CC)" if recipient_type == "cc" else "(nicht eindeutig bestimmbar)"}
 **Microsoft Inference:** {inference}
 **Body-Vorschau:** {preview[:300]}
-{thread_hint}
+{recipient_hint}{thread_hint}
 
 ## PFLICHT-AUFRUFE VOR JEDER KLASSIFIKATION UND DRAFT-ERSTELLUNG
 

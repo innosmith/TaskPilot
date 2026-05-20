@@ -205,7 +205,7 @@ class GraphClient:
             "$top": str(top),
             "$skip": str(skip),
             "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,from,toRecipients,receivedDateTime,isRead,"
+            "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,"
                        "bodyPreview,categories,inferenceClassification,hasAttachments,"
                        "importance,conversationId,flag",
         }

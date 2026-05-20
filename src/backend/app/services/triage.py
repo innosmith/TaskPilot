@@ -79,6 +79,31 @@ def _parse_received_at(raw: str | None) -> datetime | None:
         return None
 
 
+OWNER_EMAIL_ADDRESSES = {
+    "anthony@innosmith.ch",
+    "anthony@gerbersmith.ch",
+    "anthony.thomas.smith@gmail.com",
+    "anthony.smith@bfh.ch",
+}
+
+
+def _determine_recipient_type(email_data: dict) -> str:
+    """Bestimmt ob der Owner im TO, CC oder gar nicht als Empfänger steht."""
+    to_addrs = {
+        r.get("emailAddress", {}).get("address", "").lower()
+        for r in email_data.get("toRecipients", [])
+    }
+    cc_addrs = {
+        r.get("emailAddress", {}).get("address", "").lower()
+        for r in email_data.get("ccRecipients", [])
+    }
+    if OWNER_EMAIL_ADDRESSES & to_addrs:
+        return "to"
+    if OWNER_EMAIL_ADDRESSES & cc_addrs:
+        return "cc"
+    return "unknown"
+
+
 async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
     """Erstellt einen EmailTriage-Record und einen AgentJob für eine neue E-Mail.
 
@@ -90,6 +115,7 @@ async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
     from_addr = from_info.get("address", "")
     subject = email_data.get("subject", "")
     inference = email_data.get("inferenceClassification", "")
+    recipient_type = _determine_recipient_type(email_data)
 
     triage_record = EmailTriage(
         message_id=email_data["id"],
@@ -121,6 +147,7 @@ async def _create_triage_job(db: AsyncSession, email_data: dict) -> None:
             "body_preview": email_data.get("bodyPreview", "")[:500],
             "categories": email_data.get("categories", []),
             "conversation_id": email_data.get("conversationId", ""),
+            "recipient_type": recipient_type,
         },
     )
     db.add(agent_job)

@@ -22,6 +22,7 @@ def _make_fake_job(
     conversation_id="conv-abc",
     body_preview="Dies ist eine Test-E-Mail",
     inference_classification="focused",
+    recipient_type="to",
 ):
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -33,6 +34,7 @@ def _make_fake_job(
             "conversation_id": conversation_id,
             "body_preview": body_preview,
             "inference_classification": inference_classification,
+            "recipient_type": recipient_type,
         },
     )
 
@@ -101,6 +103,28 @@ class TestTriagePrompt:
         prompt = await self._build_prompt(fake_job)
         assert "Testbetreff" in prompt
 
+    @pytest.mark.asyncio
+    async def test_recipient_type_to_in_prompt(self, fake_job):
+        """Prompt zeigt recipient_type=to korrekt an."""
+        prompt = await self._build_prompt(fake_job)
+        assert "Empfänger-Typ:" in prompt
+        assert "to" in prompt
+
+    @pytest.mark.asyncio
+    async def test_recipient_type_cc_shows_warning(self):
+        """Bei CC-Mails erscheint eine deutliche Warnung im Prompt."""
+        job = _make_fake_job(recipient_type="cc")
+        prompt = await self._build_prompt(job)
+        assert "NUR im CC" in prompt
+        assert "fyi" in prompt
+        assert "KEIN auto_reply" in prompt
+
+    @pytest.mark.asyncio
+    async def test_recipient_type_to_no_cc_warning(self, fake_job):
+        """Bei TO-Mails erscheint KEINE dynamische CC-Warnung im Job-Block."""
+        prompt = await self._build_prompt(fake_job)
+        assert "⚠️ **ACHTUNG: Anthony ist bei dieser E-Mail NUR im CC" not in prompt
+
     async def _build_prompt(self, job):
         """Importiert und ruft _build_triage_prompt auf, mit gemockten DB-Calls."""
         with patch("app.services.nanobot_worker._load_projects_context", new_callable=AsyncMock) as mock_projects:
@@ -108,3 +132,61 @@ class TestTriagePrompt:
 
             from app.services.nanobot_worker import _build_triage_prompt
             return await _build_triage_prompt(job)
+
+
+class TestDetermineRecipientType:
+    """Tests für die recipient_type-Ableitung aus TO/CC-Feldern."""
+
+    def test_to_recipient(self):
+        from app.services.triage import _determine_recipient_type
+        email = {
+            "toRecipients": [{"emailAddress": {"address": "anthony@innosmith.ch"}}],
+            "ccRecipients": [],
+        }
+        assert _determine_recipient_type(email) == "to"
+
+    def test_cc_recipient(self):
+        from app.services.triage import _determine_recipient_type
+        email = {
+            "toRecipients": [{"emailAddress": {"address": "other@example.com"}}],
+            "ccRecipients": [{"emailAddress": {"address": "anthony@gerbersmith.ch"}}],
+        }
+        assert _determine_recipient_type(email) == "cc"
+
+    def test_bfh_address_recognized(self):
+        from app.services.triage import _determine_recipient_type
+        email = {
+            "toRecipients": [{"emailAddress": {"address": "anthony.smith@bfh.ch"}}],
+            "ccRecipients": [],
+        }
+        assert _determine_recipient_type(email) == "to"
+
+    def test_to_takes_precedence_over_cc(self):
+        """Wenn Owner in TO und CC steht, gewinnt TO."""
+        from app.services.triage import _determine_recipient_type
+        email = {
+            "toRecipients": [{"emailAddress": {"address": "anthony@innosmith.ch"}}],
+            "ccRecipients": [{"emailAddress": {"address": "anthony@gerbersmith.ch"}}],
+        }
+        assert _determine_recipient_type(email) == "to"
+
+    def test_unknown_when_not_in_either(self):
+        from app.services.triage import _determine_recipient_type
+        email = {
+            "toRecipients": [{"emailAddress": {"address": "someone@example.com"}}],
+            "ccRecipients": [{"emailAddress": {"address": "other@example.com"}}],
+        }
+        assert _determine_recipient_type(email) == "unknown"
+
+    def test_case_insensitive(self):
+        from app.services.triage import _determine_recipient_type
+        email = {
+            "toRecipients": [],
+            "ccRecipients": [{"emailAddress": {"address": "Anthony@InnoSmith.ch"}}],
+        }
+        assert _determine_recipient_type(email) == "cc"
+
+    def test_empty_recipients(self):
+        from app.services.triage import _determine_recipient_type
+        email = {}
+        assert _determine_recipient_type(email) == "unknown"
