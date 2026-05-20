@@ -61,6 +61,8 @@ async def get_pipeline(
                 checklist_done=sum(1 for ci in t.checklist_items if ci.is_checked),
                 recurrence_rule=t.recurrence_rule,
                 template_id=t.template_id,
+                pipeline_column_name=col.name,
+                pipeline_column_color=col.color,
             )
             for t in tasks
         ]

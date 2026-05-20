@@ -7,7 +7,7 @@ Prüft:
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from croniter import croniter
@@ -178,3 +178,47 @@ class TestCronValidation:
         cron = croniter("0 9 * * *", base)
         next_run = cron.get_next(datetime)
         assert next_run.tzinfo is None
+
+    def test_gate_check_prevents_early_spawn(self):
+        """Monatlicher Task: next_run in der Zukunft darf nicht gespawnt werden.
+
+        Simuliert den Fix in recurring.py: `if next_run.date() > now.date(): continue`
+        base_time nutzt datetime.max.time() (Tagesende), damit get_next()
+        zur NAECHSTEN Cron-Occurrence springt, nicht zur gleichen.
+        """
+        last_due = datetime.combine(date(2026, 5, 1), datetime.max.time(), tzinfo=timezone.utc)
+        cron = croniter("0 8 1 * *", last_due)
+        next_run = cron.get_next(datetime)
+        if next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=timezone.utc)
+
+        now = datetime(2026, 5, 19, 10, 0, tzinfo=timezone.utc)
+
+        assert next_run.date() == date(2026, 6, 1)
+        assert next_run.date() > now.date(), "Spawn darf nicht vor Fälligkeit erfolgen"
+
+    def test_gate_check_allows_due_spawn(self):
+        """Am Fälligkeitstag wird korrekt gespawnt."""
+        last_due = datetime.combine(date(2026, 5, 1), datetime.max.time(), tzinfo=timezone.utc)
+        cron = croniter("0 8 1 * *", last_due)
+        next_run = cron.get_next(datetime)
+        if next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=timezone.utc)
+
+        now = datetime(2026, 6, 1, 7, 0, tzinfo=timezone.utc)
+
+        assert next_run.date() == date(2026, 6, 1)
+        assert next_run.date() <= now.date(), "Spawn muss am Fälligkeitstag erlaubt sein"
+
+    def test_due_date_based_next_run(self):
+        """next_run basierend auf due_date (nicht created_at) ergibt korrekten Termin.
+
+        Wenn created_at vom due_date abweicht (z.B. durch Scheduler-Vorlauf),
+        muss due_date als Basis für croniter verwendet werden.
+        """
+        due_date = datetime(2026, 5, 19, 0, 0, tzinfo=timezone.utc)
+        cron = croniter("0 9 * * 1", due_date)  # Montags 09:00
+        next_run = cron.get_next(datetime)
+
+        assert next_run.date() == date(2026, 5, 25)  # Nächster Montag
+        assert next_run.weekday() == 0

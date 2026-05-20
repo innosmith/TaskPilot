@@ -41,13 +41,23 @@ async def _get_templates(db: AsyncSession) -> list[Task]:
     return list(result.scalars().all())
 
 
-async def _latest_instance_time(
+async def _latest_instance_due(
     db: AsyncSession, template_id: uuid.UUID
 ) -> datetime | None:
+    """Liefert den letzten geplanten Termin (due_date) aller Instanzen.
+
+    Fallback auf created_at falls keine Instanz ein due_date hat.
+    """
     result = await db.execute(
+        select(func.max(Task.due_date)).where(Task.template_id == template_id)
+    )
+    latest_due = result.scalar_one_or_none()
+    if latest_due:
+        return datetime.combine(latest_due, datetime.max.time(), tzinfo=timezone.utc)
+    result2 = await db.execute(
         select(func.max(Task.created_at)).where(Task.template_id == template_id)
     )
-    return result.scalar_one_or_none()
+    return result2.scalar_one_or_none()
 
 
 async def _has_active_instance(db: AsyncSession, template_id: uuid.UUID) -> bool:
@@ -244,7 +254,7 @@ async def _check_and_spawn(db: AsyncSession) -> int:
                 if (count_result.scalar_one() or 0) >= tmpl.recurrence_max_instances:
                     continue
 
-            last_ts = await _latest_instance_time(db, tmpl.id)
+            last_ts = await _latest_instance_due(db, tmpl.id)
             base_time = last_ts or tmpl.created_at
             cron = croniter(tmpl.recurrence_rule, base_time)
             next_run = cron.get_next(datetime)
@@ -253,6 +263,9 @@ async def _check_and_spawn(db: AsyncSession) -> int:
                 next_run = next_run.replace(tzinfo=timezone.utc)
 
             if tmpl.recurrence_end_date and next_run.date() > tmpl.recurrence_end_date:
+                continue
+
+            if next_run.date() > now.date():
                 continue
 
             instance = await _copy_template(db, tmpl, due_date=next_run.date())

@@ -28,6 +28,8 @@ export interface TaskCard {
   tags: Tag[];
   checklist_total: number;
   checklist_done: number;
+  pipeline_column_name: string | null;
+  pipeline_column_color: string | null;
 }
 
 export interface ChecklistItem {

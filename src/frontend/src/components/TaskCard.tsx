@@ -4,6 +4,10 @@ import { CSS } from '@dnd-kit/utilities';
 import { ProjectIcon } from './ProjectIcon';
 import type { TaskCard as TaskCardType } from '../types';
 
+const PIPELINE_SHORT: Record<string, string> = {
+  'Waiting for Feedback': 'Waiting',
+};
+
 interface TaskCardProps {
   task: TaskCardType;
   projectColor?: string;
@@ -164,7 +168,18 @@ export function TaskCard({
             <RepeatIcon className="h-3.5 w-3.5" />
           </span>
         )}
-        <span className="ml-auto">
+        {task.pipeline_column_name && !showProjectIndicator && (
+          <span
+            className="ml-auto inline-flex max-w-[6rem] items-center truncate rounded-full px-2 py-0.5 text-xs font-medium"
+            style={{
+              backgroundColor: (task.pipeline_column_color || '#6366f1') + '18',
+              color: task.pipeline_column_color || '#6366f1',
+            }}
+          >
+            {PIPELINE_SHORT[task.pipeline_column_name] || task.pipeline_column_name}
+          </span>
+        )}
+        <span className={task.pipeline_column_name && !showProjectIndicator ? '' : 'ml-auto'}>
           {task.assignee === 'agent' ? (
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-violet-100 text-violet-600 dark:bg-violet-900/40 dark:text-violet-300">
               <AgentBadgeIcon className="h-3 w-3" />

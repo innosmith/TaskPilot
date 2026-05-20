@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth.deps import check_project_access, get_current_user, require_role
 from app.database import get_db
-from app.models import BoardColumn, BoardMember, Project, Task, User
+from app.models import BoardColumn, BoardMember, PipelineColumn, Project, Task, User
 from app.schemas import (
     AssigneeUser,
     BoardColumnCreate,
@@ -134,6 +134,9 @@ async def get_board(
         if u.role == "owner":
             user_cache["me"] = user_cache[str(u.id)]
 
+    pipe_cols = (await db.execute(select(PipelineColumn))).scalars().all()
+    pipe_map = {pc.id: pc for pc in pipe_cols}
+
     columns_out = []
     for col in sorted(project.board_columns, key=lambda c: c.position):
         task_result = await db.execute(
@@ -150,6 +153,7 @@ async def get_board(
 
         task_cards = []
         for t in tasks:
+            pc = pipe_map.get(t.pipeline_column_id) if t.pipeline_column_id else None
             card = TaskCard(
                 id=t.id,
                 title=t.title,
@@ -168,6 +172,8 @@ async def get_board(
                 checklist_done=sum(1 for ci in t.checklist_items if ci.is_checked),
                 recurrence_rule=t.recurrence_rule,
                 template_id=t.template_id,
+                pipeline_column_name=pc.name if pc else None,
+                pipeline_column_color=pc.color if pc else None,
             )
             task_cards.append(card)
 

@@ -203,6 +203,8 @@ class TaskCard(BaseModel):
     tags: list[TagOut] = []
     checklist_total: int = 0
     checklist_done: int = 0
+    pipeline_column_name: str | None = None
+    pipeline_column_color: str | None = None
 
 
 # --- Board ---
