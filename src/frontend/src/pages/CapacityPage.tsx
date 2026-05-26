@@ -24,6 +24,8 @@ interface CapProject {
   status: 'bestätigt' | 'vorläufig';
   project_id: string | null;
   toggl_project_id: number | null;
+  toggl_client_id: number | null;
+  toggl_billable_filter: 'non_billable' | 'billable' | null;
   pipedrive_deal_id: number | null;
   sort_order: number;
   notes: string | null;
@@ -58,9 +60,19 @@ interface TimeOffEntry {
 }
 
 interface PlanVsActualProject {
-  toggl_project_id: number;
+  toggl_project_id: number | null;
+  capacity_project_id?: string;
   name: string;
   weeks: { week_start: string; planned_minutes: number; actual_minutes: number }[];
+}
+
+interface MonthlyActualProject {
+  capacity_project_id: string;
+  name: string;
+  planned_minutes: number;
+  actual_minutes: number;
+  prev_month_planned?: number;
+  prev_month_actual?: number;
 }
 
 type ViewRange = '3m' | '6m' | '1y';
@@ -119,6 +131,55 @@ function getTodayOffset(weekStart: Date): number | null {
     return Math.round((diffDays / 7) * 100);
   }
   return null;
+}
+
+// ── Color utilities ─────────────────────────────────────────────────────────
+
+function hexToHsl(hex: string): [number, number, number] {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return [0, 0, 50];
+  const r = parseInt(m[1], 16) / 255;
+  const g = parseInt(m[2], 16) / 255;
+  const b = parseInt(m[3], 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      case b: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  return [h * 360, s * 100, l * 100];
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  s /= 100; l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const c = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * c).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+function muteColor(hex: string): string {
+  const [h, s, l] = hexToHsl(hex);
+  return hslToHex(h, Math.min(s, 50), l < 40 ? 45 : l > 65 ? 55 : l);
+}
+
+function getContrastText(hex: string): string {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return '#ffffff';
+  const toLinear = (v: number) => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  const lum = 0.2126 * toLinear(parseInt(m[1], 16) / 255)
+            + 0.7152 * toLinear(parseInt(m[2], 16) / 255)
+            + 0.0722 * toLinear(parseInt(m[3], 16) / 255);
+  return lum > 0.179 ? '#1a1a2e' : '#ffffff';
 }
 
 // ── Allocation DnD helpers ───────────────────────────────────────────────────
@@ -180,7 +241,7 @@ function DraggableAllocBlock({ allocId, children, onClick, onContextMenu, classN
 // ── Sortable Project Row ─────────────────────────────────────────────────────
 
 function SortableProjectRow({
-  project, weeks, allocations, onCellClick, onContextMenu, onEditProject, colClass, viewRange: _viewRange, onAllocDrop, planVsActualByProject, selectedAllocIds, onToggleSelect, timeOffWeekMap,
+  project, weeks, allocations, onCellClick, onContextMenu, onEditProject, colClass, viewRange: _viewRange, onAllocDrop, selectedAllocIds, onToggleSelect, timeOffWeekMap, monthlyData, sollIstExpanded,
 }: {
   project: CapProject;
   weeks: Date[];
@@ -191,10 +252,11 @@ function SortableProjectRow({
   viewRange: ViewRange;
   onContextMenu: (e: React.MouseEvent, alloc: Allocation) => void;
   onAllocDrop: (allocId: string, targetWeekStr: string) => void;
-  planVsActualByProject: Record<string, Record<string, number>>;
   selectedAllocIds: Set<string>;
   onToggleSelect: (allocId: string) => void;
   timeOffWeekMap: Record<string, number>;
+  monthlyData?: MonthlyActualProject;
+  sollIstExpanded: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: project.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
@@ -237,7 +299,10 @@ function SortableProjectRow({
       data-testid={`capacity-project-row-${project.id}`}
     >
       {/* Projekt-Label */}
-      <div className="flex w-64 min-w-64 shrink-0 items-center gap-2 border-r border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+      <div
+        className="flex w-64 min-w-64 shrink-0 items-center gap-2 border-r border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
+        style={{ borderLeft: `4px solid ${project.color}` }}
+      >
         <button
           onClick={() => onEditProject(project)}
           className="flex flex-1 items-center gap-2 min-w-0 rounded-md px-1 py-0.5 transition hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -256,7 +321,7 @@ function SortableProjectRow({
             vorl.
           </span>
         )}
-        {!project.toggl_project_id && (
+        {!project.toggl_project_id && !project.toggl_client_id && (
           <span title="Kein Toggl-Projekt verknüpft — Ist-Vergleich nicht möglich" className="text-gray-400 dark:text-gray-500">
             <Unlink className="h-3 w-3" />
           </span>
@@ -264,6 +329,59 @@ function SortableProjectRow({
         <button {...attributes} {...listeners} className="cursor-grab text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" data-testid="capacity-project-drag">
           <GripVertical className="h-4 w-4" />
         </button>
+      </div>
+
+      {/* Soll/Ist-Spalte */}
+      <div
+        className={`shrink-0 border-r border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30 flex items-center ${sollIstExpanded ? 'px-2 py-1' : 'px-0.5 py-1'}`}
+        style={{ width: sollIstExpanded ? 120 : 32 }}
+      >
+        {monthlyData ? (
+          sollIstExpanded ? (() => {
+            const pct = monthlyData.planned_minutes > 0
+              ? Math.min(Math.round((monthlyData.actual_minutes / monthlyData.planned_minutes) * 100), 100)
+              : 0;
+            const deltaMin = monthlyData.actual_minutes - monthlyData.planned_minutes;
+            const deltaColor = deltaMin >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400';
+            return (
+              <div className="flex flex-col w-full gap-0.5">
+                <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 dark:bg-emerald-400 transition-all"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <span className="text-[10px] font-medium text-gray-700 dark:text-gray-300 truncate">
+                    {Math.round(monthlyData.actual_minutes / 60)}/{Math.round(monthlyData.planned_minutes / 60)}h
+                  </span>
+                  <span className={`text-[9px] font-medium ${deltaColor}`}>
+                    {deltaMin >= 0 ? '+' : ''}{Math.round(deltaMin / 60)}h
+                  </span>
+                </div>
+                {monthlyData.prev_month_planned != null && monthlyData.prev_month_planned > 0 && (
+                  <span className="text-[8px] text-gray-400 dark:text-gray-500 truncate">
+                    Vm: {Math.round((monthlyData.prev_month_actual ?? 0) / 60)}/{Math.round(monthlyData.prev_month_planned / 60)}h
+                  </span>
+                )}
+              </div>
+            );
+          })() : (
+            <div className="flex flex-col items-center w-full gap-0.5" title={`${Math.round(monthlyData.actual_minutes / 60)}/${Math.round(monthlyData.planned_minutes / 60)}h`}>
+              <span className="text-[8px] font-bold text-gray-600 dark:text-gray-400">
+                {monthlyData.planned_minutes > 0 ? `${Math.min(Math.round((monthlyData.actual_minutes / monthlyData.planned_minutes) * 100), 999)}%` : '–'}
+              </span>
+              <div className="w-1.5 h-4 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                <div
+                  className="w-full rounded-full bg-emerald-500 dark:bg-emerald-400"
+                  style={{ height: `${monthlyData.planned_minutes > 0 ? Math.min(Math.round((monthlyData.actual_minutes / monthlyData.planned_minutes) * 100), 100) : 0}%` }}
+                />
+              </div>
+            </div>
+          )
+        ) : (
+          <span className="text-[8px] text-gray-300 dark:text-gray-600 w-full text-center">–</span>
+        )}
       </div>
 
       {/* Wochen-Zellen mit Allocation-DnD */}
@@ -287,8 +405,6 @@ function SortableProjectRow({
             const dayAllocs = weekAllocs?.filter(a => a.allocation_type === 'day') || [];
             const firstAlloc = weekAllocs?.[0];
             const todayOffset = getTodayOffset(week);
-            const isPast = week < new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
-            const projectActualMin = planVsActualByProject[project.id]?.[weekStr] || 0;
             return (
               <DroppableWeekCell key={weekStr} id={`drop-${project.id}-${weekStr}`} colClass={colClass} measureRef={idx === 0 ? cellMeasureRef : undefined}>
                 {/* Klick-Hintergrund: nur für leere Zellen → Dialog öffnen */}
@@ -301,23 +417,17 @@ function SortableProjectRow({
                 {weekOnlyAllocs.length > 0 && (() => {
                   const isSeries = !!weekOnlyAllocs[0].series_id;
                   const plannedMin = weekOnlyAllocs.reduce((s, a) => s + a.minutes, 0);
-                  const hasActual = isPast && totalMin > 0 && !!project.toggl_project_id;
-                  const actualColor = hasActual
-                    ? (projectActualMin === 0 ? 'bg-red-500' : projectActualMin > totalMin * 1.1 ? 'bg-red-500' : projectActualMin < totalMin * 0.5 ? 'bg-amber-400' : 'bg-emerald-500')
-                    : '';
-                  const blockTitle = hasActual
-                    ? `Geplant: ${minutesToDisplay(plannedMin)} / Effektiv: ${minutesToDisplay(projectActualMin)}`
-                    : minutesToDisplay(plannedMin);
                   return (
                     <DraggableAllocBlock
                       allocId={weekOnlyAllocs[0].id}
-                      className={`absolute inset-0.5 rounded-md flex flex-col items-center justify-center font-medium text-white transition-all hover:scale-[1.02] ${cellWidth < 40 ? 'text-[8px]' : cellWidth < 60 ? 'text-[9px]' : 'text-xs'}`}
+                      className={`absolute inset-0.5 rounded-md flex flex-col items-center justify-center font-medium transition-all hover:scale-[1.02] ${cellWidth < 40 ? 'text-[8px]' : cellWidth < 60 ? 'text-[9px]' : 'text-xs'}`}
                       blockStyle={{
-                        backgroundColor: project.status === 'vorläufig' ? `${project.color}80` : project.color,
-                        border: project.status === 'vorläufig' ? `2px dashed ${project.color}` : 'none',
+                        backgroundColor: project.status === 'vorläufig' ? `${muteColor(project.color)}8C` : muteColor(project.color),
+                        border: project.status === 'vorläufig' ? `2px dashed ${muteColor(project.color)}` : 'none',
+                        color: getContrastText(muteColor(project.color)),
                       }}
                       selected={selectedAllocIds.has(weekOnlyAllocs[0].id)}
-                      title={blockTitle}
+                      title={minutesToDisplay(plannedMin)}
                       onClick={(e) => {
                         if (e.ctrlKey || e.metaKey) { onToggleSelect(weekOnlyAllocs[0].id); }
                         else { onContextMenu(e, weekOnlyAllocs[0]); }
@@ -327,27 +437,10 @@ function SortableProjectRow({
                       <span>
                         {cellWidth >= 40 ? (cellWidth >= 60 ? minutesToDisplay(plannedMin) : `${Math.round(plannedMin / 60)}h`) : ''}
                       </span>
-                      {hasActual && (
-                        <span className={`absolute bottom-0 left-0 right-0 h-[35%] rounded-b-md ${actualColor} flex items-center justify-center`} title={blockTitle}>
-                          {cellWidth >= 60 && <span className="text-[9px] font-semibold text-white/90 drop-shadow-sm">{minutesToDisplay(projectActualMin)}</span>}
-                          {cellWidth >= 40 && cellWidth < 60 && <span className="text-[8px] font-semibold text-white/90">{Math.round(projectActualMin / 60)}h</span>}
-                        </span>
-                      )}
-                      {isSeries && !hasActual && <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-3 h-[3px] rounded-full bg-white/60" />}
+                      {isSeries && <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-3 h-[3px] rounded-full bg-white/60" />}
                     </DraggableAllocBlock>
                   );
                 })()}
-
-                {/* Ungeplante Ist-Arbeit (kein Plan-Block, aber Toggl-Daten vorhanden) */}
-                {weekOnlyAllocs.length === 0 && dayAllocs.length === 0 && isPast && projectActualMin > 0 && (
-                  <div
-                    className="absolute inset-0.5 rounded-md flex items-center justify-center bg-blue-500/30 border border-blue-400/50 border-dashed"
-                    title={`Effektiv: ${minutesToDisplay(projectActualMin)} (ungeplant)`}
-                  >
-                    {cellWidth >= 60 && <span className="text-[9px] font-medium text-blue-700 dark:text-blue-300">{minutesToDisplay(projectActualMin)}</span>}
-                    {cellWidth >= 40 && cellWidth < 60 && <span className="text-[8px] font-medium text-blue-700 dark:text-blue-300">{Math.round(projectActualMin / 60)}h</span>}
-                  </div>
-                )}
 
                 {/* Tages-Allocations als schmale positionierte Blöcke */}
                 {dayAllocs.length > 0 && showDaySlots && dayAllocs.map(da => {
@@ -356,12 +449,13 @@ function SortableProjectRow({
                     <DraggableAllocBlock
                       key={da.id}
                       allocId={da.id}
-                      className="absolute top-0.5 bottom-0.5 rounded-sm flex items-center justify-center font-medium text-white text-[8px]"
+                      className="absolute top-0.5 bottom-0.5 rounded-sm flex items-center justify-center font-medium text-[8px]"
                       blockStyle={{
                         left: slotStyle.left,
                         width: slotStyle.width,
-                        backgroundColor: project.status === 'vorläufig' ? `${project.color}80` : project.color,
-                        border: `1px solid ${project.color}`,
+                        backgroundColor: project.status === 'vorläufig' ? `${muteColor(project.color)}8C` : muteColor(project.color),
+                        border: `1px solid ${muteColor(project.color)}`,
+                        color: getContrastText(muteColor(project.color)),
                       }}
                       selected={selectedAllocIds.has(da.id)}
                       title={`${new Date(da.week_start + 'T00:00:00').toLocaleDateString('de-CH', { weekday: 'short', day: 'numeric', month: 'short' })}: ${minutesToDisplay(da.minutes)}`}
@@ -382,8 +476,8 @@ function SortableProjectRow({
                 {/* Tages-Allocations aggregiert (wenn Zelle zu klein) */}
                 {dayAllocs.length > 0 && !showDaySlots && weekOnlyAllocs.length === 0 && (
                   <div
-                    className="absolute inset-0.5 rounded-md flex items-center justify-center font-medium text-white text-[8px]"
-                    style={{ backgroundColor: project.color }}
+                    className="absolute inset-0.5 rounded-md flex items-center justify-center font-medium text-[8px]"
+                    style={{ backgroundColor: muteColor(project.color), color: getContrastText(muteColor(project.color)) }}
                     title={minutesToDisplay(totalMin)}
                   />
                 )}
@@ -821,9 +915,12 @@ function ProjectDialog({
   const [iconUrl, setIconUrl] = useState(initial?.icon_url || '');
   const [projectId, setProjectId] = useState<string | null>(initial?.project_id || null);
   const [togglProjectId, setTogglProjectId] = useState<number | null>(initial?.toggl_project_id || null);
+  const [togglClientId, setTogglClientId] = useState<number | null>(initial?.toggl_client_id || null);
+  const [togglBillableFilter, setTogglBillableFilter] = useState<string | null>(initial?.toggl_billable_filter || null);
 
   const [available, setAvailable] = useState<AvailableProjectOption[]>([]);
   const [loadingAvail, setLoadingAvail] = useState(false);
+  const [togglClients, setTogglClients] = useState<{ id: number; name: string }[]>([]);
   const [filter, setFilter] = useState('');
   const [showPicker, setShowPicker] = useState(!initial);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -840,6 +937,8 @@ function ProjectDialog({
     setIconUrl(initial?.icon_url || '');
     setProjectId(initial?.project_id || null);
     setTogglProjectId(initial?.toggl_project_id || null);
+    setTogglClientId(initial?.toggl_client_id || null);
+    setTogglBillableFilter(initial?.toggl_billable_filter || null);
     setShowPicker(!initial);
     setFilter('');
   }, [initial]);
@@ -853,6 +952,14 @@ function ProjectDialog({
         .finally(() => setLoadingAvail(false));
     }
   }, [open, initial]);
+
+  useEffect(() => {
+    if (open && togglClients.length === 0) {
+      api.get<{ id: number; name: string }[]>('/api/capacity/toggl-clients')
+        .then(setTogglClients)
+        .catch(() => {});
+    }
+  }, [open]);
 
   const filtered = useMemo(() => {
     if (!filter) return available;
@@ -921,7 +1028,9 @@ function ProjectDialog({
       icon_url: finalIconUrl,
       project_id: projectId,
       toggl_project_id: togglProjectId ?? undefined,
-    });
+      toggl_client_id: togglClientId ?? undefined,
+      toggl_billable_filter: togglBillableFilter ?? undefined,
+    } as Partial<CapProject> & { toggl_project_id?: number });
   };
 
   return (
@@ -1068,6 +1177,53 @@ function ProjectDialog({
             </select>
           </div>
 
+          {/* Toggl-Aggregation (nur sichtbar wenn kein einzelnes Toggl-Projekt) */}
+          {!togglProjectId && togglClients.length > 0 && (
+            <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-3 dark:border-purple-800 dark:bg-purple-900/20">
+              <label className="mb-2 block text-xs font-semibold text-purple-700 dark:text-purple-400 uppercase">
+                Toggl-Aggregation
+              </label>
+              <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                Alle Toggl-Projekte eines Clients aggregieren (z.B. alle non-billable Projekte von InnoSmith).
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Toggl-Client</label>
+                  <select
+                    value={togglClientId ?? ''}
+                    onChange={e => setTogglClientId(e.target.value ? parseInt(e.target.value) : null)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                    data-testid="capacity-project-toggl-client"
+                  >
+                    <option value="">— Kein Client —</option>
+                    {togglClients.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Filter</label>
+                  <select
+                    value={togglBillableFilter ?? ''}
+                    onChange={e => setTogglBillableFilter(e.target.value || null)}
+                    disabled={!togglClientId}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                    data-testid="capacity-project-toggl-filter"
+                  >
+                    <option value="">Alle Projekte</option>
+                    <option value="non_billable">Nur non-billable</option>
+                    <option value="billable">Nur billable</option>
+                  </select>
+                </div>
+              </div>
+              {togglClientId && (
+                <div className="mt-2 rounded-md bg-purple-100 px-2.5 py-1.5 text-[11px] text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">
+                  Aggregiert automatisch alle {togglBillableFilter === 'non_billable' ? 'non-billable ' : togglBillableFilter === 'billable' ? 'billable ' : ''}Toggl-Projekte von «{togglClients.find(c => c.id === togglClientId)?.name}»
+                </div>
+              )}
+            </div>
+          )}
+
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Notizen</label>
             <textarea
@@ -1189,10 +1345,16 @@ export function CapacityPage() {
   const [summary, setSummary] = useState<WeeklySummary[]>([]);
   const [timeOff, setTimeOff] = useState<TimeOffEntry[]>([]);
   const [planVsActual, setPlanVsActual] = useState<PlanVsActualProject[]>([]);
+  const [monthlyActual, setMonthlyActual] = useState<MonthlyActualProject[]>([]);
   const [viewRange, setViewRange] = useState<ViewRange>('3m');
   const [startDate, setStartDate] = useState<Date>(getMonday(new Date()));
   const [showTentative, setShowTentative] = useState(true);
   const [loading, setLoading] = useState(true);
+
+  // Soll/Ist column
+  const [sollIstExpanded, setSollIstExpanded] = useState<boolean>(() => {
+    return localStorage.getItem('cap_soll_ist') !== 'collapsed';
+  });
 
   // Background
   const [bgUrl, setBgUrl] = useState<string | null>(null);
@@ -1280,8 +1442,19 @@ export function CapacityPage() {
     }
   }, [startDate, endDate]);
 
+  const fetchMonthlyActual = useCallback(async () => {
+    try {
+      const res = await api.get<{ month: string; projects: MonthlyActualProject[] }>('/api/capacity/monthly-actual');
+      setMonthlyActual(res.projects);
+    } catch { /* optional */ }
+  }, []);
+
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => { fetchPlanVsActual(); }, [fetchPlanVsActual]);
+  useEffect(() => { fetchMonthlyActual(); }, [fetchMonthlyActual]);
+  useEffect(() => {
+    localStorage.setItem('cap_soll_ist', sollIstExpanded ? 'expanded' : 'collapsed');
+  }, [sollIstExpanded]);
   useEffect(() => {
     api.get<Record<string, string | null>>('/api/settings')
       .then(s => {
@@ -1441,22 +1614,13 @@ export function CapacityPage() {
     return map;
   }, [planVsActual]);
 
-  const planVsActualByProject = useMemo(() => {
-    const togglToCapacity: Record<number, string> = {};
-    for (const p of projects) {
-      if (p.toggl_project_id) togglToCapacity[p.toggl_project_id] = p.id;
-    }
-    const map: Record<string, Record<string, number>> = {};
-    for (const proj of planVsActual) {
-      const capId = togglToCapacity[proj.toggl_project_id];
-      if (!capId) continue;
-      if (!map[capId]) map[capId] = {};
-      for (const w of proj.weeks) {
-        map[capId][w.week_start] = (map[capId][w.week_start] || 0) + w.actual_minutes;
-      }
+  const monthlyByProject = useMemo(() => {
+    const map: Record<string, MonthlyActualProject> = {};
+    for (const p of monthlyActual) {
+      map[p.capacity_project_id] = p;
     }
     return map;
-  }, [planVsActual, projects]);
+  }, [monthlyActual]);
 
   // ── Time off weeks map ─────────────────────────────────────────────────────
 
@@ -1567,6 +1731,23 @@ export function CapacityPage() {
               <div className="flex w-64 min-w-64 shrink-0 items-end border-r border-gray-200 bg-white px-3 pb-1 dark:border-gray-700 dark:bg-gray-900">
                 <span className="text-[10px] font-semibold text-gray-500 uppercase dark:text-gray-400">Woche</span>
               </div>
+              <div
+                className="shrink-0 flex items-end justify-center border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 pb-0.5 cursor-pointer select-none"
+                style={{ width: sollIstExpanded ? 120 : 32 }}
+                onClick={() => setSollIstExpanded(v => !v)}
+                title={sollIstExpanded ? 'Soll/Ist-Spalte einklappen' : 'Soll/Ist-Spalte ausklappen'}
+              >
+                {sollIstExpanded ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] font-semibold text-gray-500 uppercase dark:text-gray-400">
+                      {new Date().toLocaleDateString('de-CH', { month: 'short' })}
+                    </span>
+                    <ChevronLeft className="h-3 w-3 text-gray-400" />
+                  </div>
+                ) : (
+                  <ChevronRight className="h-3 w-3 text-gray-400" />
+                )}
+              </div>
               <div className="flex flex-1">
                 {weeks.map((week) => {
                   const weekStr = toIso(week);
@@ -1599,6 +1780,14 @@ export function CapacityPage() {
             <div className="flex">
               <div className="flex w-64 min-w-64 shrink-0 items-center border-r border-gray-200 bg-white px-3 py-1.5 dark:border-gray-700 dark:bg-gray-900">
                 <span className="text-[10px] font-semibold text-gray-500 uppercase dark:text-gray-400">Auslastung</span>
+              </div>
+              <div
+                className="shrink-0 flex items-center justify-center border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50"
+                style={{ width: sollIstExpanded ? 120 : 32 }}
+              >
+                {sollIstExpanded && (
+                  <span className="text-[9px] font-semibold text-gray-500 dark:text-gray-400 uppercase">Soll/Ist</span>
+                )}
               </div>
               <div className="flex flex-1">
                 {weeks.map((week) => {
@@ -1675,6 +1864,10 @@ export function CapacityPage() {
                 <Palmtree className="h-4 w-4 text-amber-500" />
                 <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Ferien / Frei</span>
               </div>
+              <div
+                className="shrink-0 border-r border-amber-100 dark:border-amber-900/30"
+                style={{ width: sollIstExpanded ? 120 : 32 }}
+              />
               <div className="flex flex-1">
                 {weeks.map(week => {
                   const weekStr = toIso(week);
@@ -1757,10 +1950,11 @@ export function CapacityPage() {
                   colClass={getColClass(viewRange)}
                   viewRange={viewRange}
                   onAllocDrop={handleAllocDrop}
-                  planVsActualByProject={planVsActualByProject}
                   selectedAllocIds={selectedAllocIds}
                   onToggleSelect={handleToggleSelect}
                   timeOffWeekMap={timeOffWeekMap}
+                  monthlyData={monthlyByProject[project.id]}
+                  sollIstExpanded={sollIstExpanded}
                 />
               ))}
             </SortableContext>

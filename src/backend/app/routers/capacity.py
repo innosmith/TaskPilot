@@ -32,7 +32,7 @@ logger = logging.getLogger("taskpilot.capacity")
 
 router = APIRouter(prefix="/api/capacity", tags=["capacity"])
 
-_toggl_cache: TTLCache = TTLCache(maxsize=10, ttl=86400)
+_toggl_cache: TTLCache = TTLCache(maxsize=20, ttl=86400)
 
 
 # ── Pydantic Schemas ─────────────────────────────────────────────────────────
@@ -49,6 +49,8 @@ class CapacityProjectCreate(BaseModel):
     status: str = "bestätigt"
     project_id: str | None = None
     toggl_project_id: int | None = None
+    toggl_client_id: int | None = None
+    toggl_billable_filter: str | None = None
     pipedrive_deal_id: int | None = None
     notes: str | None = None
 
@@ -64,6 +66,8 @@ class CapacityProjectUpdate(BaseModel):
     status: str | None = None
     project_id: str | None = None
     toggl_project_id: int | None = None
+    toggl_client_id: int | None = None
+    toggl_billable_filter: str | None = None
     pipedrive_deal_id: int | None = None
     sort_order: int | None = None
     notes: str | None = None
@@ -81,6 +85,8 @@ class CapacityProjectOut(BaseModel):
     status: str
     project_id: str | None
     toggl_project_id: int | None
+    toggl_client_id: int | None
+    toggl_billable_filter: str | None
     pipedrive_deal_id: int | None
     sort_order: int
     notes: str | None
@@ -235,6 +241,10 @@ async def create_capacity_project(
     body: CapacityProjectCreate,
     user: User = Depends(require_role("owner")),
 ):
+    if body.toggl_project_id and body.toggl_client_id:
+        raise HTTPException(status_code=422, detail="toggl_project_id und toggl_client_id dürfen nicht gleichzeitig gesetzt sein")
+    if body.toggl_billable_filter and body.toggl_billable_filter not in ("non_billable", "billable"):
+        raise HTTPException(status_code=422, detail="toggl_billable_filter muss 'non_billable', 'billable' oder leer sein")
     async with async_session() as session:
         proj = CapacityProject(
             name=body.name,
@@ -247,6 +257,8 @@ async def create_capacity_project(
             status=body.status,
             project_id=uuid.UUID(body.project_id) if body.project_id else None,
             toggl_project_id=body.toggl_project_id,
+            toggl_client_id=body.toggl_client_id,
+            toggl_billable_filter=body.toggl_billable_filter,
             pipedrive_deal_id=body.pipedrive_deal_id,
             notes=body.notes,
         )
@@ -674,48 +686,114 @@ async def get_plan_vs_actual(
     to_date: str = Query(..., alias="to"),
     user: User = Depends(require_role("owner")),
 ):
-    """Vergleich geplante Kapazität vs. effektive Toggl-Stunden (24h-Cache)."""
+    """Vergleich geplante Kapazität vs. effektive Toggl-Stunden (24h-Cache).
+
+    Unterstützt zwei Verknüpfungsarten:
+    1. Direkt: toggl_project_id → 1:1-Vergleich
+    2. Client-Aggregation: toggl_client_id + toggl_billable_filter → N Projekte aggregiert
+    """
+    from sqlalchemy import or_
+
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
     async with async_session() as session:
-        # Alle Capacity-Projekte mit Toggl-Verknüpfung laden
-        proj_stmt = select(CapacityProject).where(CapacityProject.toggl_project_id.isnot(None))
+        # Alle Capacity-Projekte mit irgendeiner Toggl-Verknüpfung laden
+        proj_stmt = select(CapacityProject).where(
+            or_(
+                CapacityProject.toggl_project_id.isnot(None),
+                CapacityProject.toggl_client_id.isnot(None),
+            )
+        )
         proj_result = await session.execute(proj_stmt)
         toggl_projects = proj_result.scalars().all()
 
-        # Allocations im Zeitraum laden
-        stmt = (
-            select(CapacityAllocation, CapacityProject)
-            .join(CapacityProject)
-            .where(CapacityAllocation.week_start >= d_from)
-            .where(CapacityAllocation.week_start <= d_to)
-            .where(CapacityProject.toggl_project_id.isnot(None))
-        )
-        result = await session.execute(stmt)
-        rows = result.all()
+        # Allocations im Zeitraum laden (für alle Toggl-verknüpften Projekte)
+        cap_ids = [p.id for p in toggl_projects]
+        alloc_rows = []
+        if cap_ids:
+            stmt = (
+                select(CapacityAllocation, CapacityProject)
+                .join(CapacityProject)
+                .where(CapacityAllocation.week_start >= d_from)
+                .where(CapacityAllocation.week_start <= d_to)
+                .where(CapacityAllocation.capacity_project_id.in_(cap_ids))
+            )
+            result = await session.execute(stmt)
+            alloc_rows = result.all()
 
-    # Plan-Daten aggregieren
+    # Projekte aufteilen: direkt vs. Client-Aggregation
+    direct_projects = [p for p in toggl_projects if p.toggl_project_id]
+    agg_projects = [p for p in toggl_projects if p.toggl_client_id and not p.toggl_project_id]
+
+    # Plan-Daten für direkte Projekte (Key: toggl_project_id)
     plan_by_project_week: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     project_names: dict[int, str] = {}
     all_toggl_project_ids: list[int] = []
 
-    for proj in toggl_projects:
+    for proj in direct_projects:
         project_names[proj.toggl_project_id] = proj.name
         all_toggl_project_ids.append(proj.toggl_project_id)
 
-    for alloc, proj in rows:
-        toggl_id = proj.toggl_project_id
-        plan_by_project_week[toggl_id][alloc.week_start.isoformat()] += alloc.minutes
+    for alloc, proj in alloc_rows:
+        if proj.toggl_project_id:
+            plan_by_project_week[proj.toggl_project_id][alloc.week_start.isoformat()] += alloc.minutes
 
-    if not all_toggl_project_ids:
+    # Plan-Daten für aggregierte Projekte (Key: capacity_project_id)
+    plan_by_cap_week: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for alloc, proj in alloc_rows:
+        if proj.toggl_client_id and not proj.toggl_project_id:
+            plan_by_cap_week[str(proj.id)][alloc.week_start.isoformat()] += alloc.minutes
+
+    # Client-basierte Projekte: zugehörige Toggl-Projekt-IDs ermitteln
+    agg_toggl_ids: list[int] = []
+    agg_cap_mapping: dict[str, list[int]] = {}  # cap_id → [toggl_project_ids]
+
+    if agg_projects:
+        client = _get_toggl_client(user)
+        if client:
+            cache_key_tp = "toggl_projects_list"
+            tp_list = _toggl_cache.get(cache_key_tp)
+            if tp_list is None:
+                try:
+                    raw = await client.list_projects(active=None)
+                    tp_list = [
+                        {
+                            "id": p.get("id"),
+                            "client_id": p.get("client_id") or p.get("cid"),
+                            "billable": p.get("billable", False),
+                        }
+                        for p in raw
+                        if p.get("id")
+                    ]
+                except Exception as e:
+                    logger.warning("Toggl-Projekte für Aggregation: %s", e)
+                    tp_list = []
+
+            for cap_proj in agg_projects:
+                matching_ids = []
+                for tp in tp_list:
+                    if tp["client_id"] != cap_proj.toggl_client_id:
+                        continue
+                    bf = cap_proj.toggl_billable_filter
+                    if bf == "non_billable" and tp["billable"]:
+                        continue
+                    if bf == "billable" and not tp["billable"]:
+                        continue
+                    matching_ids.append(tp["id"])
+                agg_cap_mapping[str(cap_proj.id)] = matching_ids
+                agg_toggl_ids.extend(matching_ids)
+
+    all_query_ids = list(set(all_toggl_project_ids + agg_toggl_ids))
+
+    if not all_query_ids and not agg_projects:
         return {"projects": [], "toggl_data_date": None}
 
-    # Toggl-Daten (24h-Cache)
+    # Toggl-Zeiteinträge (24h-Cache)
     cache_key = f"cap_toggl:{from_date}:{to_date}"
     toggl_data = _toggl_cache.get(cache_key)
 
-    if toggl_data is None:
+    if toggl_data is None and all_query_ids:
         client = _get_toggl_client(user)
         if client:
             try:
@@ -723,7 +801,7 @@ async def get_plan_vs_actual(
                     workspace_id=None,
                     start_date=from_date,
                     end_date=to_date,
-                    project_ids=all_toggl_project_ids,
+                    project_ids=all_query_ids,
                 )
                 toggl_data = _aggregate_toggl_weekly(entries, d_from, d_to)
                 _toggl_cache[cache_key] = toggl_data
@@ -732,14 +810,18 @@ async def get_plan_vs_actual(
                 toggl_data = {}
         else:
             toggl_data = {}
+    elif toggl_data is None:
+        toggl_data = {}
 
-    # Zusammenführen: Plan + Ist (auch Wochen nur mit Ist-Daten)
+    # Ergebnis: Direkte Projekte (wie bisher)
     projects_result = []
-    all_toggl_ids = set(plan_by_project_week.keys())
+    all_toggl_ids_set = set(plan_by_project_week.keys())
     if toggl_data:
-        all_toggl_ids.update(toggl_data.keys())
+        for tid in toggl_data:
+            if tid in {p.toggl_project_id for p in direct_projects}:
+                all_toggl_ids_set.add(tid)
 
-    for toggl_id in all_toggl_ids:
+    for toggl_id in all_toggl_ids_set:
         planned_weeks = plan_by_project_week.get(toggl_id, {})
         actual_weeks = toggl_data.get(toggl_id, {}) if toggl_data else {}
         all_week_strs = sorted(set(list(planned_weeks.keys()) + list(actual_weeks.keys())))
@@ -757,6 +839,33 @@ async def get_plan_vs_actual(
             })
         projects_result.append(project_entry)
 
+    # Ergebnis: Aggregierte Projekte (Client-basiert)
+    for cap_proj in agg_projects:
+        cap_id = str(cap_proj.id)
+        matched_toggl_ids = agg_cap_mapping.get(cap_id, [])
+        agg_actual: dict[str, int] = defaultdict(int)
+        if toggl_data:
+            for tid in matched_toggl_ids:
+                for week_str, mins in toggl_data.get(tid, {}).items():
+                    agg_actual[week_str] += mins
+
+        planned_weeks = plan_by_cap_week.get(cap_id, {})
+        all_week_strs = sorted(set(list(planned_weeks.keys()) + list(agg_actual.keys())))
+
+        project_entry = {
+            "toggl_project_id": None,
+            "capacity_project_id": cap_id,
+            "name": cap_proj.name,
+            "weeks": [],
+        }
+        for week_str in all_week_strs:
+            project_entry["weeks"].append({
+                "week_start": week_str,
+                "planned_minutes": planned_weeks.get(week_str, 0),
+                "actual_minutes": agg_actual.get(week_str, 0),
+            })
+        projects_result.append(project_entry)
+
     return {
         "projects": projects_result,
         "toggl_data_date": date.today().isoformat() if toggl_data else None,
@@ -768,6 +877,194 @@ async def refresh_toggl_cache(user: User = Depends(require_role("owner"))):
     """Leert den Toggl-Cache für die Kapazitätsplanung."""
     _toggl_cache.clear()
     return {"status": "ok", "message": "Toggl-Cache geleert"}
+
+
+@router.get("/monthly-actual")
+async def get_monthly_actual(
+    month: str | None = Query(default=None, description="YYYY-MM, default aktueller Monat"),
+    prev_month: bool = Query(default=True, description="Vormonat mitliefern"),
+    user: User = Depends(require_role("owner")),
+):
+    """Monatlicher Soll/Ist-Vergleich pro Kapazitätsprojekt (für Soll/Ist-Spalte)."""
+    from calendar import monthrange
+
+    from sqlalchemy import or_
+
+    if month:
+        parts = month.split("-")
+        year, mon = int(parts[0]), int(parts[1])
+    else:
+        today = date.today()
+        year, mon = today.year, today.month
+
+    month_start = date(year, mon, 1)
+    month_end = date(year, mon, monthrange(year, mon)[1])
+
+    prev_year, prev_mon = (year - 1, 12) if mon == 1 else (year, mon - 1)
+    prev_start = date(prev_year, prev_mon, 1)
+    prev_end = date(prev_year, prev_mon, monthrange(prev_year, prev_mon)[1])
+
+    async with async_session() as session:
+        proj_stmt = select(CapacityProject).where(
+            or_(
+                CapacityProject.toggl_project_id.isnot(None),
+                CapacityProject.toggl_client_id.isnot(None),
+            )
+        )
+        cap_projects = (await session.execute(proj_stmt)).scalars().all()
+        if not cap_projects:
+            return {"month": f"{year:04d}-{mon:02d}", "projects": []}
+
+        cap_ids = [p.id for p in cap_projects]
+        query_from = _monday_of(prev_start if prev_month else month_start)
+        stmt = (
+            select(CapacityAllocation, CapacityProject)
+            .join(CapacityProject)
+            .where(CapacityAllocation.week_start >= query_from)
+            .where(CapacityAllocation.week_start <= month_end)
+            .where(CapacityAllocation.capacity_project_id.in_(cap_ids))
+        )
+        alloc_rows = (await session.execute(stmt)).all()
+
+    WEEKS_PER_MONTH = 52 / 12
+
+    week_allocs_cur: dict[str, list[int]] = defaultdict(list)
+    day_total_cur: dict[str, int] = defaultdict(int)
+    week_allocs_prev: dict[str, list[int]] = defaultdict(list)
+    day_total_prev: dict[str, int] = defaultdict(int)
+
+    for alloc, proj in alloc_rows:
+        cid = str(proj.id)
+        if month_start <= alloc.week_start <= month_end:
+            if alloc.allocation_type == "day":
+                day_total_cur[cid] += alloc.minutes
+            else:
+                week_allocs_cur[cid].append(alloc.minutes)
+        if prev_month and prev_start <= alloc.week_start <= prev_end:
+            if alloc.allocation_type == "day":
+                day_total_prev[cid] += alloc.minutes
+            else:
+                week_allocs_prev[cid].append(alloc.minutes)
+
+    planned_cur: dict[str, int] = defaultdict(int)
+    planned_prev_map: dict[str, int] = defaultdict(int)
+
+    for cid, mins in week_allocs_cur.items():
+        planned_cur[cid] = int(round(sum(mins) / len(mins) * WEEKS_PER_MONTH))
+    for cid, d in day_total_cur.items():
+        planned_cur[cid] += d
+
+    if prev_month:
+        for cid, mins in week_allocs_prev.items():
+            planned_prev_map[cid] = int(round(sum(mins) / len(mins) * WEEKS_PER_MONTH))
+        for cid, d in day_total_prev.items():
+            planned_prev_map[cid] += d
+
+    # Toggl-Projekt-IDs sammeln (direkt + aggregiert)
+    direct = [p for p in cap_projects if p.toggl_project_id]
+    agg = [p for p in cap_projects if p.toggl_client_id and not p.toggl_project_id]
+    all_toggl_ids: list[int] = [p.toggl_project_id for p in direct]
+    agg_map: dict[str, list[int]] = {}
+
+    if agg:
+        client = _get_toggl_client(user)
+        if client:
+            tp_list = _toggl_cache.get("toggl_projects_list")
+            if tp_list is None:
+                try:
+                    raw = await client.list_projects(active=None)
+                    tp_list = [
+                        {"id": p.get("id"), "client_id": p.get("client_id") or p.get("cid"), "billable": p.get("billable", False)}
+                        for p in raw if p.get("id")
+                    ]
+                except Exception as e:
+                    logger.warning("Toggl-Projekte: %s", e)
+                    tp_list = []
+            for cp in agg:
+                ids = [
+                    tp["id"] for tp in tp_list
+                    if tp["client_id"] == cp.toggl_client_id
+                    and (not cp.toggl_billable_filter
+                         or (cp.toggl_billable_filter == "non_billable" and not tp["billable"])
+                         or (cp.toggl_billable_filter == "billable" and tp["billable"]))
+                ]
+                agg_map[str(cp.id)] = ids
+                all_toggl_ids.extend(ids)
+
+    all_toggl_ids = list(set(all_toggl_ids))
+
+    async def _fetch_monthly(m_start: date, m_end: date, label: str) -> dict[int, int]:
+        """Ist-Minuten pro Toggl-Projekt via Summary API (wie Debitorenansicht)."""
+        cache_key = f"cap_monthly:{label}"
+        cached = _toggl_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if not all_toggl_ids:
+            return {}
+        cl = _get_toggl_client(user)
+        if not cl:
+            return {}
+        try:
+            toggl_set = set(all_toggl_ids)
+            summary = await cl.get_summary_by_project(
+                start_date=m_start.isoformat(),
+                end_date=m_end.isoformat(),
+                billable=None,
+            )
+            result: dict[int, int] = {}
+            for group in summary:
+                pid = group.get("id", 0)
+                if pid not in toggl_set:
+                    continue
+                sub_groups = group.get("sub_groups") or group.get("items") or []
+                group_secs = 0.0
+                for item in sub_groups:
+                    rates = item.get("rates") or []
+                    for rate_info in rates:
+                        group_secs += rate_info.get("billable_seconds", 0) or 0
+                    secs_total = item.get("seconds", 0) or item.get("time", 0) or 0
+                    if not rates:
+                        group_secs += secs_total
+                    elif secs_total > group_secs:
+                        group_secs = secs_total
+                if group_secs > 0:
+                    result[pid] = int(group_secs / 60)
+            _toggl_cache[cache_key] = result
+            return result
+        except Exception as e:
+            logger.warning("Toggl monthly fetch: %s", e)
+            return {}
+
+    actual_cur = await _fetch_monthly(month_start, month_end, f"{year:04d}-{mon:02d}")
+    actual_prev_data: dict[int, int] = {}
+    if prev_month:
+        actual_prev_data = await _fetch_monthly(prev_start, prev_end, f"{prev_year:04d}-{prev_mon:02d}")
+
+    projects_out = []
+    for cp in cap_projects:
+        cid = str(cp.id)
+        if cp.toggl_project_id:
+            cur_act = actual_cur.get(cp.toggl_project_id, 0)
+            prev_act = actual_prev_data.get(cp.toggl_project_id, 0)
+        elif cp.toggl_client_id:
+            matched = agg_map.get(cid, [])
+            cur_act = sum(actual_cur.get(t, 0) for t in matched)
+            prev_act = sum(actual_prev_data.get(t, 0) for t in matched)
+        else:
+            continue
+
+        entry: dict = {
+            "capacity_project_id": cid,
+            "name": cp.name,
+            "planned_minutes": planned_cur.get(cid, 0),
+            "actual_minutes": cur_act,
+        }
+        if prev_month:
+            entry["prev_month_planned"] = planned_prev_map.get(cid, 0)
+            entry["prev_month_actual"] = prev_act
+        projects_out.append(entry)
+
+    return {"month": f"{year:04d}-{mon:02d}", "projects": projects_out}
 
 
 @router.get("/toggl-projects")
@@ -799,6 +1096,32 @@ async def list_toggl_projects(user: User = Depends(require_role("owner"))):
         return result
     except Exception as e:
         logger.warning("Toggl-Projekte laden fehlgeschlagen: %s", e)
+        return []
+
+
+@router.get("/toggl-clients")
+async def list_toggl_clients(user: User = Depends(require_role("owner"))):
+    """Toggl-Clients auflisten (24h-Cache) für Aggregations-Verknüpfung."""
+    cache_key = "toggl_clients_list"
+    cached = _toggl_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    client = _get_toggl_client(user)
+    if not client:
+        return []
+
+    try:
+        clients = await client.list_clients()
+        result = [
+            {"id": c.get("id"), "name": c.get("name", "")}
+            for c in clients
+            if c.get("id") and c.get("name")
+        ]
+        _toggl_cache[cache_key] = result
+        return result
+    except Exception as e:
+        logger.warning("Toggl-Clients laden fehlgeschlagen: %s", e)
         return []
 
 
@@ -960,6 +1283,8 @@ def _project_to_out(p: CapacityProject) -> CapacityProjectOut:
         status=p.status,
         project_id=str(p.project_id) if p.project_id else None,
         toggl_project_id=p.toggl_project_id,
+        toggl_client_id=p.toggl_client_id,
+        toggl_billable_filter=p.toggl_billable_filter,
         pipedrive_deal_id=p.pipedrive_deal_id,
         sort_order=p.sort_order,
         notes=p.notes,

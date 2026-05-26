@@ -446,6 +446,8 @@ CREATE TABLE capacity_projects (
                     CHECK (status IN ('bestätigt', 'vorläufig')),
     project_id      UUID REFERENCES projects(id) ON DELETE SET NULL,
     toggl_project_id INT,
+    toggl_client_id  INT,
+    toggl_billable_filter TEXT CHECK (toggl_billable_filter IN ('non_billable', 'billable')),
     pipedrive_deal_id INT,
     sort_order      INT DEFAULT 0,
     notes           TEXT,

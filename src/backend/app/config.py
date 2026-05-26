@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     perplexity_api_key: str = ""
 
+    # MeisterLabs (MeisterTask API)
+    meisterlabs_token: str = ""
+
     # Web Search
     tavily_api_key: str = ""
 

@@ -420,6 +420,8 @@ class CapacityProject(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="bestätigt")
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
     toggl_project_id: Mapped[int | None] = mapped_column(Integer)
+    toggl_client_id: Mapped[int | None] = mapped_column(Integer)
+    toggl_billable_filter: Mapped[str | None] = mapped_column(Text)
     pipedrive_deal_id: Mapped[int | None] = mapped_column(Integer)
     sort_order: Mapped[int] = mapped_column(Integer, server_default="0")
     notes: Mapped[str | None] = mapped_column(Text)
