@@ -357,7 +357,7 @@ export function KanbanColumn({
             ? 'border-indigo-400 bg-indigo-50/50 dark:border-indigo-500 dark:bg-indigo-950/30'
             : 'border-transparent'
         }`}
-        style={{ minHeight: 100 }}
+        style={{ minHeight: 200 }}
       >
         {adding && (
           <div className="rounded-xl border border-indigo-300 bg-white p-2 shadow-sm dark:border-indigo-700 dark:bg-gray-900">

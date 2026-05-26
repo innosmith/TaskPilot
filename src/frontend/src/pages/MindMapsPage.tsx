@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, Search, MoreHorizontal, Copy, Trash2, BrainCircuit,
   FolderPlus, Folder, FolderOpen, ChevronRight, ChevronDown,
-  Eye, Pencil, X,
+  Eye, Pencil, X, Upload,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { MindmapListItem, MindmapFolder } from '../types';
@@ -51,6 +51,8 @@ export function MindMapsPage() {
   const [newFolderName, setNewFolderName] = useState('');
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [renameFolderName, setRenameFolderName] = useState('');
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -97,6 +99,24 @@ export function MindMapsPage() {
       setMaps(prev => prev.filter(m => m.id !== id));
     } catch {
       // Fehler wird durch API-Client gehandelt
+    }
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (activeFolderId) formData.append('folder_id', activeFolderId);
+      const res = await api.upload<{ id: string }>('/api/mindmaps/import', formData);
+      navigate(`/mindmaps/${res.id}`);
+    } catch {
+      // Fehler wird durch API-Client gehandelt
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -275,14 +295,33 @@ export function MindMapsPage() {
                 Ideen visuell strukturieren und als Tasks übernehmen
               </p>
             </div>
-            <button
-              onClick={handleCreate}
-              className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 transition-colors"
-              data-testid="create-mindmap-button"
-            >
-              <Plus size={16} />
-              Neue Mind-Map
-            </button>
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".mm"
+                onChange={handleImport}
+                className="hidden"
+                data-testid="import-mindmap-input"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importing}
+                className="flex items-center gap-2 rounded-xl border border-gray-300 dark:border-gray-600 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
+                data-testid="import-mindmap-button"
+              >
+                <Upload size={16} />
+                {importing ? 'Importiere…' : 'Importieren'}
+              </button>
+              <button
+                onClick={handleCreate}
+                className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 transition-colors"
+                data-testid="create-mindmap-button"
+              >
+                <Plus size={16} />
+                Neue Mind-Map
+              </button>
+            </div>
           </div>
 
           {/* Search */}

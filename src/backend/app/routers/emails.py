@@ -400,3 +400,50 @@ async def mark_as_read(
     client = _get_graph_client()
     await client.mark_as_read(message_id)
     return {"status": "marked_as_read", "message_id": message_id}
+
+
+# ── Thread (Conversation) ──────────────────────────────────
+
+class ThreadMessage(BaseModel):
+    id: str
+    subject: str | None = None
+    from_address: str | None = None
+    from_name: str | None = None
+    received_at: str | None = None
+    body_html: str | None = None
+    body_preview: str | None = None
+
+
+class ThreadResponse(BaseModel):
+    conversation_id: str
+    messages: list[ThreadMessage]
+
+
+@router.get("/thread/{conversation_id}", response_model=ThreadResponse)
+async def get_email_thread(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+) -> ThreadResponse:
+    """Alle Nachrichten einer Konversation (Thread) laden."""
+    _require_owner(user)
+    _check_configured()
+    client = _get_graph_client()
+    try:
+        raw_msgs = await client.get_conversation_messages(conversation_id, top=25)
+    except Exception as e:
+        logger.exception("Thread %s konnte nicht geladen werden", conversation_id)
+        raise HTTPException(status_code=502, detail="Thread konnte nicht geladen werden")
+
+    messages = []
+    for m in raw_msgs:
+        frm = m.get("from", {}).get("emailAddress", {})
+        messages.append(ThreadMessage(
+            id=m.get("id", ""),
+            subject=m.get("subject"),
+            from_address=frm.get("address"),
+            from_name=frm.get("name"),
+            received_at=m.get("receivedDateTime"),
+            body_html=m.get("body", {}).get("content"),
+            body_preview=m.get("bodyPreview"),
+        ))
+    return ThreadResponse(conversation_id=conversation_id, messages=messages)

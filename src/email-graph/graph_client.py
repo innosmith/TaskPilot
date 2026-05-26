@@ -360,6 +360,13 @@ class GraphClient:
             {"destinationId": folder["id"]},
         )
 
+    async def archive_email(self, message_id: str) -> dict:
+        """E-Mail in den Outlook-Archiv-Ordner verschieben (Well-Known Folder)."""
+        return await self._post(
+            f"{self._user_path}/messages/{message_id}/move",
+            {"destinationId": "archive"},
+        )
+
     async def get_conversation_messages(
         self, conversation_id: str, top: int = 10
     ) -> list[dict]:

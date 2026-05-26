@@ -220,7 +220,7 @@ class CapacityPeriod(BaseModel):
     meeting_hours: float
     blocker_hours: float
     free_hours: float
-    work_days: int
+    work_days: float
 
 
 class CapacityResponse(BaseModel):
@@ -299,14 +299,16 @@ def _calc_period(now: datetime, period_end_date, events: list[dict]) -> Capacity
     current_hour = now.hour + now.minute / 60
 
     today_remaining = 0.0
+    today_fraction = 0.0
     if is_workday_today and current_hour < _WORK_END:
         remaining_window = max(0.0, _WORK_END - max(_WORK_START, current_hour))
         today_remaining = remaining_window * (_HOURS_PER_DAY / (_WORK_END - _WORK_START))
+        today_fraction = remaining_window / (_WORK_END - _WORK_START)
 
     tomorrow = today + timedelta(days=1)
     future_workdays = _count_workdays(tomorrow, period_end_date)
     total_hours = today_remaining + future_workdays * _HOURS_PER_DAY
-    work_days = future_workdays + (1 if is_workday_today and current_hour < _WORK_END else 0)
+    work_days = future_workdays + today_fraction
 
     period_start = now
     period_end = datetime.combine(period_end_date, datetime.max.time()).replace(tzinfo=_TZ)
@@ -338,7 +340,7 @@ def _calc_period(now: datetime, period_end_date, events: list[dict]) -> Capacity
         meeting_hours=round(meeting_min / 60, 1),
         blocker_hours=round(blocker_min / 60, 1),
         free_hours=round(free_hours, 1),
-        work_days=work_days,
+        work_days=round(work_days, 1),
     )
 
 

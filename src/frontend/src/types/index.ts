@@ -61,6 +61,7 @@ export interface TaskDetail {
   recurrence_max_instances: number | null;
   template_id: string | null;
   email_message_id: string | null;
+  email_conversation_id: string | null;
   calendar_event_id: string | null;
   calendar_duration_minutes: number | null;
   calendar_preferred_time: string | null;

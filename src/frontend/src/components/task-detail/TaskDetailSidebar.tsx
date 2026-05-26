@@ -1,6 +1,7 @@
 import { useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
 import type { TaskDetail, Tag, TaskUpdatePayload, PipelineColumn, Project, BoardColumn } from '../../types';
 import { api } from '../../api/client';
+import { EmailThreadPanel } from '../EmailThreadPanel';
 
 const CalendarSlotPickerLazy = lazy(() => import('./CalendarSlotPicker'));
 import {
@@ -177,6 +178,9 @@ export default function TaskDetailSidebar({
             <div className="truncate text-[10px] text-sky-600/60 dark:text-sky-400/50">
               von {task.source_email_from}
             </div>
+          )}
+          {task.email_conversation_id && (
+            <EmailThreadPanel conversationId={task.email_conversation_id} compact />
           )}
         </div>
       )}

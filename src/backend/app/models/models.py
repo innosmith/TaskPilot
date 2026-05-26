@@ -108,6 +108,7 @@ class Task(Base):
     recurrence_max_instances: Mapped[int | None] = mapped_column(Integer)
     template_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id"))
     email_message_id: Mapped[str | None] = mapped_column(Text)
+    email_conversation_id: Mapped[str | None] = mapped_column(Text)
     calendar_event_id: Mapped[str | None] = mapped_column(Text)
     calendar_duration_minutes: Mapped[int | None] = mapped_column(Integer)
     calendar_preferred_time: Mapped[str | None] = mapped_column(Text)

@@ -2,9 +2,11 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
+import logging
+
 import bcrypt
 import bleach
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +36,9 @@ from app.schemas import (
     MindmapUpdate,
     ShareVerifyRequest,
 )
+from app.services.freemind_parser import extract_title, parse_freemind_xml
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/mindmaps", tags=["mindmaps"])
 public_router = APIRouter(prefix="/api/public/mindmaps", tags=["mindmaps-public"])
@@ -52,6 +57,60 @@ def _default_flow_data(title: str) -> dict:
         "edges": [],
         "viewport": {"x": 0, "y": 0, "zoom": 1},
     }
+
+
+# ---------------------------------------------------------------------------
+# FreeMind .mm Import (Owner-only)
+# ---------------------------------------------------------------------------
+
+MAX_IMPORT_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@router.post("/import", response_model=MindmapOut, status_code=status.HTTP_201_CREATED)
+async def import_mindmap(
+    file: UploadFile,
+    folder_id: uuid.UUID | None = Form(None),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_owner),
+) -> MindmapOut:
+    """FreeMind .mm Datei importieren und als Mind-Map erstellen."""
+    if not file.filename or not file.filename.lower().endswith(".mm"):
+        raise HTTPException(
+            status_code=400,
+            detail="Nur FreeMind .mm Dateien werden unterstützt",
+        )
+
+    raw = await file.read()
+    if len(raw) > MAX_IMPORT_SIZE:
+        raise HTTPException(status_code=400, detail="Datei zu gross (max. 10 MB)")
+
+    try:
+        title = bleach.clean(extract_title(raw))
+        flow_data = parse_freemind_xml(raw)
+    except Exception as exc:
+        logger.warning("FreeMind-Import fehlgeschlagen: %s", exc)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Datei konnte nicht geparst werden: {exc}",
+        )
+
+    if folder_id:
+        folder = await db.get(MindmapFolder, folder_id)
+        if not folder or folder.owner_id != user.id:
+            raise HTTPException(status_code=404, detail="Ordner nicht gefunden")
+
+    mindmap = Mindmap(
+        title=title,
+        folder_id=folder_id,
+        owner_id=user.id,
+        visibility="private",
+        flow_data=flow_data,
+        settings={},
+    )
+    db.add(mindmap)
+    await db.flush()
+    await db.refresh(mindmap)
+    return mindmap
 
 
 # ---------------------------------------------------------------------------

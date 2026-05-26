@@ -1,4 +1,7 @@
+import logging
+import os
 import pathlib
+import sys
 import uuid
 from datetime import date, datetime, timezone
 
@@ -15,6 +18,12 @@ from app.routers.uploads import _scan_with_clamav
 from app.database import get_db
 from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, BoardMember, ChecklistItem, EmailTriage, Project, Task, User
 from app.services.notification import notify_mentions, notify_task_assigned
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
+from graph_client import GraphClient, GraphConfig  # noqa: E402
+from app.config import get_settings  # noqa: E402
+
+logger = logging.getLogger("taskpilot.tasks")
 from app.schemas import (
     AssigneeUser,
     ChecklistItemCreate,
@@ -24,6 +33,34 @@ from app.schemas import (
     TaskOut,
     TaskUpdate,
 )
+
+
+def _get_email_client() -> GraphClient | None:
+    s = get_settings()
+    if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):
+        return None
+    return GraphClient(GraphConfig(
+        tenant_id=s.graph_tenant_id,
+        client_id=s.graph_client_id,
+        client_secret=s.graph_client_secret,
+        user_email=s.graph_user_email,
+    ))
+
+
+async def _archive_source_email(email_message_id: str | None) -> None:
+    """Archiviert die Quell-Mail in Outlook (best-effort)."""
+    if not email_message_id:
+        return
+    client = _get_email_client()
+    if not client:
+        return
+    try:
+        await client.archive_email(email_message_id)
+        logger.info("Quell-Mail %s archiviert", email_message_id)
+    except Exception:
+        logger.warning("Quell-Mail %s konnte nicht archiviert werden", email_message_id)
+    finally:
+        await client.close()
 
 
 async def _resolve_assignee_user(assignee: str, db: AsyncSession) -> AssigneeUser | None:
@@ -161,6 +198,7 @@ class PendingReviewOut(BaseModel):
     pipeline_column_id: uuid.UUID | None
     due_date: str | None
     email_message_id: str | None
+    email_conversation_id: str | None = None
     source_email_subject: str | None = None
     source_email_from: str | None = None
     created_at: str
@@ -249,6 +287,7 @@ async def list_pending_review(
             pipeline_column_id=task.pipeline_column_id,
             due_date=task.due_date.isoformat() if task.due_date else None,
             email_message_id=task.email_message_id,
+            email_conversation_id=task.email_conversation_id,
             source_email_subject=email_subject,
             source_email_from=email_from_name or email_from_addr,
             created_at=task.created_at.isoformat(),
@@ -400,6 +439,8 @@ async def confirm_review_task(
             first_col = col_result.scalar_one_or_none()
             if first_col:
                 task.board_column_id = first_col.id
+
+    await _archive_source_email(task.email_message_id)
 
     return task
 

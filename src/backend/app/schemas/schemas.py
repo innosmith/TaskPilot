@@ -118,6 +118,7 @@ class TaskCreate(TaskBase):
     pipeline_column_id: uuid.UUID | None = None
     pipeline_position: float | None = None
     email_message_id: str | None = None
+    email_conversation_id: str | None = None
     calendar_duration_minutes: int | None = None
     calendar_preferred_time: str | None = None
     pipedrive_deal_id: int | None = None
@@ -165,6 +166,7 @@ class TaskOut(TaskBase):
     pipeline_position: float | None
     is_completed: bool
     email_message_id: str | None = None
+    email_conversation_id: str | None = None
     calendar_event_id: str | None = None
     calendar_duration_minutes: int | None = None
     calendar_preferred_time: str | None = None

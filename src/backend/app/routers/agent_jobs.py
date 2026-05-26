@@ -242,6 +242,7 @@ async def get_draft_preview(
             "cc_recipients": cc_list,
             "source_subject": meta.get("subject"),
             "source_from": meta.get("from_address"),
+            "conversation_id": meta.get("conversation_id"),
         }
     except Exception as e:
         if job.status == "awaiting_approval":
@@ -350,6 +351,13 @@ async def update_agent_job(
                 try:
                     await client.send_draft(draft_id)
                     job.output = (job.output or "") + "\n\nE-Mail erfolgreich gesendet."
+                    source_email_id = (job.metadata_json or {}).get("email_message_id")
+                    if source_email_id:
+                        try:
+                            await client.archive_email(source_email_id)
+                            job.output += " Quell-Mail archiviert."
+                        except Exception:
+                            logger.warning("Quell-Mail %s konnte nicht archiviert werden", source_email_id)
                 except Exception as e:
                     job.status = "failed"
                     job.error_message = str(e)

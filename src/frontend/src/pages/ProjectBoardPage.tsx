@@ -4,9 +4,11 @@ import {
   DndContext,
   DragOverlay,
   closestCorners,
+  pointerWithin,
   PointerSensor,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragStartEvent,
   type DragEndEvent,
   type DragOverEvent,
@@ -58,6 +60,22 @@ export function ProjectBoardPage() {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
+
+  const collisionDetection: CollisionDetection = (args) => {
+    const pointerCollisions = pointerWithin(args);
+    if (pointerCollisions.length > 0) {
+      const hasItem = pointerCollisions.some(
+        (c) => !board?.columns.some((col) => col.id === c.id),
+      );
+      if (hasItem) {
+        return pointerCollisions.filter(
+          (c) => !board?.columns.some((col) => col.id === c.id),
+        );
+      }
+      return pointerCollisions;
+    }
+    return closestCorners(args);
+  };
 
   const fetchBoard = useCallback(async () => {
     if (!id) return;
@@ -536,7 +554,7 @@ export function ProjectBoardPage() {
       <div className="relative z-10 flex-1 overflow-x-auto p-4 sm:p-6">
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCorners}
+          collisionDetection={collisionDetection}
           onDragStart={handleDragStart}
           onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}

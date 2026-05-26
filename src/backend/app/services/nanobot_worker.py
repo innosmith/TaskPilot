@@ -343,6 +343,7 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
                 if first_col:
                     pipeline_col_id = _determine_pipeline_column(deadline)
                     email_message_id = meta.get("email_message_id")
+                    email_conversation_id = meta.get("conversation_id")
 
                     due_date = None
                     if deadline:
@@ -368,6 +369,7 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
                         board_position=next_pos,
                         pipeline_column_id=pipeline_col_id,
                         email_message_id=email_message_id,
+                        email_conversation_id=email_conversation_id,
                         due_date=due_date,
                         needs_review=True,
                         assignee="me",

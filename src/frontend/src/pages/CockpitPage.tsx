@@ -6,6 +6,7 @@ import { CrmBadge } from '../components/CrmBadge';
 import { DraftEditor } from '../components/DraftEditor';
 import { FormattedOutput } from '../components/FormattedOutput';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
+import { EmailThreadPanel } from '../components/EmailThreadPanel';
 import { TracePanel } from '../components/TracePanel';
 import { useSSE } from '../hooks/useSSE';
 import type { AgentJob, TaskCard, PipelineData } from '../types';
@@ -35,6 +36,7 @@ interface DraftPreview {
   cc_recipients: string[];
   source_subject: string | null;
   source_from: string | null;
+  conversation_id: string | null;
 }
 
 interface PendingReviewTask {
@@ -44,6 +46,7 @@ interface PendingReviewTask {
   project_name: string;
   source_email_subject: string | null;
   source_email_from: string | null;
+  email_conversation_id: string | null;
   needs_review: boolean;
 }
 
@@ -974,6 +977,14 @@ export function CockpitPage() {
                           )}
 
                           <TracePanel jobId={job.id} compact />
+
+                          {(preview?.conversation_id || meta.conversation_id) && (
+                            <EmailThreadPanel
+                              conversationId={(preview?.conversation_id || meta.conversation_id) as string}
+                              glassBg={hasBg}
+                              compact
+                            />
+                          )}
                         </div>
                       )}
                     </div>
@@ -1020,6 +1031,13 @@ export function CockpitPage() {
                         </button>
                       </div>
                     </div>
+                    {task.email_conversation_id && (
+                      <EmailThreadPanel
+                        conversationId={task.email_conversation_id}
+                        glassBg={hasBg}
+                        compact
+                      />
+                    )}
                   </div>
                 ))}
               </div>
@@ -1311,7 +1329,7 @@ function CapacityCard({ weekCapacity, monthCapacity, hasBg }: { weekCapacity: Ca
           </div>
           <div className="flex items-center gap-1">
             <div className="h-2 w-2 rounded-full bg-gray-400 shrink-0" />
-            <span className={valueClass}>{data.work_days}</span>
+            <span className={valueClass}>{data.work_days % 1 === 0 ? data.work_days : data.work_days.toFixed(1)}</span>
             <span className={labelClass}>Arbeitstage</span>
           </div>
         </div>

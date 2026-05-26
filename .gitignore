@@ -1,4 +1,5 @@
 meistertask_export_*.json
+dataimport/
 
 # Umgebung & Secrets
 .env
