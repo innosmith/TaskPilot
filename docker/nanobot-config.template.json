@@ -2,7 +2,7 @@
   "agents": {
     "defaults": {
       "workspace": "/home/taskpilot/.nanobot/workspace",
-      "model": "qwen3.5:35b",
+      "model": "qwen3.6:latest",
       "provider": "ollama",
       "maxTokens": 4096,
       "contextWindowTokens": 65536,
@@ -15,7 +15,7 @@
       "timezone": "Europe/Zurich",
       "unifiedSession": false,
       "disabledSkills": [],
-      "idleCompactAfterMinutes": 0,
+      "idleCompactAfterMinutes": 30,
       "dream": {
         "intervalH": 2,
         "modelOverride": null,

@@ -31,7 +31,7 @@ litellm>=1.83
 openai>=2.24
 anthropic>=0.97
 tiktoken>=0.12
-nanobot-ai>=0.1.5
+nanobot-ai>=0.2.0
 
 # ── MCP (Model Context Protocol) ──
 mcp>=1.27

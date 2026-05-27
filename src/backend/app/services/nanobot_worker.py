@@ -191,6 +191,65 @@ Führe jetzt den Triage-Ablauf durch:
 """ + (f"\n\n## ZUSÄTZLICHE BENUTZER-REGELN (haben Vorrang!)\n{custom_triage_prompt}" if custom_triage_prompt else "")
 
 
+async def _build_chat_triage_prompt(job: AgentJob) -> str:
+    """Baut den Prompt für einen chat_triage Job mit Kontext."""
+    meta = job.metadata_json or {}
+    chat_id = meta.get("chat_id", "")
+    message_id = meta.get("chat_message_id", "")
+    sender = meta.get("sender_name", "")
+    preview = meta.get("body_preview", "")
+
+    projects_context = await _load_projects_context()
+
+    return f"""## CHAT-TRIAGE JOB
+
+Du hast eine neue Microsoft Teams Chat-Nachricht erhalten. Analysiere und klassifiziere sie.
+
+{projects_context}
+
+**Job-ID:** {job.id}
+**Chat-ID:** {chat_id}
+**Nachricht-ID:** {message_id}
+**Absender:** {sender}
+**Vorschau:** {preview[:300]}
+
+## VORGEHEN
+
+1. Lies die vollständige Nachricht mit den verfügbaren MCP-Tools
+2. Klassifiziere: Ist die Nachricht eine Aufgabe (task), eine reine Information (fyi), oder eine Meeting-Transkript-Benachrichtigung?
+3. Bei task: Erstelle einen TaskPilot-Task mit Kontext-Briefing und passendem Projekt
+4. Bei fyi: Nur zur Kenntnis nehmen
+5. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed", output="...")
+"""
+
+
+async def _build_generic_prompt(job: AgentJob) -> str:
+    """Baut einen kontextreichen Prompt für generische AgentJobs."""
+    meta = job.metadata_json or {}
+    projects_context = await _load_projects_context()
+
+    skill_hint = ""
+    skill_name = meta.get("skill")
+    if skill_name:
+        skill_path = _NANOBOT_HOME / "skills" / f"{skill_name}.md"
+        if skill_path.exists():
+            skill_hint = f"\n## SKILL-INSTRUKTIONEN\n\n{skill_path.read_text(encoding='utf-8')}\n"
+
+    description = meta.get("description", meta.get("prompt", str(meta)))
+
+    return f"""## AGENT-JOB
+
+{projects_context}
+{skill_hint}
+
+**Job-ID:** {job.id}
+**Job-Typ:** {job.job_type or 'generic'}
+**Auftrag:** {description}
+
+Führe den Auftrag aus und melde das Ergebnis mit update_agent_job("{job.id}", status="completed", output="...").
+"""
+
+
 def _extract_json_block(content: str) -> dict | None:
     """Extrahiert den JSON-Block aus dem LLM-Output."""
     pattern = r"```json\s*\n(.*?)\n\s*```"
@@ -733,8 +792,10 @@ async def _worker_loop() -> None:
                 meta = job.metadata_json or {}
                 if job.job_type == "email_triage":
                     prompt = await _build_triage_prompt(job)
+                elif job.job_type == "chat_triage":
+                    prompt = await _build_chat_triage_prompt(job)
                 else:
-                    prompt = f"Führe den AgentJob {job.id} aus: {job.metadata_json}"
+                    prompt = await _build_generic_prompt(job)
 
                 await _process_job(bot, job.id, job.job_type or "generic", prompt, meta)
             else:
