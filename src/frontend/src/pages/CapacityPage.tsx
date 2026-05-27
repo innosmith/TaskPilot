@@ -139,6 +139,51 @@ function getMonthPacing(): { expectedPct: number; workdaysElapsed: number; workd
 
 const WEEKS_PER_MONTH = 52 / 12;
 
+/**
+ * Computus: Ostersonntag nach dem Anonymous Gregorian Algorithm (Meeus/Jones/Butcher).
+ * Exakte Formel für den Gregorianischen Kalender, gültig für alle Jahre ab 1583.
+ */
+function easterSunday(year: number): Date {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+
+function bernHolidays(year: number): { date: string; label: string }[] {
+  const easter = easterSunday(year);
+  const offset = (days: number) => {
+    const d = new Date(easter);
+    d.setDate(d.getDate() + days);
+    return d;
+  };
+  const candidates: { d: Date; label: string }[] = [
+    { d: new Date(year, 0, 1), label: 'Neujahr' },
+    { d: new Date(year, 0, 2), label: 'Berchtoldstag' },
+    { d: offset(-2), label: 'Karfreitag' },
+    { d: offset(1), label: 'Ostermontag' },
+    { d: offset(39), label: 'Auffahrt' },
+    { d: offset(50), label: 'Pfingstmontag' },
+    { d: new Date(year, 7, 1), label: 'Bundesfeiertag' },
+    { d: new Date(year, 11, 25), label: 'Weihnachten' },
+    { d: new Date(year, 11, 26), label: 'Stephanstag' },
+  ];
+  return candidates
+    .filter(({ d }) => { const dow = d.getDay(); return dow >= 1 && dow <= 5; })
+    .map(({ d, label }) => ({ date: toIso(d), label }));
+}
+
 function getColClass(_range: ViewRange): string {
   return 'flex-1 min-w-0';
 }
@@ -262,7 +307,7 @@ function DraggableAllocBlock({ allocId, children, onClick, onContextMenu, classN
 // ── Sortable Project Row ─────────────────────────────────────────────────────
 
 function SortableProjectRow({
-  project, weeks, allocations, onCellClick, onContextMenu, onEditProject, colClass, viewRange: _viewRange, onAllocDrop, selectedAllocIds, onToggleSelect, timeOffWeekMap, monthlyData, sollIstExpanded,
+  project, weeks, allocations, onCellClick, onContextMenu, onEditProject, colClass, viewRange: _viewRange, onAllocDrop, selectedAllocIds, onToggleSelect, timeOffWeekMap, holidayWeekMap, monthlyData, sollIstExpanded,
 }: {
   project: CapProject;
   weeks: Date[];
@@ -276,6 +321,7 @@ function SortableProjectRow({
   selectedAllocIds: Set<string>;
   onToggleSelect: (allocId: string) => void;
   timeOffWeekMap: Record<string, number>;
+  holidayWeekMap: Record<string, { hours: number; entries: { label: string; dayIndex: number }[] }>;
   monthlyData?: MonthlyActualProject;
   sollIstExpanded: boolean;
 }) {
@@ -365,9 +411,10 @@ function SortableProjectRow({
             const barPct = Math.min(actualPct, 100);
             const deltaMin = monthlyData.actual_minutes - monthlyData.planned_minutes;
             const pacing = getMonthPacing();
-            const behindPace = monthlyData.planned_minutes > 0 && actualPct < pacing.expectedPct - 10;
+            const isBillable = project.is_billable;
+            const behindPace = isBillable && monthlyData.planned_minutes > 0 && actualPct < pacing.expectedPct - 10;
             const fulfilled = deltaMin >= 0 && monthlyData.planned_minutes > 0;
-            const overFulfilled = monthlyData.planned_minutes > 0 && monthlyData.actual_minutes > monthlyData.planned_minutes * 1.2;
+            const overFulfilled = isBillable && monthlyData.planned_minutes > 0 && monthlyData.actual_minutes > monthlyData.planned_minutes * 1.2;
 
             const barColor = behindPace
               ? 'bg-amber-500 dark:bg-amber-400'
@@ -416,7 +463,8 @@ function SortableProjectRow({
               : 0;
             const barPct = Math.min(actualPct, 100);
             const pacing = getMonthPacing();
-            const behindPace = monthlyData.planned_minutes > 0 && actualPct < pacing.expectedPct - 10;
+            const isBillableC = project.is_billable;
+            const behindPace = isBillableC && monthlyData.planned_minutes > 0 && actualPct < pacing.expectedPct - 10;
             const fulfilled = monthlyData.actual_minutes >= monthlyData.planned_minutes && monthlyData.planned_minutes > 0;
             const barColor = behindPace
               ? 'bg-amber-500 dark:bg-amber-400'
@@ -544,24 +592,40 @@ function SortableProjectRow({
 
                 {/* Ferien-Overlay */}
                 {(() => {
-                  const hoursOff = timeOffWeekMap[weekStr] || 0;
-                  if (hoursOff <= 0) return null;
-                  if (hoursOff >= 40) {
+                  const totalOff = timeOffWeekMap[weekStr] || 0;
+                  if (totalOff >= 40) {
                     return (
                       <div
                         className="absolute inset-0 z-20 pointer-events-none rounded-md bg-black/30 dark:bg-black/40"
                         style={{ backgroundImage: 'repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(0,0,0,0.15) 4px, rgba(0,0,0,0.15) 8px)' }}
-                        title={`Ferien: ${hoursOff}h — keine Kapazität verfügbar`}
+                        title={`Ferien: ${totalOff}h — keine Kapazität verfügbar`}
                       />
                     );
                   }
+                  return null;
+                })()}
+                {/* Ferien-Teilwoche (manuelle Abwesenheit, nicht Feiertag) */}
+                {(() => {
+                  const totalOff = timeOffWeekMap[weekStr] || 0;
+                  if (totalOff >= 40) return null;
+                  const manualOff = totalOff - (holidayWeekMap[weekStr]?.hours || 0);
+                  if (manualOff <= 0) return null;
                   return (
                     <div
                       className="absolute inset-x-0 top-0 h-1.5 z-20 pointer-events-none bg-amber-500/80 dark:bg-amber-400/70 rounded-t-md"
-                      title={`Ferien: ${hoursOff}h — reduzierte Kapazität`}
+                      title={`Ferien: ${manualOff}h — reduzierte Kapazität`}
                     />
                   );
                 })()}
+                {/* Feiertags-Markierungen (tagesgenau, gleiche Schraffur wie Ferien) */}
+                {holidayWeekMap[weekStr]?.entries.map((entry, i) => (
+                  <div
+                    key={`hol-${i}`}
+                    className="absolute top-0 bottom-0 z-20 pointer-events-none bg-black/30 dark:bg-black/40 rounded-sm"
+                    style={{ left: `${(entry.dayIndex / 5) * 100}%`, width: '20%', backgroundImage: 'repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(0,0,0,0.15) 4px, rgba(0,0,0,0.15) 8px)' }}
+                    title={entry.label}
+                  />
+                ))}
               </DroppableWeekCell>
             );
           })}
@@ -1760,6 +1824,31 @@ export function CapacityPage() {
 
   // ── Time off weeks map ─────────────────────────────────────────────────────
 
+  const computedHolidays = useMemo(() => {
+    const years = new Set<number>();
+    for (const w of weeks) years.add(w.getFullYear());
+    const lastWeek = weeks[weeks.length - 1];
+    if (lastWeek) years.add(new Date(lastWeek.getFullYear(), lastWeek.getMonth(), lastWeek.getDate() + 6).getFullYear());
+    const all: { date: string; label: string }[] = [];
+    for (const y of years) all.push(...bernHolidays(y));
+    return all;
+  }, [weeks]);
+
+  const holidayWeekMap = useMemo(() => {
+    const map: Record<string, { hours: number; entries: { label: string; dayIndex: number }[] }> = {};
+    const manualDates = new Set(timeOff.map(t => t.date));
+    for (const h of computedHolidays) {
+      if (manualDates.has(h.date)) continue;
+      const d = new Date(h.date + 'T00:00:00');
+      const key = toIso(getMonday(d));
+      const dayIndex = (d.getDay() + 6) % 7;
+      if (!map[key]) map[key] = { hours: 0, entries: [] };
+      map[key].hours += 8;
+      map[key].entries.push({ label: h.label, dayIndex });
+    }
+    return map;
+  }, [computedHolidays, timeOff]);
+
   const timeOffWeekMap = useMemo(() => {
     const map: Record<string, number> = {};
     for (const t of timeOff) {
@@ -1768,8 +1857,16 @@ export function CapacityPage() {
       const key = toIso(monday);
       map[key] = (map[key] || 0) + t.hours;
     }
+    const manualDates = new Set(timeOff.map(t => t.date));
+    for (const h of computedHolidays) {
+      if (manualDates.has(h.date)) continue;
+      const d = new Date(h.date + 'T00:00:00');
+      const monday = getMonday(d);
+      const key = toIso(monday);
+      map[key] = (map[key] || 0) + 8;
+    }
     return map;
-  }, [timeOff]);
+  }, [timeOff, computedHolidays]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1929,12 +2026,15 @@ export function CapacityPage() {
                 {weeks.map((week) => {
                   const weekStr = toIso(week);
                   const s = summary.find(s => s.week_start === weekStr);
-                  const util = s?.utilization_pct || 0;
+                  const holidayMin = (holidayWeekMap[weekStr]?.hours || 0) * 60;
+                  const rawAvail = s?.available_minutes || 2400;
+                  const adjustedAvail = Math.max(0, rawAvail - holidayMin);
+                  const plannedMin = s?.planned_minutes || 0;
+                  const util = adjustedAvail > 0 ? Math.round(plannedMin / adjustedAvail * 100) : (plannedMin > 0 ? 999 : 0);
                   const isYear = viewRange === '1y';
                   const isHalf = viewRange === '6m';
                   const isPast = week < new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
                   const actualMin = togglWeekMap[weekStr] || 0;
-                  const plannedMin = s?.planned_minutes || 0;
 
                   let bgColor: string;
                   let textColor: string;
@@ -1955,7 +2055,7 @@ export function CapacityPage() {
                     textColor = 'text-red-800 dark:text-red-200';
                   }
 
-                  const availMin = s?.available_minutes || 2400;
+                  const availMin = adjustedAvail;
                   const actualPct = availMin > 0 ? Math.round((actualMin / availMin) * 100) : 0;
                   const actualTextColor = isPast && actualMin > 0
                     ? (actualMin > plannedMin * 1.1 ? 'text-red-600 dark:text-red-400' : actualMin < plannedMin * 0.5 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400')
@@ -1993,12 +2093,12 @@ export function CapacityPage() {
             </div>
           </div>
 
-          {/* Ferien-Zeile */}
-          {timeOff.length > 0 && (
+          {/* Ferien-/Feiertags-Zeile */}
+          {(timeOff.length > 0 || computedHolidays.length > 0) && (
             <div className="flex items-stretch border-b border-amber-200 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-900/10">
               <div className="flex w-64 min-w-64 shrink-0 items-center gap-2 border-r border-gray-200 bg-amber-50 px-3 py-1.5 dark:border-gray-700 dark:bg-amber-900/20">
                 <Palmtree className="h-4 w-4 text-amber-500" />
-                <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Ferien / Frei</span>
+                <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Ferien / Feiertage</span>
               </div>
               <div
                 className="shrink-0 border-r border-amber-100 dark:border-amber-900/30"
@@ -2007,21 +2107,31 @@ export function CapacityPage() {
               <div className="flex flex-1">
                 {weeks.map(week => {
                   const weekStr = toIso(week);
-                  const hoursOff = timeOffWeekMap[weekStr] || 0;
+                  const manualHoursOff = (() => {
+                    let h = 0;
+                    const weekEnd = toIso(new Date(week.getFullYear(), week.getMonth(), week.getDate() + 6));
+                    for (const t of timeOff) { if (t.date >= weekStr && t.date <= weekEnd) h += t.hours; }
+                    return h;
+                  })();
+                  const holidayInfo = holidayWeekMap[weekStr];
                   const todayOffset = getTodayOffset(week);
+                  const totalOff = manualHoursOff + (holidayInfo?.hours || 0);
+                  const tooltipParts: string[] = [];
+                  if (holidayInfo) tooltipParts.push(holidayInfo.entries.map(e => e.label).join(', '));
+                  if (manualHoursOff > 0) tooltipParts.push(`${manualHoursOff}h Ferien`);
                   return (
                     <div
                       key={weekStr}
-                      className={`relative flex ${getColClass(viewRange)} items-center justify-center border-r border-amber-100 dark:border-amber-900/30 ${hoursOff > 0 ? (hoursOff >= 40 ? 'bg-amber-300/60 dark:bg-amber-700/40' : 'bg-amber-200/50 dark:bg-amber-800/30') : ''}`}
-                      title={hoursOff > 0 ? `${formatWeek(week)}: ${hoursOff}h frei` : undefined}
+                      className={`relative flex ${getColClass(viewRange)} items-center justify-center border-r border-amber-100 dark:border-amber-900/30 ${totalOff > 0 ? (totalOff >= 40 ? 'bg-amber-300/60 dark:bg-amber-700/40' : 'bg-amber-200/50 dark:bg-amber-800/30') : ''}`}
+                      title={tooltipParts.length > 0 ? `${formatWeek(week)}: ${tooltipParts.join(' — ')}` : undefined}
                     >
-                      {hoursOff > 0 && viewRange !== '1y' && (
-                        <span className={`text-[9px] font-medium ${hoursOff >= 40 ? 'text-amber-800 dark:text-amber-300' : 'text-amber-600 dark:text-amber-400'}`}>
-                          {hoursOff}h
+                      {totalOff > 0 && viewRange !== '1y' && (
+                        <span className={`text-[9px] font-medium ${totalOff >= 40 ? 'text-amber-800 dark:text-amber-300' : 'text-amber-600 dark:text-amber-400'}`}>
+                          {`${totalOff}h`}
                         </span>
                       )}
-                      {hoursOff > 0 && viewRange === '1y' && (
-                        <div className={`h-2 w-full rounded-sm ${hoursOff >= 40 ? 'bg-amber-400 dark:bg-amber-500' : 'bg-amber-300 dark:bg-amber-600'}`} />
+                      {totalOff > 0 && viewRange === '1y' && (
+                        <div className={`h-2 w-full rounded-sm ${totalOff >= 40 ? 'bg-amber-400 dark:bg-amber-500' : 'bg-amber-300 dark:bg-amber-600'}`} />
                       )}
                       {todayOffset !== null && (
                         <div className="absolute top-0 bottom-0 w-[2px] bg-red-500 dark:bg-red-400 z-10 pointer-events-none" style={{ left: `${todayOffset}%` }} />
@@ -2089,6 +2199,7 @@ export function CapacityPage() {
                   selectedAllocIds={selectedAllocIds}
                   onToggleSelect={handleToggleSelect}
                   timeOffWeekMap={timeOffWeekMap}
+                  holidayWeekMap={holidayWeekMap}
                   monthlyData={monthlyByProject[project.id]}
                   sollIstExpanded={sollIstExpanded}
                 />
