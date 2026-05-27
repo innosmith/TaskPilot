@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Plus, Trash2, ArrowRightLeft, Pencil,
   ChevronLeft, ChevronRight, Calendar, X, GripVertical, Palmtree, Unlink,
+  Check, AlertTriangle,
 } from 'lucide-react';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent, useDroppable, useDraggable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -117,6 +118,26 @@ function minutesToDisplay(min: number): string {
   if (m === 0) return `${h}h`;
   return `${h}h ${m}m`;
 }
+
+function getMonthPacing(): { expectedPct: number; workdaysElapsed: number; workdaysTotal: number } {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const today = now.getDate();
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  let elapsed = 0;
+  let total = 0;
+  for (let d = 1; d <= lastDay; d++) {
+    const dow = new Date(year, month, d).getDay();
+    if (dow >= 1 && dow <= 5) {
+      total++;
+      if (d <= today) elapsed++;
+    }
+  }
+  return { expectedPct: total > 0 ? Math.round(elapsed / total * 100) : 0, workdaysElapsed: elapsed, workdaysTotal: total };
+}
+
+const WEEKS_PER_MONTH = 52 / 12;
 
 function getColClass(_range: ViewRange): string {
   return 'flex-1 min-w-0';
@@ -338,24 +359,47 @@ function SortableProjectRow({
       >
         {monthlyData ? (
           sollIstExpanded ? (() => {
-            const pct = monthlyData.planned_minutes > 0
-              ? Math.min(Math.round((monthlyData.actual_minutes / monthlyData.planned_minutes) * 100), 100)
+            const actualPct = monthlyData.planned_minutes > 0
+              ? Math.round((monthlyData.actual_minutes / monthlyData.planned_minutes) * 100)
               : 0;
+            const barPct = Math.min(actualPct, 100);
             const deltaMin = monthlyData.actual_minutes - monthlyData.planned_minutes;
-            const deltaColor = deltaMin >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400';
+            const pacing = getMonthPacing();
+            const behindPace = monthlyData.planned_minutes > 0 && actualPct < pacing.expectedPct - 10;
+            const fulfilled = deltaMin >= 0 && monthlyData.planned_minutes > 0;
+            const overFulfilled = monthlyData.planned_minutes > 0 && monthlyData.actual_minutes > monthlyData.planned_minutes * 1.2;
+
+            const barColor = behindPace
+              ? 'bg-amber-500 dark:bg-amber-400'
+              : 'bg-emerald-500 dark:bg-emerald-400';
+            const deltaColor = overFulfilled
+              ? 'text-amber-600 dark:text-amber-400'
+              : fulfilled
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : 'text-gray-500 dark:text-gray-400';
+
             return (
               <div className="flex flex-col w-full gap-0.5">
-                <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                <div className="relative h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-emerald-500 dark:bg-emerald-400 transition-all"
-                    style={{ width: `${pct}%` }}
+                    className={`h-full rounded-full transition-all ${barColor}`}
+                    style={{ width: `${barPct}%` }}
                   />
+                  {monthlyData.planned_minutes > 0 && pacing.expectedPct < 100 && (
+                    <div
+                      className="absolute top-0 bottom-0 w-[2px] bg-gray-900/30 dark:bg-white/30"
+                      style={{ left: `${pacing.expectedPct}%` }}
+                      title={`${pacing.expectedPct}% des Monats verstrichen, ${actualPct}% geleistet`}
+                    />
+                  )}
                 </div>
-                <div className="flex items-baseline justify-between">
-                  <span className="text-[10px] font-medium text-gray-700 dark:text-gray-300 truncate">
+                <div className="flex items-center justify-between gap-0.5">
+                  <span className="text-[10px] font-medium text-gray-700 dark:text-gray-300 truncate flex items-center gap-0.5">
+                    {fulfilled && <Check className="h-2.5 w-2.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
                     {Math.round(monthlyData.actual_minutes / 60)}/{Math.round(monthlyData.planned_minutes / 60)}h
                   </span>
-                  <span className={`text-[9px] font-medium ${deltaColor}`}>
+                  <span className={`text-[9px] font-medium flex items-center gap-0.5 shrink-0 ${deltaColor}`}>
+                    {overFulfilled && <AlertTriangle className="h-2.5 w-2.5 shrink-0" />}
                     {deltaMin >= 0 ? '+' : ''}{Math.round(deltaMin / 60)}h
                   </span>
                 </div>
@@ -366,21 +410,33 @@ function SortableProjectRow({
                 )}
               </div>
             );
-          })() : (
-            <div className="flex flex-col items-center w-full gap-0.5" title={`${Math.round(monthlyData.actual_minutes / 60)}/${Math.round(monthlyData.planned_minutes / 60)}h`}>
-              <span className="text-[8px] font-bold text-gray-600 dark:text-gray-400">
-                {monthlyData.planned_minutes > 0 ? `${Math.min(Math.round((monthlyData.actual_minutes / monthlyData.planned_minutes) * 100), 999)}%` : '–'}
-              </span>
-              <div className="w-1.5 h-4 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                <div
-                  className="w-full rounded-full bg-emerald-500 dark:bg-emerald-400"
-                  style={{ height: `${monthlyData.planned_minutes > 0 ? Math.min(Math.round((monthlyData.actual_minutes / monthlyData.planned_minutes) * 100), 100) : 0}%` }}
-                />
+          })() : (() => {
+            const actualPct = monthlyData.planned_minutes > 0
+              ? Math.round((monthlyData.actual_minutes / monthlyData.planned_minutes) * 100)
+              : 0;
+            const barPct = Math.min(actualPct, 100);
+            const pacing = getMonthPacing();
+            const behindPace = monthlyData.planned_minutes > 0 && actualPct < pacing.expectedPct - 10;
+            const fulfilled = monthlyData.actual_minutes >= monthlyData.planned_minutes && monthlyData.planned_minutes > 0;
+            const barColor = behindPace
+              ? 'bg-amber-500 dark:bg-amber-400'
+              : 'bg-emerald-500 dark:bg-emerald-400';
+            return (
+              <div className="flex flex-col items-center w-full gap-0.5" title={`${Math.round(monthlyData.actual_minutes / 60)}/${Math.round(monthlyData.planned_minutes / 60)}h`}>
+                <span className={`text-[8px] font-bold ${fulfilled ? 'text-emerald-600 dark:text-emerald-400' : behindPace ? 'text-amber-600 dark:text-amber-400' : 'text-gray-600 dark:text-gray-400'}`}>
+                  {monthlyData.planned_minutes > 0 ? (fulfilled ? '\u2713' : `${Math.min(actualPct, 999)}%`) : '\u2013'}
+                </span>
+                <div className="w-1.5 h-4 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                  <div
+                    className={`w-full rounded-full ${barColor}`}
+                    style={{ height: `${barPct}%` }}
+                  />
+                </div>
               </div>
-            </div>
-          )
+            );
+          })()
         ) : (
-          <span className="text-[8px] text-gray-300 dark:text-gray-600 w-full text-center">–</span>
+          <span className="text-[8px] text-gray-300 dark:text-gray-600 w-full text-center">{'\u2013'}</span>
         )}
       </div>
 
@@ -570,7 +626,7 @@ function MiniCalendar({ month, year, selectedDays, onToggleDay }: {
 }
 
 function AllocationDialog({
-  open, onClose, onSave, projects, initialProjectId, initialWeek, editAllocId, editMinutes,
+  open, onClose, onSave, projects, initialProjectId, initialWeek, editAllocId, editMinutes, editScope,
 }: {
   open: boolean;
   onClose: () => void;
@@ -588,6 +644,7 @@ function AllocationDialog({
   initialWeek: string;
   editAllocId?: string;
   editMinutes?: number;
+  editScope?: 'single' | 'series' | 'series_from';
 }) {
   const [mode, setMode] = useState<'week' | 'calendar'>('week');
   const [projectId, setProjectId] = useState(initialProjectId);
@@ -598,6 +655,8 @@ function AllocationDialog({
   const [repeatCount, setRepeatCount] = useState(4);
   const [endDate, setEndDate] = useState('');
   const [intervalWeeks, setIntervalWeeks] = useState(1);
+  const [monthlyTargetMode, setMonthlyTargetMode] = useState(false);
+  const [monthlyTargetInput, setMonthlyTargetInput] = useState('');
 
   // Calendar mode state
   const [selectedDays, setSelectedDays] = useState<Set<string>>(new Set());
@@ -622,6 +681,8 @@ function AllocationDialog({
     setRepeatCount(4);
     setEndDate('');
     setIntervalWeeks(1);
+    setMonthlyTargetMode(false);
+    setMonthlyTargetInput('');
     setSelectedDays(new Set());
     setDayHours('8');
     const d = new Date(initialWeek + 'T00:00:00');
@@ -657,7 +718,11 @@ function AllocationDialog({
         {/* Header */}
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
-            {editAllocId ? 'Stunden ändern' : mode === 'week' ? 'Kapazität planen' : 'Einzeltage planen'}
+            {editAllocId
+              ? editScope === 'series' ? 'Ganze Serie ändern'
+                : editScope === 'series_from' ? 'Serie ab hier ändern'
+                : 'Stunden ändern'
+              : mode === 'week' ? 'Kapazität planen' : 'Einzeltage planen'}
           </h3>
           <div className="flex items-center gap-2">
             {!editAllocId && (
@@ -715,9 +780,43 @@ function AllocationDialog({
               </div>
               {totalMinutes > 0 && (
                 <div className="mt-2 rounded-lg bg-indigo-50 px-3 py-1.5 text-xs text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300">
-                  {minutesToDisplay(totalMinutes)}/Woche = {Math.round(totalMinutes / 24)}% Auslastung
+                  <div>{minutesToDisplay(totalMinutes)}/Woche = {Math.round(totalMinutes / 24)}% Auslastung</div>
+                  <div className="mt-0.5 text-indigo-600/80 dark:text-indigo-400/80">
+                    ≈ {minutesToDisplay(Math.round(totalMinutes * WEEKS_PER_MONTH))}/Monat (Ø 52/12 Wochen)
+                  </div>
                 </div>
               )}
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => setMonthlyTargetMode(!monthlyTargetMode)}
+                  className="text-[11px] text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 underline underline-offset-2"
+                >
+                  {monthlyTargetMode ? 'Manuell eingeben' : 'Aus Monatsziel berechnen'}
+                </button>
+                {monthlyTargetMode && (
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <input
+                      type="number" min="0" max="320" step="0.5"
+                      placeholder="z.B. 14"
+                      value={monthlyTargetInput}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setMonthlyTargetInput(val);
+                        const monthly = parseFloat(val);
+                        if (monthly > 0) {
+                          const weeklyMin = Math.round(monthly * 60 * 12 / 52);
+                          setHoursInput(String(Math.floor(weeklyMin / 60)));
+                          setMinutesInput(String(weeklyMin % 60));
+                        }
+                      }}
+                      className="w-20 rounded-lg border border-indigo-300 px-2 py-1 text-sm dark:border-indigo-600 dark:bg-gray-800 dark:text-gray-200"
+                      data-testid="capacity-dialog-monthly-target"
+                    />
+                    <span className="text-xs text-gray-500 dark:text-gray-400">h/Monat</span>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Wiederholung — im Edit-Modus ausgeblendet */}
@@ -1288,7 +1387,7 @@ function ContextMenu({
   alloc, onAction,
 }: {
   alloc: Allocation;
-  onAction: (action: 'delete' | 'delete_series' | 'delete_from' | 'shift' | 'shift_single' | 'edit', weeks?: number) => void;
+  onAction: (action: 'delete' | 'delete_series' | 'delete_from' | 'shift' | 'shift_single' | 'edit' | 'edit_series' | 'edit_series_from', weeks?: number) => void;
 }) {
   const hasSeries = !!alloc.series_id;
   const btn = "flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 whitespace-nowrap";
@@ -1299,6 +1398,16 @@ function ContextMenu({
       <button onClick={() => onAction('edit')} className={btn}>
         <Pencil className="h-4 w-4" /> Stunden ändern
       </button>
+      {hasSeries && (
+        <>
+          <button onClick={() => onAction('edit_series')} className={btn}>
+            <Pencil className="h-4 w-4" /> Ganze Serie ändern
+          </button>
+          <button onClick={() => onAction('edit_series_from')} className={btn}>
+            <Pencil className="h-4 w-4" /> Serie ab hier ändern
+          </button>
+        </>
+      )}
       <hr className="my-1 border-gray-200 dark:border-gray-700" />
       <button onClick={() => onAction('delete')} className={btn}>
         <Trash2 className="h-4 w-4" /> Zuweisung löschen
@@ -1394,10 +1503,11 @@ export function CapacityPage() {
   };
 
   // Dialogs
-  const [allocDialog, setAllocDialog] = useState<{ open: boolean; projectId: string; weekStart: string; editAllocId?: string; editMinutes?: number }>({ open: false, projectId: '', weekStart: '' });
+  const [allocDialog, setAllocDialog] = useState<{ open: boolean; projectId: string; weekStart: string; editAllocId?: string; editMinutes?: number; editScope?: 'single' | 'series' | 'series_from'; editSeriesId?: string }>({ open: false, projectId: '', weekStart: '' });
   const [projectDialog, setProjectDialog] = useState<{ open: boolean; editing: CapProject | null }>({ open: false, editing: null });
   const [timeOffDialog, setTimeOffDialog] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; alloc: Allocation } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Time-off dialog state
   const [toFromDate, setToFromDate] = useState('');
@@ -1480,7 +1590,15 @@ export function CapacityPage() {
     interval_weeks?: number;
   }) => {
     try {
-      if (allocDialog.editAllocId) {
+      if (allocDialog.editAllocId && allocDialog.editScope === 'series' && allocDialog.editSeriesId) {
+        await api.post('/api/capacity/allocations/bulk', {
+          action: 'update', series_id: allocDialog.editSeriesId, minutes: data.minutes,
+        });
+      } else if (allocDialog.editAllocId && allocDialog.editScope === 'series_from' && allocDialog.editSeriesId) {
+        await api.post('/api/capacity/allocations/bulk', {
+          action: 'update_from', series_id: allocDialog.editSeriesId, from_week: allocDialog.weekStart, minutes: data.minutes,
+        });
+      } else if (allocDialog.editAllocId) {
         await api.patch(`/api/capacity/allocations/${allocDialog.editAllocId}`, { minutes: data.minutes });
       } else if (data.repeat && data.end_date) {
         await api.post('/api/capacity/allocations/repeat', {
@@ -1501,8 +1619,10 @@ export function CapacityPage() {
       }
       setAllocDialog({ open: false, projectId: '', weekStart: '' });
       fetchData();
-    } catch (err) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.error('Zuweisung speichern fehlgeschlagen:', err);
+      setActionError(`Zuweisung speichern fehlgeschlagen: ${msg}`);
     }
   };
 
@@ -1521,21 +1641,29 @@ export function CapacityPage() {
   };
 
   const handleDeleteAllocation = async (allocId: string) => {
-    await api.delete(`/api/capacity/allocations/${allocId}`);
-    setContextMenu(null);
-    fetchData();
-  };
-
-  const handleBulkAction = async (action: string, seriesId: string, fromWeek?: string, weeks?: number) => {
     try {
-      await api.post('/api/capacity/allocations/bulk', {
-        action, series_id: seriesId, from_week: fromWeek, weeks,
-      });
-    } catch (err) {
-      console.error('Bulk-Aktion fehlgeschlagen:', err);
+      await api.delete(`/api/capacity/allocations/${allocId}`);
+      fetchData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Löschen fehlgeschlagen:', err);
+      setActionError(`Zuweisung konnte nicht gelöscht werden: ${msg}`);
     }
     setContextMenu(null);
-    fetchData();
+  };
+
+  const handleBulkAction = async (action: string, seriesId: string, fromWeek?: string, weeks?: number, minutes?: number) => {
+    try {
+      await api.post('/api/capacity/allocations/bulk', {
+        action, series_id: seriesId, from_week: fromWeek, weeks, minutes,
+      });
+      fetchData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Bulk-Aktion fehlgeschlagen:', err);
+      setActionError(`Aktion fehlgeschlagen: ${msg}`);
+    }
+    setContextMenu(null);
   };
 
   const handleShiftSingle = async (allocId: string, weeks: number) => {
@@ -1545,18 +1673,26 @@ export function CapacityPage() {
     const shifted = new Date(d.getFullYear(), d.getMonth(), d.getDate() + weeks * 7);
     try {
       await api.patch(`/api/capacity/allocations/${allocId}`, { week_start: toIso(shifted) });
-    } catch (err) {
+      fetchData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.error('Verschieben fehlgeschlagen:', err);
+      setActionError(`Verschieben fehlgeschlagen: ${msg}`);
     }
     setContextMenu(null);
-    fetchData();
   };
 
   const handleAllocDrop = async (allocId: string, targetWeekStr: string) => {
     const alloc = allocations.find(a => a.id === allocId);
     if (!alloc || alloc.week_start === targetWeekStr) return;
-    await api.patch(`/api/capacity/allocations/${allocId}`, { week_start: targetWeekStr });
-    fetchData();
+    try {
+      await api.patch(`/api/capacity/allocations/${allocId}`, { week_start: targetWeekStr });
+      fetchData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Verschieben fehlgeschlagen:', err);
+      setActionError(`Verschieben fehlgeschlagen: ${msg}`);
+    }
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -1968,6 +2104,16 @@ export function CapacityPage() {
         </div>
       </div>
 
+      {/* Fehler-Banner */}
+      {actionError && (
+        <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 flex items-center gap-3 rounded-lg border border-red-300 bg-red-50 px-4 py-2.5 shadow-lg dark:border-red-700 dark:bg-red-900/80">
+          <span className="text-sm text-red-700 dark:text-red-200">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-500 hover:text-red-700 dark:text-red-300 dark:hover:text-red-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Dialogs */}
       <AllocationDialog
         open={allocDialog.open}
@@ -1978,6 +2124,7 @@ export function CapacityPage() {
         initialWeek={allocDialog.weekStart}
         editAllocId={allocDialog.editAllocId}
         editMinutes={allocDialog.editMinutes}
+        editScope={allocDialog.editScope}
       />
 
       <ProjectDialog
@@ -1997,7 +2144,7 @@ export function CapacityPage() {
       {contextMenu && (() => {
         const cmAlloc = contextMenu.alloc;
         const close = () => setContextMenu(null);
-        const act = async (fn: () => Promise<void>) => { close(); await fn(); };
+        const act = async (fn: () => Promise<void>) => { await fn(); close(); };
         return (
           <>
             <div className="fixed inset-0 z-40" onClick={close} />
@@ -2011,7 +2158,15 @@ export function CapacityPage() {
                 onAction={(action, weeks) => {
                   if (action === 'edit') {
                     close();
-                    setAllocDialog({ open: true, projectId: cmAlloc.capacity_project_id, weekStart: cmAlloc.week_start, editAllocId: cmAlloc.id, editMinutes: cmAlloc.minutes });
+                    setAllocDialog({ open: true, projectId: cmAlloc.capacity_project_id, weekStart: cmAlloc.week_start, editAllocId: cmAlloc.id, editMinutes: cmAlloc.minutes, editScope: 'single' });
+                  }
+                  else if (action === 'edit_series' && cmAlloc.series_id) {
+                    close();
+                    setAllocDialog({ open: true, projectId: cmAlloc.capacity_project_id, weekStart: cmAlloc.week_start, editAllocId: cmAlloc.id, editMinutes: cmAlloc.minutes, editScope: 'series', editSeriesId: cmAlloc.series_id });
+                  }
+                  else if (action === 'edit_series_from' && cmAlloc.series_id) {
+                    close();
+                    setAllocDialog({ open: true, projectId: cmAlloc.capacity_project_id, weekStart: cmAlloc.week_start, editAllocId: cmAlloc.id, editMinutes: cmAlloc.minutes, editScope: 'series_from', editSeriesId: cmAlloc.series_id });
                   }
                   else if (action === 'delete') act(() => handleDeleteAllocation(cmAlloc.id));
                   else if (action === 'delete_series' && cmAlloc.series_id) act(() => handleBulkAction('delete', cmAlloc.series_id!));

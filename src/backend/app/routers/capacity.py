@@ -12,7 +12,7 @@ import logging
 import sys
 import uuid
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from cachetools import TTLCache
@@ -132,11 +132,12 @@ class AllocationOut(BaseModel):
 
 
 class BulkAction(BaseModel):
-    action: str  # delete, delete_from, shift, clone
+    action: str  # delete, delete_from, shift, clone, update, update_from
     series_id: str | None = None
     ids: list[str] | None = None
     from_week: str | None = None
     weeks: int | None = None
+    minutes: int | None = None
     target_project_id: str | None = None
 
 
@@ -479,6 +480,30 @@ async def bulk_allocations(
             for alloc in result.scalars().all():
                 alloc.week_start = alloc.week_start + delta
                 await session.flush()
+
+        elif body.action == "update":
+            if not body.series_id or body.minutes is None:
+                raise HTTPException(status_code=422, detail="series_id und minutes erforderlich")
+            stmt = select(CapacityAllocation).where(
+                CapacityAllocation.series_id == uuid.UUID(body.series_id)
+            )
+            result = await session.execute(stmt)
+            for alloc in result.scalars().all():
+                alloc.minutes = body.minutes
+                alloc.updated_at = datetime.now(timezone.utc)
+
+        elif body.action == "update_from":
+            if not body.series_id or not body.from_week or body.minutes is None:
+                raise HTTPException(status_code=422, detail="series_id, from_week und minutes erforderlich")
+            from_date = date.fromisoformat(body.from_week)
+            stmt = select(CapacityAllocation).where(
+                CapacityAllocation.series_id == uuid.UUID(body.series_id),
+                CapacityAllocation.week_start >= from_date,
+            )
+            result = await session.execute(stmt)
+            for alloc in result.scalars().all():
+                alloc.minutes = body.minutes
+                alloc.updated_at = datetime.now(timezone.utc)
 
         elif body.action == "clone":
             if not body.ids or not body.target_project_id:
