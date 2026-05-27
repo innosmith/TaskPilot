@@ -798,14 +798,14 @@ async def get_plan_vs_actual(
             for cap_proj in agg_projects:
                 matching_ids = []
                 for tp in tp_list:
-                    if tp["client_id"] != cap_proj.toggl_client_id:
+                    if tp.get("client_id") != cap_proj.toggl_client_id:
                         continue
                     bf = cap_proj.toggl_billable_filter
-                    if bf == "non_billable" and tp["billable"]:
+                    if bf == "non_billable" and tp.get("billable"):
                         continue
-                    if bf == "billable" and not tp["billable"]:
+                    if bf == "billable" and not tp.get("billable"):
                         continue
-                    matching_ids.append(tp["id"])
+                    matching_ids.append(tp.get("id"))
                 agg_cap_mapping[str(cap_proj.id)] = matching_ids
                 agg_toggl_ids.extend(matching_ids)
 
@@ -1007,11 +1007,11 @@ async def get_monthly_actual(
                     tp_list = []
             for cp in agg:
                 ids = [
-                    tp["id"] for tp in tp_list
-                    if tp["client_id"] == cp.toggl_client_id
+                    tp.get("id") for tp in tp_list
+                    if tp.get("client_id") == cp.toggl_client_id
                     and (not cp.toggl_billable_filter
-                         or (cp.toggl_billable_filter == "non_billable" and not tp["billable"])
-                         or (cp.toggl_billable_filter == "billable" and tp["billable"]))
+                         or (cp.toggl_billable_filter == "non_billable" and not tp.get("billable"))
+                         or (cp.toggl_billable_filter == "billable" and tp.get("billable")))
                 ]
                 agg_map[str(cp.id)] = ids
                 all_toggl_ids.extend(ids)
@@ -1095,7 +1095,7 @@ async def get_monthly_actual(
 @router.get("/toggl-projects")
 async def list_toggl_projects(user: User = Depends(require_role("owner"))):
     """Toggl-Projekte auflisten (24h-Cache) für Import in die Kapazitätsplanung."""
-    cache_key = "toggl_projects_list"
+    cache_key = "toggl_projects_ui"
     cached = _toggl_cache.get(cache_key)
     if cached is not None:
         return cached

@@ -328,19 +328,22 @@ function SortableProjectRow({
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: project.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   const allocDndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
-  const cellMeasureRef = useRef<HTMLDivElement>(null);
   const [cellWidth, setCellWidth] = useState(80);
-
-  useEffect(() => {
-    if (!cellMeasureRef.current) return;
-    const observer = new ResizeObserver(entries => {
-      if (entries[0]) setCellWidth(entries[0].contentRect.width);
-    });
-    observer.observe(cellMeasureRef.current);
-    return () => observer.disconnect();
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const cellMeasureCallback = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (node) {
+      observerRef.current = new ResizeObserver(entries => {
+        if (entries[0]) setCellWidth(entries[0].contentRect.width);
+      });
+      observerRef.current.observe(node);
+    }
   }, []);
 
-  const showDaySlots = cellWidth >= 30;
+  const showDaySlots = cellWidth >= 20;
 
   const allocMap = useMemo(() => {
     const map: Record<string, Allocation[]> = {};
@@ -507,14 +510,13 @@ function SortableProjectRow({
             const totalMin = weekAllocs ? weekAllocs.reduce((s, a) => s + a.minutes, 0) : 0;
             const weekOnlyAllocs = weekAllocs?.filter(a => a.allocation_type !== 'day') || [];
             const dayAllocs = weekAllocs?.filter(a => a.allocation_type === 'day') || [];
-            const firstAlloc = weekAllocs?.[0];
             const todayOffset = getTodayOffset(week);
             return (
-              <DroppableWeekCell key={weekStr} id={`drop-${project.id}-${weekStr}`} colClass={colClass} measureRef={idx === 0 ? cellMeasureRef : undefined}>
+              <DroppableWeekCell key={weekStr} id={`drop-${project.id}-${weekStr}`} colClass={colClass} measureRef={idx === 0 ? cellMeasureCallback : undefined}>
                 {/* Klick-Hintergrund: nur für leere Zellen → Dialog öffnen */}
                 <div
                   className="absolute inset-0 cursor-pointer"
-                  onClick={() => { if (!firstAlloc) onCellClick(project.id, weekStr); }}
+                  onClick={() => { if (!weekOnlyAllocs.length) onCellClick(project.id, weekStr); }}
                   data-testid={`capacity-cell-${project.id}-${weekStr}`}
                 />
                 {/* Wochen-Allocations als draggable Block */}
@@ -579,11 +581,23 @@ function SortableProjectRow({
 
                 {/* Tages-Allocations aggregiert (wenn Zelle zu klein) */}
                 {dayAllocs.length > 0 && !showDaySlots && weekOnlyAllocs.length === 0 && (
-                  <div
-                    className="absolute inset-0.5 rounded-md flex items-center justify-center font-medium text-[8px]"
-                    style={{ backgroundColor: muteColor(project.color), color: getContrastText(muteColor(project.color)) }}
-                    title={minutesToDisplay(totalMin)}
-                  />
+                  <DraggableAllocBlock
+                    allocId={dayAllocs[0].id}
+                    className={`absolute inset-0.5 rounded-md flex items-center justify-center font-medium ${cellWidth < 40 ? 'text-[8px]' : 'text-[9px]'}`}
+                    blockStyle={{
+                      backgroundColor: muteColor(project.color),
+                      color: getContrastText(muteColor(project.color)),
+                    }}
+                    selected={selectedAllocIds.has(dayAllocs[0].id)}
+                    title={`${dayAllocs.length} Einzeltag(e): ${minutesToDisplay(totalMin)}`}
+                    onClick={(e) => {
+                      if (e.ctrlKey || e.metaKey) { onToggleSelect(dayAllocs[0].id); }
+                      else { onContextMenu(e, dayAllocs[0]); }
+                    }}
+                    onContextMenu={(e) => onContextMenu(e, dayAllocs[0])}
+                  >
+                    <span>{cellWidth >= 25 ? `${Math.round(totalMin / 60)}h` : ''}</span>
+                  </DraggableAllocBlock>
                 )}
 
                 {todayOffset !== null && (
@@ -690,7 +704,7 @@ function MiniCalendar({ month, year, selectedDays, onToggleDay }: {
 }
 
 function AllocationDialog({
-  open, onClose, onSave, projects, initialProjectId, initialWeek, editAllocId, editMinutes, editScope,
+  open, onClose, onSave, projects, initialProjectId, initialWeek, editAllocId, editMinutes, editScope, editAllocationType,
 }: {
   open: boolean;
   onClose: () => void;
@@ -702,6 +716,7 @@ function AllocationDialog({
     repeat: boolean;
     end_date?: string;
     interval_weeks?: number;
+    extra_days?: string[];
   }) => void;
   projects: CapProject[];
   initialProjectId: string;
@@ -709,6 +724,7 @@ function AllocationDialog({
   editAllocId?: string;
   editMinutes?: number;
   editScope?: 'single' | 'series' | 'series_from';
+  editAllocationType?: 'week' | 'day';
 }) {
   const [mode, setMode] = useState<'week' | 'calendar'>('week');
   const [projectId, setProjectId] = useState(initialProjectId);
@@ -732,13 +748,19 @@ function AllocationDialog({
 
   useEffect(() => {
     setProjectId(initialProjectId);
-    setMode('week');
+    const isDay = editAllocationType === 'day';
+    setMode(isDay ? 'calendar' : 'week');
     if (editMinutes != null) {
-      setHoursInput(String(Math.floor(editMinutes / 60)));
-      setMinutesInput(String(editMinutes % 60));
+      if (isDay) {
+        setDayHours(String(Math.floor(editMinutes / 60)));
+      } else {
+        setHoursInput(String(Math.floor(editMinutes / 60)));
+        setMinutesInput(String(editMinutes % 60));
+      }
     } else {
       setHoursInput('8');
       setMinutesInput('0');
+      setDayHours('8');
     }
     setRepeat(false);
     setRepeatMode('count');
@@ -747,11 +769,10 @@ function AllocationDialog({
     setIntervalWeeks(1);
     setMonthlyTargetMode(false);
     setMonthlyTargetInput('');
-    setSelectedDays(new Set());
-    setDayHours('8');
+    setSelectedDays(isDay && initialWeek ? new Set([initialWeek]) : new Set());
     const d = new Date(initialWeek + 'T00:00:00');
     setCalMonth({ month: d.getMonth(), year: d.getFullYear() });
-  }, [initialProjectId, initialWeek, editMinutes]);
+  }, [initialProjectId, initialWeek, editMinutes, editAllocationType]);
 
   const totalMinutes = useMemo(() => {
     return (parseInt(hoursInput) || 0) * 60 + (parseInt(minutesInput) || 0);
@@ -785,24 +806,12 @@ function AllocationDialog({
             {editAllocId
               ? editScope === 'series' ? 'Ganze Serie ändern'
                 : editScope === 'series_from' ? 'Serie ab hier ändern'
-                : 'Stunden ändern'
-              : mode === 'week' ? 'Kapazität planen' : 'Einzeltage planen'}
+                : mode === 'calendar' ? 'Einzeltag ändern' : 'Stunden ändern'
+              : 'Kapazität planen'}
           </h3>
-          <div className="flex items-center gap-2">
-            {!editAllocId && (
-              <button
-                onClick={() => setMode(mode === 'week' ? 'calendar' : 'week')}
-                className={`rounded-lg p-1.5 transition ${mode === 'calendar' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
-                title={mode === 'week' ? 'Einzeltage planen' : 'Wochenplanung'}
-                data-testid="capacity-dialog-toggle-mode"
-              >
-                <Calendar className="h-4 w-4" />
-              </button>
-            )}
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" data-testid="capacity-dialog-close">
-              <X className="h-5 w-5" />
-            </button>
-          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" data-testid="capacity-dialog-close">
+            <X className="h-5 w-5" />
+          </button>
         </div>
 
         {/* Projekt */}
@@ -820,6 +829,24 @@ function AllocationDialog({
             ))}
           </select>
         </div>
+
+        {/* Modus-Umschalter */}
+        {!(editAllocId && editScope !== 'single') && (
+          <div className="mb-4 flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden" data-testid="capacity-dialog-toggle-mode">
+            <button
+              onClick={() => setMode('week')}
+              className={`flex-1 px-3 py-1.5 text-xs font-medium transition ${mode === 'week' ? 'bg-indigo-600 text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'}`}
+            >
+              Woche
+            </button>
+            <button
+              onClick={() => setMode('calendar')}
+              className={`flex-1 px-3 py-1.5 text-xs font-medium transition ${mode === 'calendar' ? 'bg-indigo-600 text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'}`}
+            >
+              Einzeltage
+            </button>
+          </div>
+        )}
 
         {mode === 'week' ? (
           <>
@@ -1017,15 +1044,26 @@ function AllocationDialog({
                 onClick={() => {
                   if (selectedDays.size === 0 || dayTotalMinutes <= 0 || !projectId) return;
                   const sortedDays = [...selectedDays].sort();
-                  for (const dayIso of sortedDays) {
+                  if (editAllocId) {
+                    const editDay = sortedDays.find(d => d === initialWeek) ?? sortedDays[0];
+                    const extraDays = sortedDays.filter(d => d !== editDay);
                     onSave({
                       capacity_project_id: projectId,
-                      week_start: dayIso,
+                      week_start: editDay,
                       minutes: dayTotalMinutes,
                       allocation_type: 'day',
-                      repeat,
-                      end_date: endDate || undefined,
-                      interval_weeks: 1,
+                      repeat: false,
+                      extra_days: extraDays.length > 0 ? extraDays : undefined,
+                    });
+                  } else {
+                    const [firstDay, ...restDays] = sortedDays;
+                    onSave({
+                      capacity_project_id: projectId,
+                      week_start: firstDay,
+                      minutes: dayTotalMinutes,
+                      allocation_type: 'day',
+                      repeat: false,
+                      extra_days: restDays.length > 0 ? restDays : undefined,
                     });
                   }
                 }}
@@ -1033,7 +1071,9 @@ function AllocationDialog({
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                 data-testid="capacity-dialog-save-days"
               >
-                {selectedDays.size > 1 ? `${selectedDays.size} Tage speichern` : 'Speichern'}
+                {editAllocId
+                  ? (selectedDays.size > 1 ? `Ändern + ${selectedDays.size - 1} neue(n) Tag(e)` : 'Übernehmen')
+                  : (selectedDays.size > 1 ? `${selectedDays.size} Tage speichern` : 'Speichern')}
               </button>
             </div>
           </>
@@ -1451,16 +1491,17 @@ function ContextMenu({
   alloc, onAction,
 }: {
   alloc: Allocation;
-  onAction: (action: 'delete' | 'delete_series' | 'delete_from' | 'shift' | 'shift_single' | 'edit' | 'edit_series' | 'edit_series_from', weeks?: number) => void;
+  onAction: (action: 'delete' | 'delete_series' | 'delete_from' | 'shift' | 'shift_single' | 'edit' | 'edit_series' | 'edit_series_from' | 'shift_day', weeks?: number) => void;
 }) {
   const hasSeries = !!alloc.series_id;
+  const isDay = alloc.allocation_type === 'day';
   const btn = "flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 whitespace-nowrap";
   const btnRed = "flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 whitespace-nowrap";
 
   return (
     <>
       <button onClick={() => onAction('edit')} className={btn}>
-        <Pencil className="h-4 w-4" /> Stunden ändern
+        <Pencil className="h-4 w-4" /> {isDay ? 'Termin ändern' : 'Stunden ändern'}
       </button>
       {hasSeries && (
         <>
@@ -1503,6 +1544,17 @@ function ContextMenu({
           </button>
           <button onClick={() => onAction('shift_single', -1)} className={btn}>
             <ArrowRightLeft className="h-4 w-4" /> −1 Woche
+          </button>
+        </>
+      )}
+      {isDay && (
+        <>
+          <hr className="my-1 border-gray-200 dark:border-gray-700" />
+          <button onClick={() => onAction('shift_day', 1)} className={btn}>
+            <Calendar className="h-4 w-4" /> +1 Tag
+          </button>
+          <button onClick={() => onAction('shift_day', -1)} className={btn}>
+            <Calendar className="h-4 w-4" /> −1 Tag
           </button>
         </>
       )}
@@ -1567,7 +1619,7 @@ export function CapacityPage() {
   };
 
   // Dialogs
-  const [allocDialog, setAllocDialog] = useState<{ open: boolean; projectId: string; weekStart: string; editAllocId?: string; editMinutes?: number; editScope?: 'single' | 'series' | 'series_from'; editSeriesId?: string }>({ open: false, projectId: '', weekStart: '' });
+  const [allocDialog, setAllocDialog] = useState<{ open: boolean; projectId: string; weekStart: string; editAllocId?: string; editMinutes?: number; editScope?: 'single' | 'series' | 'series_from'; editSeriesId?: string; editAllocationType?: 'week' | 'day' }>({ open: false, projectId: '', weekStart: '' });
   const [projectDialog, setProjectDialog] = useState<{ open: boolean; editing: CapProject | null }>({ open: false, editing: null });
   const [timeOffDialog, setTimeOffDialog] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; alloc: Allocation } | null>(null);
@@ -1584,6 +1636,43 @@ export function CapacityPage() {
   const endDate = useMemo(() => addWeeks(startDate, weeks.length), [startDate, weeks.length]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const scrollAccRef = useRef(0);
+  const scrollWeeksRef = useRef(0);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startDateRef = useRef(startDate);
+  startDateRef.current = startDate;
+
+  const timelineWheelHandler = useCallback((e: WheelEvent) => {
+    if (Math.abs(e.deltaX) < 2) return;
+    e.preventDefault();
+    scrollAccRef.current += e.deltaX;
+    const threshold = 120;
+    if (Math.abs(scrollAccRef.current) >= threshold) {
+      const dir = scrollAccRef.current > 0 ? 1 : -1;
+      scrollWeeksRef.current += dir;
+      scrollAccRef.current = 0;
+    }
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => {
+      if (scrollWeeksRef.current !== 0) {
+        const w = scrollWeeksRef.current;
+        scrollWeeksRef.current = 0;
+        setStartDate(prev => addWeeks(prev, w));
+      }
+    }, 250);
+  }, []);
+
+  const timelineRefCallback = useCallback((node: HTMLDivElement | null) => {
+    if (timelineRef.current) {
+      timelineRef.current.removeEventListener('wheel', timelineWheelHandler);
+    }
+    timelineRef.current = node;
+    if (node) {
+      node.addEventListener('wheel', timelineWheelHandler, { passive: false });
+    }
+  }, [timelineWheelHandler]);
 
   // ── Data Fetching ──────────────────────────────────────────────────────────
 
@@ -1620,7 +1709,9 @@ export function CapacityPage() {
     try {
       const res = await api.get<{ month: string; projects: MonthlyActualProject[] }>('/api/capacity/monthly-actual');
       setMonthlyActual(res.projects);
-    } catch { /* optional */ }
+    } catch (err) {
+      console.error('Soll/Ist-Daten konnten nicht geladen werden:', err);
+    }
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -1652,6 +1743,7 @@ export function CapacityPage() {
     repeat: boolean;
     end_date?: string;
     interval_weeks?: number;
+    extra_days?: string[];
   }) => {
     try {
       if (allocDialog.editAllocId && allocDialog.editScope === 'series' && allocDialog.editSeriesId) {
@@ -1663,7 +1755,21 @@ export function CapacityPage() {
           action: 'update_from', series_id: allocDialog.editSeriesId, from_week: allocDialog.weekStart, minutes: data.minutes,
         });
       } else if (allocDialog.editAllocId) {
-        await api.patch(`/api/capacity/allocations/${allocDialog.editAllocId}`, { minutes: data.minutes });
+        const patchData: Record<string, unknown> = { minutes: data.minutes };
+        if (data.allocation_type === 'day' && data.week_start !== allocDialog.weekStart) {
+          patchData.week_start = data.week_start;
+        }
+        await api.patch(`/api/capacity/allocations/${allocDialog.editAllocId}`, patchData);
+        if (data.extra_days && data.extra_days.length > 0) {
+          for (const dayIso of data.extra_days) {
+            await api.post('/api/capacity/allocations', {
+              capacity_project_id: data.capacity_project_id,
+              week_start: dayIso,
+              minutes: data.minutes,
+              allocation_type: 'day',
+            });
+          }
+        }
       } else if (data.repeat && data.end_date) {
         await api.post('/api/capacity/allocations/repeat', {
           capacity_project_id: data.capacity_project_id,
@@ -1680,6 +1786,16 @@ export function CapacityPage() {
           minutes: data.minutes,
           allocation_type: data.allocation_type,
         });
+        if (data.extra_days && data.extra_days.length > 0) {
+          for (const dayIso of data.extra_days) {
+            await api.post('/api/capacity/allocations', {
+              capacity_project_id: data.capacity_project_id,
+              week_start: dayIso,
+              minutes: data.minutes,
+              allocation_type: 'day',
+            });
+          }
+        }
       }
       setAllocDialog({ open: false, projectId: '', weekStart: '' });
       fetchData();
@@ -1746,11 +1862,37 @@ export function CapacityPage() {
     setContextMenu(null);
   };
 
+  const handleShiftDay = async (allocId: string, days: number) => {
+    const alloc = allocations.find(a => a.id === allocId);
+    if (!alloc) return;
+    const d = new Date(alloc.week_start + 'T00:00:00');
+    const shifted = new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
+    try {
+      await api.patch(`/api/capacity/allocations/${allocId}`, { week_start: toIso(shifted) });
+      fetchData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Verschieben fehlgeschlagen:', err);
+      setActionError(`Verschieben fehlgeschlagen: ${msg}`);
+    }
+    setContextMenu(null);
+  };
+
   const handleAllocDrop = async (allocId: string, targetWeekStr: string) => {
     const alloc = allocations.find(a => a.id === allocId);
-    if (!alloc || alloc.week_start === targetWeekStr) return;
+    if (!alloc) return;
+    let newDate = targetWeekStr;
+    if (alloc.allocation_type === 'day') {
+      const origDate = new Date(alloc.week_start + 'T00:00:00');
+      const origDayIndex = (origDate.getDay() + 6) % 7;
+      const targetMonday = new Date(targetWeekStr + 'T00:00:00');
+      const shifted = new Date(targetMonday);
+      shifted.setDate(shifted.getDate() + origDayIndex);
+      newDate = toIso(shifted);
+    }
+    if (alloc.week_start === newDate) return;
     try {
-      await api.patch(`/api/capacity/allocations/${allocId}`, { week_start: targetWeekStr });
+      await api.patch(`/api/capacity/allocations/${allocId}`, { week_start: newDate });
       fetchData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1955,7 +2097,7 @@ export function CapacityPage() {
       </div>
 
       {/* Timeline */}
-      <div className="flex-1 overflow-hidden" data-testid="capacity-timeline">
+      <div ref={timelineRefCallback} className="flex-1 overflow-hidden" data-testid="capacity-timeline">
         <div className="h-full w-full overflow-y-auto">
           {/* Auslastungs-Header (Runn.io-Stil) */}
           <div className="sticky top-0 z-20 border-b border-gray-200 bg-white/95 backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
@@ -2236,6 +2378,7 @@ export function CapacityPage() {
         editAllocId={allocDialog.editAllocId}
         editMinutes={allocDialog.editMinutes}
         editScope={allocDialog.editScope}
+        editAllocationType={allocDialog.editAllocationType}
       />
 
       <ProjectDialog
@@ -2269,7 +2412,7 @@ export function CapacityPage() {
                 onAction={(action, weeks) => {
                   if (action === 'edit') {
                     close();
-                    setAllocDialog({ open: true, projectId: cmAlloc.capacity_project_id, weekStart: cmAlloc.week_start, editAllocId: cmAlloc.id, editMinutes: cmAlloc.minutes, editScope: 'single' });
+                    setAllocDialog({ open: true, projectId: cmAlloc.capacity_project_id, weekStart: cmAlloc.week_start, editAllocId: cmAlloc.id, editMinutes: cmAlloc.minutes, editScope: 'single', editAllocationType: (cmAlloc.allocation_type as 'week' | 'day') || 'week' });
                   }
                   else if (action === 'edit_series' && cmAlloc.series_id) {
                     close();
@@ -2284,6 +2427,7 @@ export function CapacityPage() {
                   else if (action === 'delete_from' && cmAlloc.series_id) act(() => handleBulkAction('delete_from', cmAlloc.series_id!, cmAlloc.week_start));
                   else if (action === 'shift' && cmAlloc.series_id && weeks != null) act(() => handleBulkAction('shift', cmAlloc.series_id!, undefined, weeks));
                   else if (action === 'shift_single' && weeks != null) act(() => handleShiftSingle(cmAlloc.id, weeks));
+                  else if (action === 'shift_day' && weeks != null) act(() => handleShiftDay(cmAlloc.id, weeks));
                 }}
               />
             </div>
