@@ -221,7 +221,7 @@ async def get_debtors(
         month_start = today.replace(day=1).isoformat()
         month_end = today.isoformat()
 
-        projects_all = await toggl.list_projects(active=None)
+        projects_all = await toggl.list_projects(active="both")
         proj_map = {p.get("id"): p for p in projects_all}
 
         clients = await toggl.list_clients()
@@ -270,6 +270,7 @@ async def get_debtors(
         for group in all_summary:
             pid = group.get("id", 0)
             proj = proj_map.get(pid, {})
+            title = group.get("title") or {}
             sub_groups = group.get("sub_groups") or group.get("items") or []
 
             group_hours = 0.0
@@ -290,7 +291,7 @@ async def get_debtors(
             b_hours, b_amount, b_rate = billable_by_pid.get(pid, (0, 0, 0))
             is_billable = b_hours > 0
             cid = proj.get("client_id")
-            client_name = client_map.get(cid, "") if cid else ""
+            client_name = (client_map.get(cid, "") if cid else "") or title.get("client") or ""
 
             budget_key = str(pid)
             budget_cfg = budgets.get(budget_key) or (budgets.get(str(cid)) if cid else None) or {}
@@ -306,7 +307,7 @@ async def get_debtors(
 
             rows.append(TogglProjectRow(
                 project_id=pid,
-                project_name=proj.get("name") or f"Projekt {pid}",
+                project_name=proj.get("name") or title.get("project") or f"Projekt {pid}",
                 client_id=cid,
                 client_name=client_name,
                 hours=round(group_hours, 2),

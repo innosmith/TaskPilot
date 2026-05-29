@@ -152,6 +152,25 @@ async def test_list_projects(tg_client):
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_list_projects_pagination(tg_client):
+    """Bei >per_page Projekten werden alle Seiten geladen (Default 151 Cap umgehen)."""
+    full_page = [{"id": i, "name": f"Projekt {i}"} for i in range(200)]
+    second_page = [{"id": 200, "name": "Projekt 200"}, {"id": 201, "name": "Projekt 201"}]
+    respx.get(f"{BASE_URL}/workspaces/12345/projects", params={"page": "1"}).mock(
+        return_value=httpx.Response(200, json=full_page)
+    )
+    respx.get(f"{BASE_URL}/workspaces/12345/projects", params={"page": "2"}).mock(
+        return_value=httpx.Response(200, json=second_page)
+    )
+
+    projects = await tg_client.list_projects(active="both")
+
+    assert len(projects) == 202
+    assert projects[-1]["id"] == 201
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_create_project(tg_client):
     respx.post(f"{BASE_URL}/workspaces/12345/projects").mock(
         return_value=httpx.Response(200, json={

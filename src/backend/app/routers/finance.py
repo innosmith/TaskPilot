@@ -1117,7 +1117,7 @@ async def get_toggl_month_summary(
         end = today
 
     toggl = _get_toggl_client(user)
-    projects = await toggl.list_projects(active=None)
+    projects = await toggl.list_projects(active="both")
     proj_map = {p.get("id"): p for p in projects}
 
     clients = await toggl.list_clients()
@@ -1131,6 +1131,7 @@ async def get_toggl_month_summary(
     for group in summary_data:
         pid = group.get("id")
         proj = proj_map.get(pid, {})
+        title = group.get("title") or {}
         sub_groups = group.get("sub_groups") or group.get("items") or []
 
         group_hours = 0.0
@@ -1157,8 +1158,8 @@ async def get_toggl_month_summary(
         if group_hours > 0:
             cid = proj.get("client_id")
             result.append(TogglProjectSummary(
-                project_name=proj.get("name") or f"Projekt {pid}",
-                client_name=client_map.get(cid, "") if cid else "",
+                project_name=proj.get("name") or title.get("project") or f"Projekt {pid}",
+                client_name=(client_map.get(cid, "") if cid else "") or title.get("client") or "",
                 hours=round(group_hours, 2),
                 rate_per_hour=round(group_rate, 2),
                 amount=round(group_amount, 2),

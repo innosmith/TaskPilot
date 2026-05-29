@@ -152,18 +152,40 @@ class TogglClient:
         self,
         workspace_id: int | None = None,
         client_ids: list[int] | None = None,
-        active: bool | None = True,
+        active: bool | str | None = True,
     ) -> list[dict]:
+        """Projekte eines Workspaces laden (mit Pagination).
+
+        ``active`` akzeptiert ``True``/``False`` oder ``"both"`` (aktive UND
+        archivierte Projekte). Der v9-Endpoint liefert pro Seite maximal
+        ``per_page`` (Default 151, Max 200) Projekte, daher wird über alle
+        Seiten iteriert, bis eine Seite weniger als ``per_page`` Einträge liefert.
+        """
         ws = workspace_id or self.config.workspace_id
         if not ws:
             return []
-        params: dict[str, str] = {}
+        base_params: dict[str, str] = {}
         if active is not None:
-            params["active"] = "true" if active else "false"
+            if isinstance(active, str):
+                base_params["active"] = active
+            else:
+                base_params["active"] = "true" if active else "false"
         if client_ids:
-            params["client_ids"] = ",".join(str(i) for i in client_ids)
-        data = await self._get(f"/workspaces/{ws}/projects", params or None)
-        return data if isinstance(data, list) else []
+            base_params["client_ids"] = ",".join(str(i) for i in client_ids)
+
+        per_page = 200
+        all_projects: list[dict] = []
+        page = 1
+        while True:
+            params = {**base_params, "page": str(page), "per_page": str(per_page)}
+            data = await self._get(f"/workspaces/{ws}/projects", params)
+            if not isinstance(data, list):
+                break
+            all_projects.extend(data)
+            if len(data) < per_page:
+                break
+            page += 1
+        return all_projects
 
     async def get_project(self, workspace_id: int, project_id: int) -> dict:
         data = await self._get(f"/workspaces/{workspace_id}/projects/{project_id}")
