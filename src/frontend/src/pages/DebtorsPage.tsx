@@ -101,6 +101,22 @@ function formatMonthLabel(month: string): string {
   return `${names[parseInt(m)]} ${y.slice(2)}`;
 }
 
+function currentMonthStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function shiftMonth(month: string, delta: number): string {
+  const [y, m] = month.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatMonthLong(month: string): string {
+  const [y, m] = month.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('de-CH', { month: 'long', year: 'numeric' });
+}
+
 const PROJECT_COLORS = [
   '#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6',
   '#14b8a6', '#f97316', '#ec4899', '#06b6d4', '#84cc16',
@@ -119,6 +135,12 @@ export default function DebtorsPage() {
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const [debtorSort, setDebtorSort] = useState<'revenue' | 'open' | 'name'>('revenue');
   const [expandedDebtor, setExpandedDebtor] = useState<number | null>(null);
+
+  const currentMonth = useMemo(() => currentMonthStr(), []);
+  const [selectedMonth, setSelectedMonth] = useState<string>(currentMonth);
+  const [monthData, setMonthData] = useState<TogglMonthSummary | null>(null);
+  const [monthLoading, setMonthLoading] = useState(false);
+  const isCurrentMonth = selectedMonth === currentMonth;
 
   const [pipedriveLeads, setPipedriveLeads] = useState<{ id: string; title: string; person_name: string | null; org_name: string | null; value: number | null; currency: string | null }[]>([]);
   const [pipedriveDeals, setPipedriveDeals] = useState<{ id: number; title: string; value: number | null; currency: string | null; person_name: string | null; org_name: string | null }[]>([]);
@@ -154,9 +176,32 @@ export default function DebtorsPage() {
     });
   }, [loadData]);
 
+  useEffect(() => {
+    if (selectedMonth === currentMonth) {
+      setMonthData(null);
+      return;
+    }
+    let cancelled = false;
+    setMonthLoading(true);
+    api.get<TogglMonthSummary>(`/api/debtors/toggl-month?month=${selectedMonth}`)
+      .then(res => { if (!cancelled) setMonthData(res); })
+      .catch(() => { if (!cancelled) setMonthData(null); })
+      .finally(() => { if (!cancelled) setMonthLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedMonth, currentMonth]);
+
   const handleRefresh = async () => {
     try { await api.post('/api/debtors/cache/clear', {}); } catch { /* ignore */ }
     loadData();
+    if (selectedMonth !== currentMonth) {
+      setMonthLoading(true);
+      try {
+        const res = await api.get<TogglMonthSummary>(`/api/debtors/toggl-month?month=${selectedMonth}`);
+        setMonthData(res);
+      } catch { /* ignore */ } finally {
+        setMonthLoading(false);
+      }
+    }
   };
 
   const handleBgSelect = async (url: string | null) => {
@@ -178,7 +223,7 @@ export default function DebtorsPage() {
   const textSecondary = hasBg ? 'text-white/70' : 'text-gray-500 dark:text-gray-400';
   const textMuted = hasBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500';
 
-  const toggl = data?.toggl_month;
+  const toggl = isCurrentMonth ? data?.toggl_month : (monthData ?? undefined);
 
   const sortedDebtors = useMemo(() => {
     if (!data?.debtors) return [];
@@ -233,6 +278,27 @@ export default function DebtorsPage() {
             <p className={`mt-1 text-xs ${textMuted}`}>Toggl: live &middot; Bexio: letzte 2 Jahre &middot; Stand: {new Date().toLocaleString('de-CH')}</p>
           </div>
           <div className="flex items-center gap-2">
+            <div className={`flex items-center gap-0.5 rounded-lg p-0.5 ${hasBg ? 'bg-white/10 backdrop-blur-sm' : 'border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800'}`}>
+              <button
+                onClick={() => setSelectedMonth(m => shiftMonth(m, -1))}
+                disabled={monthLoading}
+                title="Vorheriger Monat"
+                className={`rounded-md p-1.5 transition-colors disabled:opacity-40 ${hasBg ? 'text-white/70 hover:bg-white/10 hover:text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-700'}`}
+              >
+                <ChevronLeftIcon className="h-4 w-4" />
+              </button>
+              <span className={`min-w-[7.5rem] text-center text-sm font-medium tabular-nums ${hasBg ? 'text-white' : 'text-gray-700 dark:text-gray-200'}`}>
+                {formatMonthLong(selectedMonth)}
+              </span>
+              <button
+                onClick={() => setSelectedMonth(m => shiftMonth(m, 1))}
+                disabled={isCurrentMonth || monthLoading}
+                title="Nächster Monat"
+                className={`rounded-md p-1.5 transition-colors disabled:opacity-40 ${hasBg ? 'text-white/70 hover:bg-white/10 hover:text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-700'}`}
+              >
+                <ChevronRightIcon className="h-4 w-4" />
+              </button>
+            </div>
             <button onClick={() => setBgPickerOpen(true)} className={`rounded-lg p-2 transition-colors ${hasBg ? 'text-white/70 hover:bg-white/10 hover:text-white' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`} title="Hintergrund ändern">
               <BgImageIcon className="h-5 w-5" />
             </button>
@@ -249,9 +315,21 @@ export default function DebtorsPage() {
 
         {toggl && <KpiStrip toggl={toggl} data={data!} hasBg={hasBg} textMuted={textMuted} />}
 
+        {monthLoading && !toggl && (
+          <div className={`mb-6 flex items-center justify-center py-12 ${sectionClass}`}>
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" />
+          </div>
+        )}
+
         {toggl && toggl.projects.length > 0 && (
-          <MonthCockpit toggl={toggl} monthProgress={monthProgress} hasBg={hasBg}
+          <MonthCockpit toggl={toggl} selectedMonth={selectedMonth} monthProgress={monthProgress} hasBg={hasBg}
             sectionClass={sectionClass} textPrimary={textPrimary} textSecondary={textSecondary} textMuted={textMuted} />
+        )}
+
+        {!isCurrentMonth && !monthLoading && toggl && toggl.projects.length === 0 && (
+          <div className={`mb-6 rounded-2xl p-8 text-center ${sectionClass}`}>
+            <p className={`text-sm ${textSecondary}`}>Keine Toggl-Daten für {formatMonthLong(selectedMonth)}.</p>
+          </div>
         )}
 
         {/* ── Pipedrive: Leads, Deals & Aufgaben ── */}
@@ -436,8 +514,8 @@ function KpiStrip({ toggl, data, hasBg, textMuted: _textMuted }: { toggl: TogglM
   );
 }
 
-function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, textSecondary, textMuted }: {
-  toggl: TogglMonthSummary; monthProgress: number; hasBg: boolean;
+function MonthCockpit({ toggl, selectedMonth, monthProgress, hasBg, sectionClass, textPrimary, textSecondary, textMuted }: {
+  toggl: TogglMonthSummary; selectedMonth: string; monthProgress: number; hasBg: boolean;
   sectionClass: string; textPrimary: string; textSecondary: string; textMuted: string;
 }) {
   const [expandedProject, setExpandedProject] = useState<number | null>(null);
@@ -447,9 +525,8 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
     const dayNames = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
     const lookup = new Map(toggl.daily_hours.map(d => [d.date, d]));
 
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
+    const [year, month1] = selectedMonth.split('-').map(Number);
+    const month = month1 - 1;
     const daysInMonth = new Date(year, month + 1, 0).getDate();
 
     const result = [];
@@ -464,7 +541,7 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
       });
     }
     return result;
-  }, [toggl.daily_hours]);
+  }, [toggl.daily_hours, selectedMonth]);
 
   const pieData = useMemo(() =>
     toggl.projects.map((p, i) => ({ name: p.project_name, value: p.hours, fill: PROJECT_COLORS[i % PROJECT_COLORS.length] })),
@@ -477,7 +554,7 @@ function MonthCockpit({ toggl, monthProgress, hasBg, sectionClass, textPrimary, 
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className={`text-lg font-semibold ${textPrimary}`}>Monats-Cockpit</h2>
-          <p className={`text-xs ${textMuted}`}>{new Date().toLocaleDateString('de-CH', { month: 'long', year: 'numeric' })} &middot; {monthProgress}% der Arbeitstage</p>
+          <p className={`text-xs ${textMuted}`}>{formatMonthLong(selectedMonth)} &middot; {monthProgress}% der Arbeitstage</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-green-500" /><span className={`text-xs ${textSecondary}`}>Verrechenbar</span></div>
@@ -825,6 +902,14 @@ function KpiCard({ label, value, sublabel, icon, status = 'neutral', hasBg = fal
 
 function RefreshIcon({ className }: { className?: string }) {
   return (<svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" /></svg>);
+}
+
+function ChevronLeftIcon({ className }: { className?: string }) {
+  return (<svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>);
+}
+
+function ChevronRightIcon({ className }: { className?: string }) {
+  return (<svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>);
 }
 
 function ClockIcon() {

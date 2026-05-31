@@ -27,6 +27,10 @@ logger = logging.getLogger("taskpilot.debtors")
 router = APIRouter(prefix="/api/debtors", tags=["debtors"])
 
 _cache: TTLCache = TTLCache(maxsize=10, ttl=300)
+# Pro-Monat-Cache fuer das Toggl-Monats-Cockpit (schont das Toggl-Rate-Limit):
+# laufender Monat kurz (live), abgeschlossene Monate lange (unveraenderlich).
+_toggl_month_live: TTLCache = TTLCache(maxsize=2, ttl=300)
+_toggl_month_past: TTLCache = TTLCache(maxsize=36, ttl=86400)
 
 
 # ── Client-Helfer (identisch mit finance.py) ─────────────
@@ -199,27 +203,41 @@ def _working_days_elapsed(year: int, month: int) -> int:
     return count
 
 
-# ── Haupt-Endpoint ───────────────────────────────────────
+# ── Toggl-Monats-Cockpit (pro Monat, gecacht) ────────────
 
-@router.get("", response_model=DebtorsResponse)
-async def get_debtors(
-    user: User = Depends(require_role("owner")),
-):
-    """Debitorenübersicht: Toggl-Monats-Cockpit + Bexio-Debitoren."""
-    cached = _cache.get("debtors")
-    if cached is not None:
-        return cached
+def _month_bounds(year: int, month: int) -> tuple[str, str, bool]:
+    """Liefert (month_start, month_end, is_current) fuer einen Monat.
 
+    Beim laufenden Monat endet der Zeitraum bei ``today`` ("bis heute"),
+    bei abgeschlossenen Monaten beim letzten Kalendertag.
+    """
     today = date.today()
-    current_year = today.year
-    prior_year = current_year - 1
+    is_current = year == today.year and month == today.month
+    first = date(year, month, 1)
+    if month == 12:
+        last = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last = date(year, month + 1, 1) - timedelta(days=1)
+    month_end = today if is_current else last
+    return first.isoformat(), month_end.isoformat(), is_current
 
-    # ── Toggl: Monats-Cockpit ────────────────────────────
+
+async def _compute_toggl_month(user: User, year: int, month: int) -> TogglMonthSummary:
+    """Berechnet das Toggl-Monats-Cockpit fuer einen bestimmten Monat.
+
+    Fuer abgeschlossene Monate liefern die Arbeitstage-Helfer automatisch
+    ``elapsed == total`` (Fortschritt 100%), womit die Prognose dem Ist
+    entspricht. Zukunftsmonate ergeben eine leere Zusammenfassung.
+    """
+    today = date.today()
+    if date(year, month, 1) > today:
+        return TogglMonthSummary()
+
+    month_start, month_end, _is_current = _month_bounds(year, month)
+
     toggl_month = TogglMonthSummary()
     try:
         toggl = _get_toggl_client(user)
-        month_start = today.replace(day=1).isoformat()
-        month_end = today.isoformat()
 
         projects_all = await toggl.list_projects(active="both")
         proj_map = {p.get("id"): p for p in projects_all}
@@ -326,8 +344,8 @@ async def get_debtors(
 
         rows.sort(key=lambda x: x.hours, reverse=True)
 
-        wd_total = _working_days_in_month(today.year, today.month)
-        wd_elapsed = _working_days_elapsed(today.year, today.month)
+        wd_total = _working_days_in_month(year, month)
+        wd_elapsed = _working_days_elapsed(year, month)
 
         avg_daily = total_hours / wd_elapsed if wd_elapsed > 0 else 0
         billable_daily = total_billable / wd_elapsed if wd_elapsed > 0 else 0
@@ -386,6 +404,41 @@ async def get_debtors(
         )
     except Exception as e:
         logger.warning("Toggl-Daten nicht verfuegbar: %s", e)
+
+    return toggl_month
+
+
+async def _get_toggl_month_cached(user: User, year: int, month: int) -> TogglMonthSummary:
+    """Toggl-Monatsdaten gecacht laden (laufender Monat live, sonst lange TTL)."""
+    today = date.today()
+    is_current = year == today.year and month == today.month
+    key = f"{year}-{month:02d}"
+    cache = _toggl_month_live if is_current else _toggl_month_past
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    result = await _compute_toggl_month(user, year, month)
+    cache[key] = result
+    return result
+
+
+# ── Haupt-Endpoint ───────────────────────────────────────
+
+@router.get("", response_model=DebtorsResponse)
+async def get_debtors(
+    user: User = Depends(require_role("owner")),
+):
+    """Debitorenübersicht: Toggl-Monats-Cockpit + Bexio-Debitoren."""
+    cached = _cache.get("debtors")
+    if cached is not None:
+        return cached
+
+    today = date.today()
+    current_year = today.year
+    prior_year = current_year - 1
+
+    # ── Toggl: Monats-Cockpit (aktueller Monat, gecacht) ──
+    toggl_month = await _get_toggl_month_cached(user, today.year, today.month)
 
     # ── Bexio: Debitoren ─────────────────────────────────
     debtors: list[DebtorSummary] = []
@@ -513,8 +566,29 @@ async def get_debtors(
     return result
 
 
+@router.get("/toggl-month", response_model=TogglMonthSummary)
+async def get_toggl_month(
+    month: str | None = Query(None, description="Monat im Format YYYY-MM (Default: aktueller Monat)"),
+    user: User = Depends(require_role("owner")),
+):
+    """Toggl-Monats-Cockpit fuer einen bestimmten Monat (fuer die Monatsnavigation)."""
+    today = date.today()
+    year, mon = today.year, today.month
+    if month:
+        try:
+            parts = month.split("-")
+            year, mon = int(parts[0]), int(parts[1])
+            if not (1 <= mon <= 12) or year < 2000 or year > today.year + 1:
+                raise ValueError
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=400, detail="Ungueltiges Monatsformat, erwartet YYYY-MM")
+    return await _get_toggl_month_cached(user, year, mon)
+
+
 @router.post("/cache/clear")
 async def clear_cache(user: User = Depends(require_role("owner"))):
     _cache.clear()
+    _toggl_month_live.clear()
+    _toggl_month_past.clear()
     logger.info("Debtors-Cache manuell geleert")
     return {"status": "ok", "message": "Debtors-Cache geleert"}
