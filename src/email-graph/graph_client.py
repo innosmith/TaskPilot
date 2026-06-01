@@ -477,6 +477,34 @@ class GraphClient:
 
     # ── Kalender CRUD ────────────────────────────────────────────
 
+    @staticmethod
+    def _ensure_tz_offset(s: str) -> str:
+        """Stellt sicher, dass ein ISO-Datetime-String einen Zeitzonen-Offset trägt.
+
+        Microsoft Graph interpretiert `startDateTime`/`endDateTime` der
+        calendarView-Abfrage **ohne** Offset als UTC — der
+        `Prefer: outlook.timezone`-Header wirkt nur auf die Antwort, nicht auf
+        die Query. Ohne Offset entsteht so eine Verschiebung (z.B. 16:00 lokal
+        wird als 16:00 UTC = 18:00 Zürich gelesen), wodurch reale Termine
+        ausserhalb des Fensters landen und fälschlich als frei gelten.
+
+        Naive Strings werden daher in Europe/Zurich lokalisiert (DST-sicher) und
+        mit explizitem Offset versehen.
+        """
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+
+        clean = s.strip()
+        # Bereits ein Offset (Z oder ±HH:MM nach dem Datums-Teil)?
+        if clean.endswith("Z") or "+" in clean[10:] or "-" in clean[10:]:
+            return clean
+        try:
+            naive = _dt.fromisoformat(clean)
+        except ValueError:
+            return clean
+        zurich = naive.replace(tzinfo=ZoneInfo("Europe/Zurich"))
+        return zurich.isoformat()
+
     async def list_events(
         self,
         start: str,
@@ -491,8 +519,8 @@ class GraphClient:
         data = await self._get(
             f"{self._user_path}/calendarView",
             {
-                "startDateTime": start,
-                "endDateTime": end,
+                "startDateTime": self._ensure_tz_offset(start),
+                "endDateTime": self._ensure_tz_offset(end),
                 "$top": str(top),
                 "$orderby": "start/dateTime",
                 "$select": "id,subject,start,end,location,isAllDay,isCancelled,"

@@ -222,3 +222,88 @@ class TestCronValidation:
 
         assert next_run.date() == date(2026, 5, 25)  # Nächster Montag
         assert next_run.weekday() == 0
+
+
+# ---------------------------------------------------------------------------
+# _select_target_occurrence — Catch-up & Lookahead (recurring.py)
+# ---------------------------------------------------------------------------
+
+class TestSelectTargetOccurrence:
+    """Prüft die Okkurrenz-Auswahl des Recurring-Schedulers.
+
+    Deckt Fix B (Catch-up der aktuellen Periode) und das Lookahead-Verhalten ab.
+    """
+
+    def _fn(self):
+        from app.services.recurring import _select_target_occurrence
+        return _select_target_occurrence
+
+    def test_catchup_same_day_created_after_cron_time(self):
+        """Vorlage am selben Tag NACH der Cron-Uhrzeit erstellt → Instanz heute.
+
+        Weekly InnoSmith: Cron Montag 08:00, Vorlage Montag 10:07 erstellt.
+        Erwartung: Catch-up auf heute statt nächste Woche.
+        """
+        select = self._fn()
+        now = datetime(2026, 6, 1, 8, 50, tzinfo=timezone.utc)  # Montag
+        created = datetime(2026, 6, 1, 8, 7, tzinfo=timezone.utc)
+        target = select("0 8 * * MON", now, None, created)
+        assert target.date() == date(2026, 6, 1)
+
+    def test_catchup_monthly_first_of_month(self):
+        """Monatliche Vorlage am 1. nach der Cron-Zeit erstellt → Instanz heute."""
+        select = self._fn()
+        now = datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc)
+        created = datetime(2026, 6, 1, 17, 0, tzinfo=timezone.utc)
+        target = select("0 16 1 * *", now, None, created)
+        assert target.date() == date(2026, 6, 1)
+
+    def test_no_backfill_when_occurrence_before_creation(self):
+        """Keine Rück-Befüllung: Vorlage erst nach der jüngsten Okkurrenz erstellt.
+
+        Monatlich am 1., Vorlage aber am 15. erstellt → nächste Okkurrenz
+        ist der 1. des Folgemonats, NICHT der vergangene 1.
+        """
+        select = self._fn()
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+        created = datetime(2026, 6, 15, 9, 0, tzinfo=timezone.utc)
+        target = select("0 8 1 * *", now, None, created)
+        assert target.date() == date(2026, 7, 1)
+
+    def test_weekly_created_after_weekday_waits_next_week(self):
+        """Wöchentlich Montag, Vorlage Dienstag erstellt → wartet bis nächsten Montag."""
+        select = self._fn()
+        now = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)  # Dienstag
+        created = datetime(2026, 6, 2, 9, 0, tzinfo=timezone.utc)
+        target = select("0 8 * * MON", now, None, created)
+        assert target.date() == date(2026, 6, 8)  # nächster Montag
+        assert target.weekday() == 0
+
+    def test_existing_instance_uses_next_after_last(self):
+        """Mit bestehender Instanz wird die nächste Okkurrenz nach last_ts gewählt."""
+        select = self._fn()
+        now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+        last_ts = datetime.combine(date(2026, 5, 1), datetime.max.time(), tzinfo=timezone.utc)
+        created = datetime(2026, 4, 1, 8, 0, tzinfo=timezone.utc)
+        target = select("0 8 1 * *", now, last_ts, created)
+        assert target.date() == date(2026, 6, 1)
+
+    def test_existing_instance_no_same_day_respawn(self):
+        """Nach Abschluss am Fälligkeitstag: keine erneute Okkurrenz am selben Tag.
+
+        last_ts (Tagesende) sorgt dafür, dass get_next zur NÄCHSTEN Periode springt.
+        """
+        select = self._fn()
+        now = datetime(2026, 5, 19, 15, 0, tzinfo=timezone.utc)
+        last_ts = datetime.combine(date(2026, 5, 19), datetime.max.time(), tzinfo=timezone.utc)
+        created = datetime(2026, 5, 14, 8, 0, tzinfo=timezone.utc)
+        target = select("0 16 19 * *", now, last_ts, created)
+        assert target.date() == date(2026, 6, 19)  # nicht erneut am 19. Mai
+
+    def test_result_is_timezone_aware(self):
+        """Ergebnis ist immer timezone-aware (UTC-normalisiert)."""
+        select = self._fn()
+        now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+        created = datetime(2026, 6, 1, 7, 0, tzinfo=timezone.utc)
+        target = select("0 8 * * MON", now, None, created)
+        assert target.tzinfo is not None

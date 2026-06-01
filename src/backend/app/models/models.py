@@ -121,7 +121,7 @@ class Task(Base):
     project: Mapped["Project"] = relationship(back_populates="tasks")
     board_column: Mapped["BoardColumn"] = relationship(back_populates="tasks")
     pipeline_column: Mapped["PipelineColumn | None"] = relationship(back_populates="tasks")
-    checklist_items: Mapped[list["ChecklistItem"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    checklist_items: Mapped[list["ChecklistItem"]] = relationship(back_populates="task", cascade="all, delete-orphan", order_by="ChecklistItem.position")
     tags: Mapped[list["Tag"]] = relationship(secondary="task_tags", back_populates="tasks")
     agent_jobs: Mapped[list["AgentJob"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     activity_logs: Mapped[list["ActivityLog"]] = relationship(back_populates="task", cascade="all, delete-orphan")

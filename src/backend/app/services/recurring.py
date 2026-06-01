@@ -72,6 +72,52 @@ async def _has_active_instance(db: AsyncSession, template_id: uuid.UUID) -> bool
     return (result.scalar_one() or 0) > 0
 
 
+def _select_target_occurrence(
+    rule: str,
+    now: datetime,
+    last_ts: datetime | None,
+    created_at: datetime,
+) -> datetime:
+    """Bestimmt die zu spawnende Cron-Okkurrenz (timezone-aware, UTC-normalisiert).
+
+    - Existieren bereits Instanzen (`last_ts`), wird die nächste Okkurrenz nach
+      der letzten Instanz gewählt (cadence durch Abschluss gesteuert).
+    - Für die erste Instanz wird die aktuelle Periode nachgeholt, wenn die
+      jüngste vergangene Okkurrenz heute liegt (z.B. Vorlage am selben Tag NACH
+      der Cron-Uhrzeit erstellt). Andernfalls die nächste Okkurrenz nach der
+      Erstellung — kein Backfill von Okkurrenzen vor der Vorlagen-Erstellung.
+    """
+    def _aware(dt: datetime) -> datetime:
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    if last_ts is not None:
+        target = croniter(rule, last_ts).get_next(datetime)
+    else:
+        prev_run = _aware(croniter(rule, now).get_prev(datetime))
+        created = _aware(created_at)
+        if prev_run.date() == now.date() and prev_run.date() >= created.date():
+            target = prev_run
+        else:
+            target = croniter(rule, created).get_next(datetime)
+    return _aware(target)
+
+
+async def _instance_exists_for_date(
+    db: AsyncSession, template_id: uuid.UUID, due: date
+) -> bool:
+    """Prüft, ob für eine Vorlage bereits eine Instanz mit diesem due_date
+    existiert (auch erledigte). Verhindert Mehrfach-Spawn derselben Okkurrenz."""
+    result = await db.execute(
+        select(func.count()).where(
+            and_(
+                Task.template_id == template_id,
+                Task.due_date == due,
+            )
+        )
+    )
+    return (result.scalar_one() or 0) > 0
+
+
 async def _copy_template(
     db: AsyncSession, template: Task, due_date: date | None = None,
 ) -> Task:
@@ -255,24 +301,25 @@ async def _check_and_spawn(db: AsyncSession) -> int:
                     continue
 
             last_ts = await _latest_instance_due(db, tmpl.id)
-            base_time = last_ts or tmpl.created_at
-            cron = croniter(tmpl.recurrence_rule, base_time)
-            next_run = cron.get_next(datetime)
+            target_run = _select_target_occurrence(
+                tmpl.recurrence_rule, now, last_ts, tmpl.created_at
+            )
 
-            if next_run.tzinfo is None:
-                next_run = next_run.replace(tzinfo=timezone.utc)
-
-            if tmpl.recurrence_end_date and next_run.date() > tmpl.recurrence_end_date:
+            if tmpl.recurrence_end_date and target_run.date() > tmpl.recurrence_end_date:
                 continue
 
-            if next_run.date() > now.date():
+            if target_run.date() > now.date():
                 continue
 
-            instance = await _copy_template(db, tmpl, due_date=next_run.date())
+            # Fix C: Mehrfach-Spawn derselben Okkurrenz verhindern.
+            if await _instance_exists_for_date(db, tmpl.id, target_run.date()):
+                continue
+
+            instance = await _copy_template(db, tmpl, due_date=target_run.date())
             spawned += 1
             logger.info(
                 "Recurring-Instanz '%s' (id=%s) aus Template %s erzeugt (due=%s)",
-                instance.title, instance.id, tmpl.id, next_run.date(),
+                instance.title, instance.id, tmpl.id, target_run.date(),
             )
         except Exception:
             logger.exception("Fehler bei Recurring-Check für Template %s", tmpl.id)

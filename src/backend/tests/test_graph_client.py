@@ -142,3 +142,86 @@ async def test_search_sender_emails_fallback_on_400(graph_client):
     url_decoded = str(second_request.url).replace("%24", "$")
     assert "$search" in url_decoded
     assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# Kalender: Zeitzonen-Offset in der calendarView-Abfrage (Überbuchungs-Fix)
+# ---------------------------------------------------------------------------
+
+class TestEnsureTzOffset:
+    """Prüft das DST-sichere Anhängen des Europe/Zurich-Offsets."""
+
+    def test_summer_offset_added(self):
+        """Sommerzeit (Juni) → +02:00 wird angehängt."""
+        result = GraphClient._ensure_tz_offset("2026-06-01T16:00:00")
+        assert result == "2026-06-01T16:00:00+02:00"
+
+    def test_winter_offset_added(self):
+        """Winterzeit (Januar) → +01:00 wird angehängt."""
+        result = GraphClient._ensure_tz_offset("2026-01-15T16:00:00")
+        assert result == "2026-01-15T16:00:00+01:00"
+
+    def test_existing_offset_untouched(self):
+        """Bereits vorhandener Offset bleibt unverändert."""
+        assert GraphClient._ensure_tz_offset("2026-06-01T16:00:00+02:00") == "2026-06-01T16:00:00+02:00"
+
+    def test_utc_z_suffix_untouched(self):
+        """UTC-Z-Suffix bleibt unverändert."""
+        assert GraphClient._ensure_tz_offset("2026-06-01T16:00:00Z") == "2026-06-01T16:00:00Z"
+
+
+CALENDAR_BUSY_EVENT = [
+    {
+        "id": "evt-1",
+        "subject": "Weiteres Vorgehen NITL",
+        "start": {"dateTime": "2026-06-01T16:00:00.0000000", "timeZone": "Europe/Zurich"},
+        "end": {"dateTime": "2026-06-01T17:00:00.0000000", "timeZone": "Europe/Zurich"},
+        "showAs": "busy",
+        "isCancelled": False,
+    },
+]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_find_free_slots_query_has_tz_offset(graph_client):
+    """Das Suchfenster muss mit Zeitzonen-Offset an Graph gehen (sonst UTC-Bug)."""
+    route = respx.get(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/calendarView",
+    ).respond(json={"value": []})
+
+    await graph_client.find_free_slots(
+        start="2026-06-01T16:00:00",
+        end="2026-06-01T20:00:00",
+        duration_minutes=90,
+    )
+
+    assert route.called
+    url_decoded = str(route.calls[0].request.url).replace("%3A", ":").replace("%2B", "+")
+    assert "2026-06-01T16:00:00+02:00" in url_decoded
+    assert "2026-06-01T20:00:00+02:00" in url_decoded
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_find_free_slots_detects_overlapping_meeting(graph_client):
+    """Ein 16:00-Termin muss als busy erkannt werden → 16:00 nicht frei.
+
+    Reproduziert die Debitoren-Überbuchung: vor dem Fix wurde 16:00 als frei
+    gemeldet und der Termin darüber gebucht.
+    """
+    respx.get(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/calendarView",
+    ).respond(json={"value": CALENDAR_BUSY_EVENT})
+
+    slots = await graph_client.find_free_slots(
+        start="2026-06-01T16:00:00",
+        end="2026-06-01T20:00:00",
+        duration_minutes=90,
+    )
+
+    # Kein Slot darf um 16:00 starten (Konflikt mit bestehendem Termin).
+    assert all(not s["start"].endswith("16:00:00") for s in slots)
+    # Erster freier Slot beginnt frühestens um 17:00 (nach dem Termin).
+    assert slots
+    assert slots[0]["start"].endswith("17:00:00")

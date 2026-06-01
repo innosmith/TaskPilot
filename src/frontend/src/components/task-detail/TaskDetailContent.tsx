@@ -149,7 +149,7 @@ function SortableChecklistItem({
       ) : (
         <span
           onClick={onStartEdit}
-          className={`min-w-0 flex-1 cursor-text break-all text-sm ${
+          className={`min-w-0 flex-1 cursor-text break-words text-sm ${
             item.is_checked
               ? 'text-gray-400 line-through dark:text-gray-500'
               : 'text-gray-700 dark:text-gray-300'
@@ -242,7 +242,7 @@ export default function TaskDetailContent({
     return marked.parse(task.description, { breaks: true }) as string;
   }, [task.description]);
 
-  const checklist = task.checklist_items ?? [];
+  const checklist = [...(task.checklist_items ?? [])].sort((a, b) => a.position - b.position);
   const doneCount = checklist.filter((i) => i.is_checked).length;
   const totalCount = checklist.length;
   const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
@@ -368,7 +368,7 @@ export default function TaskDetailContent({
         ) : (
           <h2
             onClick={() => setEditingTitle(true)}
-            className="cursor-text rounded-lg px-3 py-1.5 text-lg font-bold text-gray-900 transition-colors hover:bg-gray-50 dark:text-white dark:hover:bg-gray-800/50"
+            className="cursor-text break-words rounded-lg px-3 py-1.5 text-lg font-bold text-gray-900 transition-colors hover:bg-gray-50 dark:text-white dark:hover:bg-gray-800/50"
           >
             {task.title}
           </h2>

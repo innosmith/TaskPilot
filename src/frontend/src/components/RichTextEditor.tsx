@@ -84,6 +84,10 @@ export function RichTextEditor({
 }
 
 const tiptapStyles = (glass: boolean) => `
+.tiptap-content {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .tiptap-content p {
   margin: 0.25em 0;
 }
