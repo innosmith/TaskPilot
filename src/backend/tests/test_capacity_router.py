@@ -156,6 +156,18 @@ async def test_create_repeat_invalid_end_date_422(client_as_owner):
     assert "Enddatum" in resp.json()["detail"]
 
 
+async def test_create_allocation_malformed_uuid_422(client_as_owner):
+    """POST /api/capacity/allocations mit ungültiger UUID gibt 422 (kein 500)."""
+    body = {
+        "capacity_project_id": "nicht-eine-uuid",
+        "week_start": "2026-06-01",
+        "minutes": 480,
+        "allocation_type": "week",
+    }
+    resp = await client_as_owner.post("/api/capacity/allocations", json=body)
+    assert resp.status_code == 422
+
+
 # ── Geschäftslogik (benötigt DB) ────────────────────────────────────────────
 
 
@@ -338,6 +350,86 @@ async def test_day_allocation_aggregates_to_week(client_as_owner):
     assert len(summary) == 1
     assert summary[0]["week_start"] == "2026-06-08"
     assert summary[0]["planned_minutes"] == 960  # 480 + 480
+
+    await client_as_owner.delete(f"/api/capacity/projects/{project_id}")
+
+
+@pytest.mark.db
+async def test_create_allocation_duplicate_day_upserts(client_as_owner):
+    """Erneutes Buchen desselben Tages überschreibt die Stunden (Upsert), kein 500."""
+    proj_resp = await client_as_owner.post(
+        "/api/capacity/projects", json={"name": "Upsert-Test", "status": "bestätigt"}
+    )
+    project_id = proj_resp.json()["id"]
+
+    # Dienstag 09.03.2027 — entspricht genau dem Fall aus dem Bug-Report
+    first = await client_as_owner.post("/api/capacity/allocations", json={
+        "capacity_project_id": project_id,
+        "week_start": "2027-03-09",
+        "minutes": 240,
+        "allocation_type": "day",
+    })
+    assert first.status_code == 201
+    assert first.json()["minutes"] == 240
+
+    # Gleicher Tag erneut, andere Stundenzahl → Upsert statt 500
+    second = await client_as_owner.post("/api/capacity/allocations", json={
+        "capacity_project_id": project_id,
+        "week_start": "2027-03-09",
+        "minutes": 480,
+        "allocation_type": "day",
+    })
+    assert second.status_code == 201
+    assert second.json()["minutes"] == 480
+
+    # Es darf nur EINE Allocation für diesen Tag existieren
+    list_resp = await client_as_owner.get(
+        "/api/capacity/allocations",
+        params={"from": "2027-03-08", "to": "2027-03-14"},
+    )
+    for_project = [a for a in list_resp.json() if a["capacity_project_id"] == project_id]
+    assert len(for_project) == 1
+    assert for_project[0]["minutes"] == 480
+
+    await client_as_owner.delete(f"/api/capacity/projects/{project_id}")
+
+
+@pytest.mark.db
+async def test_create_allocation_unknown_project_409(client_as_owner):
+    """POST /api/capacity/allocations mit nicht existierendem Projekt gibt 409 (kein 500)."""
+    body = {
+        "capacity_project_id": str(uuid.uuid4()),
+        "week_start": "2027-03-09",
+        "minutes": 480,
+        "allocation_type": "day",
+    }
+    resp = await client_as_owner.post("/api/capacity/allocations", json=body)
+    assert resp.status_code == 409
+
+
+@pytest.mark.db
+async def test_projects_list_includes_alloc_count(client_as_owner):
+    """GET /api/capacity/projects liefert alloc_count je Projekt."""
+    proj_resp = await client_as_owner.post(
+        "/api/capacity/projects", json={"name": "AllocCount-Test", "status": "bestätigt"}
+    )
+    project_id = proj_resp.json()["id"]
+
+    # Neues Projekt: alloc_count == 0
+    list_resp = await client_as_owner.get("/api/capacity/projects")
+    entry = next(p for p in list_resp.json() if p["id"] == project_id)
+    assert entry["alloc_count"] == 0
+
+    await client_as_owner.post("/api/capacity/allocations", json={
+        "capacity_project_id": project_id,
+        "week_start": "2027-03-09",
+        "minutes": 480,
+        "allocation_type": "day",
+    })
+
+    list_resp2 = await client_as_owner.get("/api/capacity/projects")
+    entry2 = next(p for p in list_resp2.json() if p["id"] == project_id)
+    assert entry2["alloc_count"] == 1
 
     await client_as_owner.delete(f"/api/capacity/projects/{project_id}")
 

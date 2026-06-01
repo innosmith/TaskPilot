@@ -1,3 +1,4 @@
+import html
 import logging
 import os
 import pathlib
@@ -118,7 +119,11 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 def _sanitize_text(text: str | None) -> str | None:
     if text is None:
         return None
-    return bleach.clean(text, tags=[], strip=True)
+    # Tags entfernen (XSS-Schutz), dann HTML-Entities wieder zu literalen
+    # Zeichen auflösen, damit z.B. "&", "<", ">" erhalten bleiben statt als
+    # "&amp;" etc. gespeichert zu werden. Das Frontend escaped beim Rendern
+    # selbst (Titel via React, Beschreibung/Kommentar via Markdown).
+    return html.unescape(bleach.clean(text, tags=[], strip=True))
 
 
 @router.post("", response_model=TaskOut, status_code=status.HTTP_201_CREATED)
@@ -494,6 +499,7 @@ async def add_checklist_item(
         max_pos = max_result.scalar_one_or_none() or 0.0
         body.position = max_pos + 1.0
 
+    body.text = _sanitize_text(body.text) or body.text
     item = ChecklistItem(task_id=task_id, **body.model_dump())
     db.add(item)
     await db.flush()
@@ -517,6 +523,8 @@ async def update_checklist_item(
         raise HTTPException(status_code=404, detail="Checklist item not found")
 
     for field, value in body.model_dump(exclude_unset=True).items():
+        if field == "text" and value is not None:
+            value = _sanitize_text(value) or value
         setattr(item, field, value)
     return item
 

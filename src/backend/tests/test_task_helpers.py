@@ -105,6 +105,21 @@ class TestSanitizeText:
         assert "<style>" not in result
         assert "Sichtbar" in result
 
+    def test_ampersand_preserved(self):
+        """'&' bleibt literal erhalten (nicht als &amp; gespeichert)."""
+        assert _sanitize_text("Tom & Jerry") == "Tom & Jerry"
+
+    def test_special_chars_preserved(self):
+        """Literale Sonderzeichen bleiben erhalten, werden nicht escaped."""
+        assert _sanitize_text("a < b > c & d") == "a < b > c & d"
+        assert _sanitize_text("R&D & A&B") == "R&D & A&B"
+
+    def test_no_entity_encoding(self):
+        """Ergebnis enthält keine HTML-Entities für eingegebene Sonderzeichen."""
+        result = _sanitize_text("Preis & Wert")
+        assert "&amp;" not in result
+        assert "&" in result
+
 
 # ---------------------------------------------------------------------------
 # Cron-Validierung (croniter) — isolierte Logik aus recurring.py

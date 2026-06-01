@@ -1,3 +1,4 @@
+import html
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -44,6 +45,12 @@ router = APIRouter(prefix="/api/mindmaps", tags=["mindmaps"])
 public_router = APIRouter(prefix="/api/public/mindmaps", tags=["mindmaps-public"])
 
 
+def _clean_text(text: str) -> str:
+    """Entfernt HTML-Tags (XSS-Schutz) und löst Entities wieder zu literalen
+    Zeichen auf, damit z.B. "&", "<", ">" in Titeln erhalten bleiben."""
+    return html.unescape(bleach.clean(text, tags=[], strip=True))
+
+
 def _default_flow_data(title: str) -> dict:
     return {
         "nodes": [
@@ -85,7 +92,7 @@ async def import_mindmap(
         raise HTTPException(status_code=400, detail="Datei zu gross (max. 10 MB)")
 
     try:
-        title = bleach.clean(extract_title(raw))
+        title = _clean_text(extract_title(raw))
         flow_data = parse_freemind_xml(raw)
     except Exception as exc:
         logger.warning("FreeMind-Import fehlgeschlagen: %s", exc)
@@ -321,7 +328,7 @@ async def update_mindmap(
     updates = body.model_dump(exclude_unset=True)
 
     if "title" in updates and updates["title"]:
-        updates["title"] = bleach.clean(updates["title"])
+        updates["title"] = _clean_text(updates["title"])
 
     if updates.get("visibility") == "project" and not (updates.get("project_id") or mindmap.project_id):
         raise HTTPException(
@@ -430,7 +437,7 @@ async def convert_to_tasks(
             description_parts.append(f"Link: {url}")
 
         task = Task(
-            title=bleach.clean(label),
+            title=_clean_text(label),
             description="\n".join(description_parts) if description_parts else None,
             project_id=body.project_id,
             board_column_id=body.board_column_id,

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Plus, Trash2, ArrowRightLeft, Pencil,
-  ChevronLeft, ChevronRight, Calendar, X, GripVertical, Palmtree, Unlink,
-  Check, AlertTriangle,
+  ChevronLeft, ChevronRight, ChevronDown, Calendar, X, GripVertical, Palmtree, Unlink,
+  Check, AlertTriangle, EyeOff,
 } from 'lucide-react';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent, useDroppable, useDraggable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -32,6 +32,8 @@ interface CapProject {
   notes: string | null;
   icon_url: string | null;
   icon_emoji: string | null;
+  created_at?: string;
+  alloc_count?: number;
 }
 
 interface Allocation {
@@ -1575,6 +1577,7 @@ export function CapacityPage() {
   const [startDate, setStartDate] = useState<Date>(getMonday(new Date()));
   const [showTentative, setShowTentative] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [emptyGroupExpanded, setEmptyGroupExpanded] = useState(false);
 
   // Soll/Ist column
   const [sollIstExpanded, setSollIstExpanded] = useState<boolean>(() => {
@@ -1634,6 +1637,25 @@ export function CapacityPage() {
 
   const weeks = useMemo(() => getWeeksForRange(startDate, viewRange), [startDate, viewRange]);
   const endDate = useMemo(() => addWeeks(startDate, weeks.length), [startDate, weeks.length]);
+
+  // Projekte gruppieren: Hauptliste = Kapazität im sichtbaren Fenster ODER
+  // noch nie geplant (neu). Übrige wandern in eine eingeklappte Gruppe und
+  // tauchen automatisch wieder auf, sobald im navigierten Zeitraum Kapazität
+  // existiert (allocations werden pro Fenster geladen). Aus der Gruppe heraus
+  // lässt sich jederzeit Kapazität buchen, wodurch das Projekt wieder hochwandert.
+  const { mainProjects, emptyProjects } = useMemo(() => {
+    const visible = projects.filter(p => showTentative || p.status === 'bestätigt');
+    const withWindowCap = new Set(allocations.map(a => a.capacity_project_id));
+    const main: CapProject[] = [];
+    const empty: CapProject[] = [];
+    for (const p of visible) {
+      const hasWindowCap = withWindowCap.has(p.id);
+      const neverPlanned = (p.alloc_count ?? 0) === 0;
+      if (hasWindowCap || neverPlanned) main.push(p);
+      else empty.push(p);
+    }
+    return { mainProjects: main, emptyProjects: empty };
+  }, [projects, allocations, showTentative]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -1761,14 +1783,16 @@ export function CapacityPage() {
         }
         await api.patch(`/api/capacity/allocations/${allocDialog.editAllocId}`, patchData);
         if (data.extra_days && data.extra_days.length > 0) {
-          for (const dayIso of data.extra_days) {
-            await api.post('/api/capacity/allocations', {
+          const results = await Promise.allSettled(
+            data.extra_days.map(dayIso => api.post('/api/capacity/allocations', {
               capacity_project_id: data.capacity_project_id,
               week_start: dayIso,
               minutes: data.minutes,
               allocation_type: 'day',
-            });
-          }
+            })),
+          );
+          const failed = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
+          if (failed) throw failed.reason;
         }
       } else if (data.repeat && data.end_date) {
         await api.post('/api/capacity/allocations/repeat', {
@@ -1787,14 +1811,16 @@ export function CapacityPage() {
           allocation_type: data.allocation_type,
         });
         if (data.extra_days && data.extra_days.length > 0) {
-          for (const dayIso of data.extra_days) {
-            await api.post('/api/capacity/allocations', {
+          const results = await Promise.allSettled(
+            data.extra_days.map(dayIso => api.post('/api/capacity/allocations', {
               capacity_project_id: data.capacity_project_id,
               week_start: dayIso,
               minutes: data.minutes,
               allocation_type: 'day',
-            });
-          }
+            })),
+          );
+          const failed = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
+          if (failed) throw failed.reason;
         }
       }
       setAllocDialog({ open: false, projectId: '', weekStart: '' });
@@ -2322,8 +2348,8 @@ export function CapacityPage() {
 
           {/* Projekte */}
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext items={projects.map(p => p.id)} strategy={verticalListSortingStrategy}>
-              {projects.filter(p => showTentative || p.status === 'bestätigt').map(project => (
+            <SortableContext items={mainProjects.map(p => p.id)} strategy={verticalListSortingStrategy}>
+              {mainProjects.map(project => (
                 <SortableProjectRow
                   key={project.id}
                   project={project}
@@ -2347,6 +2373,48 @@ export function CapacityPage() {
                 />
               ))}
             </SortableContext>
+
+            {/* Projekte ohne Kapazität im sichtbaren Zeitraum: eingeklappte Gruppe */}
+            {emptyProjects.length > 0 && (
+              <div className="border-t border-dashed border-gray-200 dark:border-gray-700">
+                <button
+                  onClick={() => setEmptyGroupExpanded(v => !v)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-800/50"
+                  data-testid="capacity-empty-group-toggle"
+                >
+                  {emptyGroupExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  <EyeOff className="h-3.5 w-3.5" />
+                  <span>Keine Kapazität in diesem Zeitraum ({emptyProjects.length})</span>
+                </button>
+                {emptyGroupExpanded && (
+                  <SortableContext items={emptyProjects.map(p => p.id)} strategy={verticalListSortingStrategy}>
+                    {emptyProjects.map(project => (
+                      <SortableProjectRow
+                        key={project.id}
+                        project={project}
+                        weeks={weeks}
+                        allocations={allocations.filter(a => a.capacity_project_id === project.id)}
+                        onCellClick={handleCellClick}
+                        onEditProject={(p) => setProjectDialog({ open: true, editing: p })}
+                        onContextMenu={(e, alloc) => {
+                          e.preventDefault();
+                          setContextMenu({ x: e.clientX, y: e.clientY, alloc });
+                        }}
+                        colClass={getColClass(viewRange)}
+                        viewRange={viewRange}
+                        onAllocDrop={handleAllocDrop}
+                        selectedAllocIds={selectedAllocIds}
+                        onToggleSelect={handleToggleSelect}
+                        timeOffWeekMap={timeOffWeekMap}
+                        holidayWeekMap={holidayWeekMap}
+                        monthlyData={monthlyByProject[project.id]}
+                        sollIstExpanded={sollIstExpanded}
+                      />
+                    ))}
+                  </SortableContext>
+                )}
+              </div>
+            )}
           </DndContext>
 
           {projects.length === 0 && (

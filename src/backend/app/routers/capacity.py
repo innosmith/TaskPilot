@@ -18,7 +18,9 @@ from pathlib import Path
 from cachetools import TTLCache
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, require_role
@@ -92,6 +94,7 @@ class CapacityProjectOut(BaseModel):
     notes: str | None
     created_at: str
     updated_at: str
+    alloc_count: int = 0  # Gesamtzahl Zuweisungen (über alle Zeiträume)
 
 
 class AllocationCreate(BaseModel):
@@ -234,7 +237,18 @@ async def list_capacity_projects(
             stmt = stmt.where(CapacityProject.status == status)
         result = await session.execute(stmt)
         projects = result.scalars().all()
-        return [_project_to_out(p) for p in projects]
+
+        # Gesamtzahl Zuweisungen je Projekt (über alle Zeiträume), damit das
+        # Frontend "noch nie geplant = neu" von "keine Kapazität im Fenster"
+        # unterscheiden kann.
+        count_stmt = select(
+            CapacityAllocation.capacity_project_id,
+            func.count(CapacityAllocation.id),
+        ).group_by(CapacityAllocation.capacity_project_id)
+        count_result = await session.execute(count_stmt)
+        counts = {row[0]: row[1] for row in count_result.all()}
+
+        return [_project_to_out(p, counts.get(p.id, 0)) for p in projects]
 
 
 @router.post("/projects", response_model=CapacityProjectOut, status_code=201)
@@ -350,17 +364,47 @@ async def create_allocation(
     user: User = Depends(require_role("owner")),
 ):
     ws = _validate_allocation_date(body.week_start, body.allocation_type)
-    async with async_session() as session:
-        alloc = CapacityAllocation(
-            capacity_project_id=uuid.UUID(body.capacity_project_id),
+    try:
+        project_uuid = uuid.UUID(body.capacity_project_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Ungültige capacity_project_id")
+
+    # Upsert: Eine bestehende Zuweisung für (Projekt, Datum) wird überschrieben,
+    # statt an der UNIQUE-Constraint (uq_cap_alloc_project_week) zu scheitern.
+    # So bleibt das (erneute) Buchen eines Einzeltages idempotent.
+    stmt = (
+        pg_insert(CapacityAllocation)
+        .values(
+            capacity_project_id=project_uuid,
             week_start=ws,
             minutes=body.minutes,
             allocation_type=body.allocation_type,
             notes=body.notes,
         )
-        session.add(alloc)
-        await session.commit()
-        await session.refresh(alloc)
+        .on_conflict_do_update(
+            index_elements=["capacity_project_id", "week_start"],
+            set_={
+                "minutes": body.minutes,
+                "allocation_type": body.allocation_type,
+                "notes": body.notes,
+                "updated_at": func.now(),
+            },
+        )
+        .returning(CapacityAllocation.id)
+    )
+    async with async_session() as session:
+        try:
+            result = await session.execute(stmt)
+            alloc_id = result.scalar_one()
+            await session.commit()
+        except IntegrityError:
+            # z. B. ungültige capacity_project_id (FK-Verletzung)
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Zuweisung konnte nicht gespeichert werden (ungültiges Projekt oder Konflikt)",
+            )
+        alloc = await session.get(CapacityAllocation, alloc_id)
         return _alloc_to_out(alloc)
 
 
@@ -392,7 +436,14 @@ async def create_repeat_allocations(
 
     async with async_session() as session:
         session.add_all(allocs)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Serie überschneidet sich mit bestehenden Zuweisungen oder verweist auf ein ungültiges Projekt",
+            )
         for a in allocs:
             await session.refresh(a)
         return [_alloc_to_out(a) for a in allocs]
@@ -1295,7 +1346,7 @@ def _aggregate_toggl_weekly(
     return dict(result)
 
 
-def _project_to_out(p: CapacityProject) -> CapacityProjectOut:
+def _project_to_out(p: CapacityProject, alloc_count: int = 0) -> CapacityProjectOut:
     return CapacityProjectOut(
         id=str(p.id),
         name=p.name,
@@ -1315,6 +1366,7 @@ def _project_to_out(p: CapacityProject) -> CapacityProjectOut:
         notes=p.notes,
         created_at=p.created_at.isoformat() if p.created_at else "",
         updated_at=p.updated_at.isoformat() if p.updated_at else "",
+        alloc_count=alloc_count,
     )
 
 
