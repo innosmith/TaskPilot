@@ -6,6 +6,7 @@ dataimport/
 .env.*
 !.env.example
 !.env.prod.example
+!.env.litellm.example
 *.pem
 *.key
 .secrets/

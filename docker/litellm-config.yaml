@@ -9,69 +9,33 @@
 #   gemini/* → Google Gemini Cloud
 
 model_list:
-  # ── Lokale Modelle (Ollama) ────────────────────────────────
-  - model_name: ollama/qwen3.6:latest
+  # ── Lokale Modelle (Ollama) — Wildcard mit api_base ─────────
+  - model_name: "ollama/*"
     litellm_params:
-      model: ollama/qwen3.6:latest
+      model: "ollama/*"
       api_base: http://host.docker.internal:11434
 
-  - model_name: ollama/qwen3.5:35b
+  # ── Cloud-Provider — generischer Passthrough ────────────────
+  # Deckt automatisch jedes Modell ab, das die UI-Liste anbietet.
+  - model_name: "openai/*"
     litellm_params:
-      model: ollama/qwen3.5:35b
-      api_base: http://host.docker.internal:11434
+      model: "openai/*"
+      api_key: os.environ/TP_OPENAI_API_KEY
 
-  - model_name: ollama/qwen3.5:9b
+  - model_name: "anthropic/*"
     litellm_params:
-      model: ollama/qwen3.5:9b
-      api_base: http://host.docker.internal:11434
+      model: "anthropic/*"
+      api_key: os.environ/TP_ANTHROPIC_API_KEY
 
-  - model_name: ollama/qwen3:32b
+  - model_name: "gemini/*"
     litellm_params:
-      model: ollama/qwen3:32b
-      api_base: http://host.docker.internal:11434
+      model: "gemini/*"
+      api_key: os.environ/TP_GEMINI_API_KEY
 
-  - model_name: ollama/gemma4:31b
+  - model_name: "perplexity/*"
     litellm_params:
-      model: ollama/gemma4:31b
-      api_base: http://host.docker.internal:11434
-
-  # ── Cloud-Modelle ──────────────────────────────────────────
-  - model_name: anthropic/claude-sonnet-4-20250514
-    litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
-
-  - model_name: anthropic/claude-3-5-haiku-20241022
-    litellm_params:
-      model: anthropic/claude-3-5-haiku-20241022
-
-  - model_name: openai/gpt-4o
-    litellm_params:
-      model: openai/gpt-4o
-
-  - model_name: openai/gpt-4o-mini
-    litellm_params:
-      model: openai/gpt-4o-mini
-
-  - model_name: gemini/gemini-2.5-pro
-    litellm_params:
-      model: gemini/gemini-2.5-pro
-
-  - model_name: gemini/gemini-2.5-flash
-    litellm_params:
-      model: gemini/gemini-2.5-flash
-
-  # ── Perplexity ──────────────────────────────────────────────
-  - model_name: perplexity/sonar-pro
-    litellm_params:
-      model: perplexity/sonar-pro
-
-  - model_name: perplexity/sonar
-    litellm_params:
-      model: perplexity/sonar
-
-  - model_name: perplexity/sonar-deep-research
-    litellm_params:
-      model: perplexity/sonar-deep-research
+      model: "perplexity/*"
+      api_key: os.environ/TP_PERPLEXITY_API_KEY
 
 litellm_settings:
   drop_params: true

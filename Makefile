@@ -14,6 +14,7 @@ help: ## Zeigt diese Hilfe
 # ── Shared Infra ──────────────────────────────────────────
 
 infra: ## Shared Infra starten (Postgres + LiteLLM)
+	@docker network inspect taskpilot-shared >/dev/null 2>&1 || docker network create taskpilot-shared
 	$(COMPOSE_SHARED) up -d
 
 infra-down: ## Shared Infra stoppen
@@ -44,6 +45,7 @@ int-down: ## Integration stoppen (Shared Infra bleibt)
 # ── Produktion ───────────────────────────────────────────
 
 prod: ## Produktion starten (Standalone, eigene DB + ClamAV)
+	@docker network inspect taskpilot-shared >/dev/null 2>&1 || docker network create taskpilot-shared
 	CACHEBUST=$$(date +%s) $(COMPOSE_PROD) up -d --build
 
 prod-down: ## Produktion stoppen

@@ -39,7 +39,7 @@ services:
       TP_APP_ENV: prod
       TP_DB_HOST: postgres-prod
       TP_DB_PORT: "5432"
-      TP_LITELLM_BASE_URL: http://host.docker.internal:4000
+      TP_LITELLM_BASE_URL: http://taskpilot-litellm:4000
       TP_OLLAMA_BASE_URL: http://host.docker.internal:11434
       TP_INVOICEINSIGHT_URL: http://host.docker.internal:8055/mcp
       TP_CLAMAV_HOST: clamav
@@ -57,6 +57,9 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - taskpilot-shared
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
@@ -101,3 +104,9 @@ volumes:
     name: taskpilot-prod-exports
   clamav-data:
     name: taskpilot-clamav-data
+
+networks:
+  # Gemeinsames Netz mit der Shared-Infra (litellm), damit backend-prod den
+  # Proxy ueber den Container-Namen taskpilot-litellm erreicht.
+  taskpilot-shared:
+    external: true

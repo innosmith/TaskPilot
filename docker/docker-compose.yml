@@ -31,13 +31,16 @@ services:
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]
-    environment:
-      ANTHROPIC_API_KEY: ${TP_ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${TP_OPENAI_API_KEY:-}
-      GEMINI_API_KEY: ${TP_GEMINI_API_KEY:-}
-      PERPLEXITY_API_KEY: ${TP_PERPLEXITY_API_KEY:-}
+    # Nur die 4 LLM-Keys (TP_*) gelangen in den Proxy (Least Privilege).
+    # Datei im Repo-Root, gleiche Konvention wie backend-prod (../.env.prod).
+    env_file:
+      - path: ../.env.litellm
+        required: false
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - taskpilot-shared
     restart: unless-stopped
 
   clamav:
@@ -58,3 +61,10 @@ services:
 
 volumes:
   clamav-data:
+
+networks:
+  # Projekt-uebergreifendes Netz, damit backend-prod (separates Compose-Projekt)
+  # den LiteLLM-Proxy ueber den Container-Namen erreicht. Einmalig anlegen:
+  #   docker network create taskpilot-shared   (passiert automatisch via Makefile)
+  taskpilot-shared:
+    external: true

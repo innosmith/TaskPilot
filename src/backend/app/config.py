@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     isi_user: str = ""
     isi_secret: str = ""
     isi_port: int = 5432
+    # Schreibzugang nur für Embedding-Backfill (Rolle signa_embedder: SELECT + UPDATE(embedding))
+    isi_write_user: str = ""
+    isi_write_secret: str = ""
 
     # InvoiceInsight (Kreditoren-Analyse)
     invoiceinsight_api_key: str = ""

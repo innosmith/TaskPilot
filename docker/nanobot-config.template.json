@@ -156,6 +156,7 @@
           "ISI_DB": "${TP_ISI_DB}",
           "ISI_USER": "${TP_ISI_USER}",
           "ISI_SECRET": "${TP_ISI_SECRET}",
+          "TP_OPENAI_API_KEY": "${TP_OPENAI_API_KEY}",
           "PYTHONPATH": "/app"
         }
       },

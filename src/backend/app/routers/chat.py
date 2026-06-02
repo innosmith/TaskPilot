@@ -26,6 +26,20 @@ litellm.drop_params = True
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
+# Hinweis fuer den reinen Chat-Modus (kein Tool-/MCP-Zugriff). Verhindert, dass das
+# Modell eine Live-Datensuche (z. B. SIGNA-Signale) vortaeuscht oder ins Leere laufen
+# laesst, wenn der Nutzer versehentlich nicht im Agent-Modus ist.
+_PLAIN_CHAT_TOOL_HINT = (
+    "Du bist im reinen Chat-Modus und hast in diesem Modus KEINEN Zugriff auf Live-Tools "
+    "oder Firmendaten (SIGNA-Signale/Recherche, E-Mail, Kalender, CRM/Pipedrive, "
+    "Buchhaltung/Bexio, Aufgaben). Wenn der Nutzer nach solchen Live-Daten fragt – "
+    "insbesondere nach einer SIGNA-Signal- oder semantischen Recherche – fuehre KEINE "
+    "erfundene Suche durch. Weise stattdessen kurz und freundlich darauf hin, dass dafuer "
+    "der Agent-Modus (InnoPilot) noetig ist, und bitte den Nutzer, oben links auf 'Agent' "
+    "umzuschalten und die Anfrage dort erneut zu stellen. Allgemeine Wissensfragen "
+    "beantwortest du normal. Sprache: Schweizer Hochdeutsch (ss statt ß, korrekte Umlaute)."
+)
+
 
 def _should_enable_thinking(model_id: str) -> bool:
     """Prüft via LiteLLM-Library ob ein Modell Reasoning/Thinking unterstützt."""
@@ -327,7 +341,7 @@ async def send_message(
     if not conv.title and len(conv.messages) <= 1:
         conv.title = user_content[:80] + ("..." if len(user_content) > 80 else "")
 
-    messages_for_llm = []
+    messages_for_llm = [{"role": "system", "content": _PLAIN_CHAT_TOOL_HINT}]
     for msg in conv.messages:
         messages_for_llm.append({"role": msg.role, "content": msg.content})
     messages_for_llm.append({"role": "user", "content": user_content})
@@ -731,7 +745,8 @@ MCP_SERVER_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "label": "Recherche (SIGNA)",
         "description": "ISI-Datenbank, wissenschaftliche Quellen",
         "tools": (
-            "search_signals(query) — Signale durchsuchen; "
+            "semantic_search_signals(query) — Signale semantisch nach Thema/Bedeutung suchen; "
+            "search_signals(query) — Signale nach Stichwort durchsuchen; "
             "get_briefing(id) — Briefing lesen"
         ),
     },
@@ -889,22 +904,98 @@ async def send_agent_message(
     }
 
 
-def _apply_model_routing(bot, selected_model: str) -> None:
-    """Setzt Modell und Provider-Endpoint basierend auf User-Wahl.
+def _build_cloud_provider(loop, api_base: str):
+    """Erzeugt (einmalig) einen OpenAI-kompatiblen Provider, dessen HTTP-Client
+    fest an den LiteLLM-Proxy gebunden ist.
 
-    Modell-ID-Format aus Frontend: 'ollama/qwen3.5:35b', 'anthropic/claude-sonnet-4-6', etc.
-    Für lokale Modelle → direkt Ollama. Für Cloud → LiteLLM-Proxy.
+    Hintergrund: Der ``AsyncOpenAI``-Client wird im Provider-Konstruktor gebaut
+    und cached die ``base_url``. Ein nachträgliches Setzen von
+    ``provider.api_base`` bleibt deshalb wirkungslos -- der Call ginge weiter an
+    den ursprünglichen (Ollama-)Endpoint. Wir erstellen darum einen eigenen
+    Provider mit korrekt gebundenem Client und verwenden ihn wieder.
+    """
+    cached = getattr(loop, "_tp_cloud_provider", None)
+    if cached is not None and getattr(cached, "_effective_base", None) == api_base:
+        return cached
+
+    from nanobot.providers.openai_compat_provider import OpenAICompatProvider
+    from nanobot.providers.registry import find_by_name
+
+    # 'custom'-Spec: backend=openai_compat, is_direct, KEIN strip_model_prefix.
+    # Dadurch wird der volle Modellstring (z.B. 'openai/gpt-4o-mini') unverändert
+    # an den Proxy gesendet, der per Wildcard (openai/*, anthropic/*, gemini/*)
+    # zum jeweiligen Provider routet.
+    provider = OpenAICompatProvider(
+        api_key="sk-litellm-local",
+        api_base=api_base,
+        default_model="openai/gpt-4o-mini",
+        spec=find_by_name("custom"),
+    )
+    local = getattr(loop, "_tp_local_provider", None) or loop.provider
+    gen = getattr(local, "generation", None)
+    if gen is not None:
+        provider.generation = gen
+    loop._tp_cloud_provider = provider
+    return provider
+
+
+def _swap_loop_provider(loop, provider, model: str) -> None:
+    """Setzt Provider + Modell auf dem Loop UND allen abhängigen Komponenten.
+
+    Spiegelt nanobot's ``_apply_provider_snapshot``: Runner, Subagents,
+    Consolidator und Dream halten je eine eigene Provider-Referenz und müssen
+    mitgezogen werden, sonst nutzt z.B. der Runner weiter den alten Endpoint.
+    """
+    loop.provider = provider
+    loop.model = model
+    runner = getattr(loop, "runner", None)
+    if runner is not None:
+        runner.provider = provider
+    subagents = getattr(loop, "subagents", None)
+    if subagents is not None:
+        subagents.set_provider(provider, model)
+    consolidator = getattr(loop, "consolidator", None)
+    if consolidator is not None:
+        consolidator.set_provider(provider, model, loop.context_window_tokens)
+    dream = getattr(loop, "dream", None)
+    if dream is not None:
+        dream.set_provider(provider, model)
+
+
+def _apply_model_routing(bot, selected_model: str) -> None:
+    """Setzt Modell und Provider basierend auf User-Wahl.
+
+    Modell-ID-Format aus Frontend: 'ollama/qwen3.5:35b', 'openai/gpt-4o-mini',
+    'anthropic/claude-sonnet-4-6', etc. Lokale Modelle → Ollama direkt;
+    Cloud-Modelle → LiteLLM-Proxy (custom-Provider).
+
+    Wichtig: Es wird ein echter Provider-Wechsel durchgeführt (nicht nur eine
+    ``api_base``-Mutation), da der OpenAI-Client die ``base_url`` beim Bau cached.
     """
     if not selected_model or selected_model == "nanobot":
         return
 
+    loop = bot._loop
     s = get_settings()
+
+    # Den ursprünglichen (lokalen) Provider einmalig festhalten, um bei
+    # Ollama-Auswahl wieder darauf zurückschalten zu können.
+    if not hasattr(loop, "_tp_local_provider"):
+        loop._tp_local_provider = loop.provider
+
+    # Config-Snapshot-Loader deaktivieren: Das Routing erfolgt explizit pro
+    # Request. Ein Refresh aus der Config (Default-Provider = Ollama) würde
+    # unsere Auswahl zu Turn-Beginn (_process_message → _refresh_provider_snapshot)
+    # sonst wieder überschreiben.
+    loop._provider_snapshot_loader = None
+
     if selected_model.startswith("ollama/"):
-        bot._loop.model = selected_model.removeprefix("ollama/")
-        bot._loop.provider.api_base = f"{s.ollama_base_url}/v1"
+        _swap_loop_provider(
+            loop, loop._tp_local_provider, selected_model.removeprefix("ollama/")
+        )
     else:
-        bot._loop.model = selected_model
-        bot._loop.provider.api_base = f"{s.litellm_base_url}/v1"
+        provider = _build_cloud_provider(loop, f"{s.litellm_base_url}/v1")
+        _swap_loop_provider(loop, provider, selected_model)
 
 
 async def _run_agent_background(

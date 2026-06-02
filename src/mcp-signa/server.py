@@ -19,6 +19,7 @@ from mcp.types import TextContent, Tool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "signa"))
 from signa_client import SignaClient, SignaConfig  # noqa: E402
+from embeddings import embed_query  # noqa: E402
 
 logger = logging.getLogger("mcp_signa")
 
@@ -37,6 +38,30 @@ TOOLS = [
                 "since": {"type": "string", "description": "Nur Signale seit diesem Datum (ISO-Format, z.B. 2026-04-01)"},
                 "limit": {"type": "integer", "description": "Max. Ergebnisse (Standard 20)"},
             },
+        },
+    ),
+    Tool(
+        name="semantic_search_signals",
+        description=(
+            "SIGNA-Signale SEMANTISCH nach Bedeutung durchsuchen (Embedding/Cosine-Ähnlichkeit). "
+            "Für thematische Fragen und Recherche bevorzugen, wenn nicht nach einem exakten Wort gesucht wird "
+            "(dafür eignet sich 'search_signals'). Die Anfrage wird als natürlichsprachiges Thema formuliert "
+            "(z. B. 'agentische KI in Unternehmen'). Filter optional kombinierbar. "
+            "Hinweis: Aktuell sind nur die Signale der letzten rund 3 Monate mit Embeddings hinterlegt; "
+            "ältere Treffer ggf. zusätzlich über 'search_signals' prüfen."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Thema/Fragestellung in natürlicher Sprache"},
+                "min_score": {"type": "number", "description": "Mindest-Score (0-10, Standard 0)"},
+                "type": {"type": "string", "enum": ["rss", "youtube", "web"], "description": "Signal-Typ filtern"},
+                "topic": {"type": "string", "description": "Topic-Name filtern"},
+                "persona": {"type": "string", "description": "Persona/Rolle filtern"},
+                "since": {"type": "string", "description": "Nur Signale seit diesem Datum (ISO-Format, z.B. 2026-04-01)"},
+                "limit": {"type": "integer", "description": "Max. Ergebnisse (Standard 20)"},
+            },
+            "required": ["query"],
         },
     ),
     Tool(
@@ -156,6 +181,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     limit=limit, min_score=min_score, type_filter=type_filter,
                     topic=topic, persona=persona, since=since,
                 )
+            return [TextContent(type="text", text=_to_json(results))]
+
+        elif name == "semantic_search_signals":
+            query = arguments.get("query", "")
+            if not query:
+                return [TextContent(type="text", text='{"error": "Parameter \'query\' ist erforderlich"}')]
+            # litellm.embedding ist synchron/blockierend -> in Thread auslagern,
+            # damit der MCP-Event-Loop nicht blockiert.
+            query_vec = await asyncio.to_thread(embed_query, query)
+            results = await client.semantic_search(
+                query_vec,
+                min_score=arguments.get("min_score", 0),
+                type_filter=arguments.get("type"),
+                topic=arguments.get("topic"),
+                persona=arguments.get("persona"),
+                since=arguments.get("since"),
+                limit=arguments.get("limit", 20),
+            )
             return [TextContent(type="text", text=_to_json(results))]
 
         elif name == "get_signal":

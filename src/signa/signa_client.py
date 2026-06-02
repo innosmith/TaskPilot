@@ -35,6 +35,21 @@ class SignaConfig:
             port=int(os.environ.get("TP_ISI_PORT", os.environ.get("ISI_PORT", "5432"))),
         )
 
+    @classmethod
+    def from_env_write(cls) -> "SignaConfig":
+        """Schreibzugang (Rolle signa_embedder) für den Embedding-Backfill.
+
+        Host/Port/DB werden mit dem read-only Zugang geteilt; nur User/Passwort
+        stammen aus TP_ISI_WRITE_USER / TP_ISI_WRITE_SECRET.
+        """
+        return cls(
+            host=os.environ.get("TP_ISI_HOST", os.environ.get("ISI_HOST", "")),
+            database=os.environ.get("TP_ISI_DB", os.environ.get("ISI_DB", "")),
+            user=os.environ.get("TP_ISI_WRITE_USER", os.environ.get("ISI_WRITE_USER", "")),
+            password=os.environ.get("TP_ISI_WRITE_SECRET", os.environ.get("ISI_WRITE_SECRET", "")),
+            port=int(os.environ.get("TP_ISI_PORT", os.environ.get("ISI_PORT", "5432"))),
+        )
+
     @property
     def is_configured(self) -> bool:
         return bool(self.host and self.database and self.user and self.password)
@@ -225,6 +240,67 @@ class SignaClient:
                    LIMIT $3""",
                 pattern, min_score, limit,
             )
+            return [dict(r) for r in rows]
+
+    async def semantic_search(
+        self,
+        query_embedding: list[float],
+        *,
+        min_score: float = 0,
+        type_filter: str | None = None,
+        topic: str | None = None,
+        persona: str | None = None,
+        since: "str | datetime | None" = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Read-only semantische Suche per Cosine-Distanz auf der embedding-Spalte.
+
+        `query_embedding` muss mit demselben Modell/derselben Dimension erzeugt
+        sein wie die gespeicherten Embeddings (text-embedding-3-large @ 1536).
+        Liefert zusätzlich `similarity` (1 - Cosine-Distanz, höher = ähnlicher).
+        """
+        pool = await self._ensure_pool()
+        vec_literal = "[" + ",".join(repr(float(x)) for x in query_embedding) + "]"
+
+        conditions: list[str] = ["embedding IS NOT NULL"]
+        params: list = [vec_literal]
+        idx = 2  # $1 ist das Query-Embedding
+        if min_score:
+            conditions.append(f"total_score >= ${idx}")
+            params.append(min_score)
+            idx += 1
+        if type_filter:
+            conditions.append(f"type = ${idx}")
+            params.append(type_filter)
+            idx += 1
+        if topic:
+            conditions.append(f"topic_name = ${idx}")
+            params.append(topic)
+            idx += 1
+        if persona:
+            conditions.append(f"relevant_role = ${idx}")
+            params.append(persona)
+            idx += 1
+        if since:
+            since_val = since if isinstance(since, datetime) else datetime.fromisoformat(str(since))
+            conditions.append(f"published_at >= ${idx}::timestamptz")
+            params.append(since_val)
+            idx += 1
+
+        where = " AND ".join(conditions)
+        params.append(limit)
+        query = f"""
+            SELECT id, title, source_name, url, type, status, description,
+                   published_at, total_score, relevant_role, ai_reason,
+                   topic_name, category,
+                   1 - (embedding <=> $1::vector) AS similarity
+            FROM isi_signals
+            WHERE {where}
+            ORDER BY embedding <=> $1::vector
+            LIMIT ${idx}
+        """
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
             return [dict(r) for r in rows]
 
     # ── Briefings ────────────────────────────────────────────
