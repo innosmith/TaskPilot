@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 
@@ -639,6 +640,10 @@ _agent_conditions: dict[str, asyncio.Condition] = {}
 _agent_running: dict[str, bool] = {}
 _AGENT_EVENT_TTL = 600  # Events 10min nach Abschluss aufbewahren
 
+# Offene clarify-Rückfragen (HITL): clarify_id -> {event, answer, job_id}.
+# Der Agent-Thread blockiert auf ``event`` bis der Nutzer via Endpoint antwortet.
+_clarify_pending: dict[str, dict] = {}
+
 
 async def _push_agent_event(job_id: str, event: dict):
     """Event in den Buffer schreiben und wartende Subscriber benachrichtigen."""
@@ -660,19 +665,26 @@ async def _cleanup_agent_events(job_id: str):
 
 
 def _load_agent_skills() -> str:
-    """Lädt alle .md-Skill-Dateien dynamisch aus dem Hermes-Home."""
-    from app.services.hermes_config import get_hermes_home
+    """Kompakter Skill-Index (Name + Beschreibung) statt Volltext-Injektion.
 
-    skills_dir = get_hermes_home() / "skills"
+    Hermes-nativ lädt der Agent den vollständigen Skill bei Bedarf selbst via
+    ``skill_view`` (Progressive Disclosure). Hier liefern wir nur das Inhalts-
+    verzeichnis, damit der Prompt schlank bleibt und der Agent weiss, welche
+    Skills es gibt.
+    """
+    from app.services.hermes_config import discover_skills
 
-    if not skills_dir.exists():
-        return ""
+    skills = discover_skills()
+    if not skills:
+        return "(Keine Skills hinterlegt.)"
 
-    parts = []
-    for path in sorted(skills_dir.glob("*.md")):
-        parts.append(path.read_text(encoding="utf-8"))
-
-    return "\n\n---\n\n".join(parts)
+    lines = []
+    for s in skills:
+        tools = f" [Tools: {', '.join(s['requires_toolsets'])}]" if s["requires_toolsets"] else ""
+        lines.append(f"- **{s['name']}**: {s['description']}{tools}")
+    lines.append("")
+    lines.append("Lade den vollständigen Skill bei Bedarf mit skill_view(name='<name>'), bevor du eine Fachaufgabe ausführst.")
+    return "\n".join(lines)
 
 
 MCP_SERVER_DESCRIPTIONS: dict[str, dict[str, str]] = {
@@ -777,6 +789,18 @@ def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
 
     now_zurich = datetime.now(ZoneInfo("Europe/Zurich"))
     date_context = now_zurich.strftime("%A, %d. %B %Y, %H:%M Uhr")
+    # Explizite Datums-Anker, damit relative Angaben ("nächste Woche") eindeutig sind.
+    from datetime import timedelta as _td
+    _days_to_mon = (7 - now_zurich.weekday()) % 7 or 7  # nächster Montag (heute zählt nicht)
+    next_monday = (now_zurich + _td(days=_days_to_mon)).date()
+    next_friday = next_monday + _td(days=4)
+    this_monday = (now_zurich - _td(days=now_zurich.weekday())).date()
+    date_anchors = (
+        f"Heute ist {now_zurich.strftime('%A')}, {now_zurich.date().isoformat()}. "
+        f"'Diese Woche' = Mo {this_monday.isoformat()} bis Fr {(this_monday + _td(days=4)).isoformat()}. "
+        f"'Nächste Woche' = Mo {next_monday.isoformat()} bis Fr {next_friday.isoformat()} "
+        f"(die Kalenderwoche, die am nächsten Montag beginnt)."
+    )
 
     history_lines = []
     for msg in conversation_messages[-10:]:
@@ -791,6 +815,7 @@ Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
 ## Aktuell
 
 - Datum/Uhrzeit: {date_context} (Europe/Zurich)
+- {date_anchors}
 - User: Anthony Smith (du sprichst direkt mit ihm)
 
 ## Regeln
@@ -799,11 +824,19 @@ Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
 - Dateien: search_files → download_file
 - Buchhaltung: list_accounts, get_journal, list_invoices, search_invoices
 - Mehrstufige Aufgaben: Schritt für Schritt, Tool-Ergebnisse auswerten
+- Öffentliche/aktuelle Recherche im Internet (News, Studien, Markt, Personen, Firmen): Nutze IMMER `web_search` (und `web_extract` für Detailseiten). Das ist die agentische Web-Recherche.
+- WICHTIG — SIGNA ist NICHT das Internet: `semantic_search_signals`/`search_signals` durchsuchen NUR die interne strategische Signal-Datenbank (ISI). Nutze SIGNA ausschliesslich, wenn explizit nach SIGNA-Signalen/Briefings gefragt wird — NICHT für allgemeine Web-Recherche. Bei „recherchiere aktuelle Entwicklungen im Internet" → `web_search`, nicht SIGNA.
+- CRM-Suche (Pipedrive): `search_crm` mit EINEM kurzen Begriff (Name, Firma, E-Mail) aufrufen, nicht mit ganzen Themensätzen. item_types im Singular (deal,person,organization).
+- Frühere Gespräche: Wenn Anthony sich auf etwas Früheres bezieht ("wie letzte Woche besprochen"), durchsuche den Verlauf mit session_search, bevor du nachfragst.
+- Dauerhaftes Wissen: Lernst du eine stabile Präferenz oder Tatsache über Anthony/Arbeitsweise, halte sie knapp mit dem memory-Tool fest.
+- Rückfragen bei Mehrdeutigkeit: Ist der Auftrag unklar oder gibt es mehrere sinnvolle Wege, stelle mit dem clarify-Tool eine kurze, strukturierte Rückfrage statt zu raten.
+- Grosse Recherche-/Dokument-Aufträge: Zerlege sie bei Bedarf mit delegate_task in Subaufgaben. Externe Ausgaben (E-Mails, Dokumente an Kunden) bleiben IMMER HITL — du lieferst einen Entwurf zur Freigabe, versendest nichts eigenständig.
+- Neue Skills: Erstelle Skills mit skill_manage nur als Vorschlag (propose-only). Beschreibe Anthony kurz den Nutzen und überlasse ihm die Freigabe/Aktivierung, statt eigenmächtig viele Skills anzulegen.
 - Sprache: Deutsch (Schweizer Hochdeutsch, ss statt ß, korrekte Umlaute ä/ö/ü)
 - Zeitzone: IMMER Europe/Zurich — alle Kalenderzeiten sind in dieser Zeitzone
 - Kalender: Du verwaltest Anthonys Outlook-Kalender direkt. Bei Terminwünschen IMMER zuerst mit list_calendar_events oder find_free_slots prüfen ob der Slot frei ist, dann mit create_calendar_event buchen. Verweise NICHT auf externe Buchungstools — du bist das Buchungstool.
 
-## Skills
+## Verfügbare Skills (bei Bedarf mit skill_view laden)
 
 {skills_text}
 
@@ -1034,6 +1067,31 @@ async def _run_agent_background(
             {"tool": str(name), "result": str(result)[:500]}, ensure_ascii=False
         ))
 
+    def clarify_callback(question: str, choices) -> str:
+        """HITL-Rückfrage: blockiert den Agent-Thread bis der Nutzer antwortet.
+
+        Läuft im Hermes-Worker-Thread. Wir emittieren ein clarify-SSE-Event und
+        warten auf die Antwort (gesetzt über den /agent/clarify-Endpoint). Bei
+        Timeout gibt der Callback einen neutralen Hinweis zurück, damit der Agent
+        eigenständig eine sinnvolle Annahme treffen und fortfahren kann.
+        """
+        clarify_id = uuid.uuid4().hex
+        ev = threading.Event()
+        _clarify_pending[clarify_id] = {"event": ev, "answer": None, "job_id": job_id}
+        try:
+            choice_list = [str(c) for c in choices] if isinstance(choices, (list, tuple)) else []
+            _emit("clarify", json.dumps({
+                "clarify_id": clarify_id,
+                "question": str(question),
+                "choices": choice_list,
+            }, ensure_ascii=False))
+            answered = ev.wait(timeout=MAX_AGENT_TIMEOUT)
+            if not answered:
+                return "Keine Antwort des Nutzers erhalten. Triff eine sinnvolle Annahme und fahre fort."
+            return _clarify_pending.get(clarify_id, {}).get("answer") or "(leere Antwort)"
+        finally:
+            _clarify_pending.pop(clarify_id, None)
+
     await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": "InnoPilot wird initialisiert..."})})
 
     if not await ensure_runtime_ready():
@@ -1054,6 +1112,7 @@ async def _run_agent_background(
             on_reasoning=on_reasoning,
             on_tool_start=on_tool_start,
             on_tool_complete=on_tool_complete,
+            clarify_callback=clarify_callback,
             session_id=f"chat-{conv_id}",
         )
     except Exception:
@@ -1087,6 +1146,8 @@ async def _run_agent_background(
             await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": evt_data})})
         elif evt_type == "tool_event":
             await _push_agent_event(job_id, {"event": "tool_event", "data": evt_data})
+        elif evt_type == "clarify":
+            await _push_agent_event(job_id, {"event": "clarify", "data": evt_data})
         elif evt_type == "status":
             await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": evt_data})})
 
@@ -1145,6 +1206,27 @@ async def _run_agent_background(
 
     _agent_running[job_id] = False
     asyncio.create_task(_cleanup_agent_events(job_id))
+
+
+@router.post("/conversations/{conversation_id}/agent/clarify")
+async def answer_agent_clarify(
+    conversation_id: uuid.UUID,
+    body: dict,
+    user: User = Depends(require_role("owner")),
+):
+    """Antwort auf eine clarify-Rückfrage des Agenten entgegennehmen.
+
+    Setzt die Antwort und entsperrt den blockierten Agent-Thread (siehe
+    ``clarify_callback`` in ``_run_agent_background``).
+    """
+    clarify_id = body.get("clarify_id")
+    answer = body.get("answer", "")
+    pending = _clarify_pending.get(clarify_id) if clarify_id else None
+    if not pending:
+        raise HTTPException(status_code=404, detail="Rückfrage nicht gefunden oder bereits abgelaufen")
+    pending["answer"] = str(answer)
+    pending["event"].set()
+    return {"ok": True}
 
 
 @router.get("/conversations/{conversation_id}/agent-stream")

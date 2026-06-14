@@ -222,6 +222,16 @@ class GraphClient:
                         "hasAttachments,importance,isRead,conversationId"},
         )
 
+    async def get_email_attachments(self, message_id: str) -> list[dict]:
+        """Anhänge einer E-Mail laden (inkl. ``contentBytes`` für fileAttachments).
+
+        Gibt die Roh-Attachment-Objekte von Graph zurück. Bild-Anhänge enthalten
+        ``contentBytes`` (base64), die der Aufrufer auf die Platte schreiben und
+        z. B. mit vision_analyze auswerten kann.
+        """
+        data = await self._get(f"{self._user_path}/messages/{message_id}/attachments")
+        return data.get("value", [])
+
     async def get_email_categories(self, message_id: str) -> dict:
         """Kategorien und Klassifizierung einer E-Mail."""
         data = await self._get(

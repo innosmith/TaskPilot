@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, require_role
 from app.database import get_db
-from app.models import AgentEpisode, AgentFeedback, EmailTriage, LearnedRule, User
+from app.models import AgentEpisode, AgentFeedback, AgentJob, EmailTriage, LearnedRule, User
 
 logger = logging.getLogger("taskpilot.intelligence")
 
@@ -353,6 +353,8 @@ class AgentSkill(BaseModel):
     name: str
     description: str
     content: str = ""
+    requires_toolsets: list[str] = []
+    size: int = 0
 
 
 class AgentSkillsResponse(BaseModel):
@@ -363,28 +365,123 @@ class AgentSkillsResponse(BaseModel):
 async def get_agent_skills(
     _user: User = Depends(require_role("owner")),
 ) -> AgentSkillsResponse:
-    """Listet die verfügbaren Hermes-Skills mit Kurzbeschreibung."""
-    from app.services.hermes_config import get_hermes_home
+    """Listet die verfügbaren Hermes-Skills (native SKILL.md) mit Beschreibung."""
+    from app.services.hermes_config import discover_skills
 
-    skills_dir = get_hermes_home() / "skills"
-
-    skills: list[AgentSkill] = []
-    if skills_dir.exists():
-        for f in sorted(skills_dir.iterdir()):
-            if f.is_file() and f.suffix == ".md":
-                try:
-                    content = f.read_text(encoding="utf-8", errors="replace")
-                    first_line = ""
-                    for line in content.splitlines():
-                        stripped = line.strip()
-                        if stripped and not stripped.startswith("#"):
-                            first_line = stripped[:200]
-                            break
-                    skills.append(AgentSkill(name=f.stem, description=first_line, content=content))
-                except OSError:
-                    continue
-
+    skills = [
+        AgentSkill(
+            name=s["name"],
+            description=s["description"],
+            content=s["content"],
+            requires_toolsets=s["requires_toolsets"],
+            size=s["size"],
+        )
+        for s in discover_skills()
+    ]
     return AgentSkillsResponse(skills=skills)
+
+
+# ── Skill-Nutzungs-Analytics (Show-Demo) ─────────────────
+
+class SkillUsageItem(BaseModel):
+    name: str
+    description: str
+    requires_toolsets: list[str] = []
+    view_count: int = 0
+    last_used_at: str | None = None
+    agent_created: bool = False
+
+
+class SkillUsageResponse(BaseModel):
+    items: list[SkillUsageItem]
+    total_invocations: int
+    jobs_scanned: int
+    period_jobs: int
+
+
+@router.get("/skill-usage", response_model=SkillUsageResponse)
+async def get_skill_usage(
+    jobs_limit: int = 500,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> SkillUsageResponse:
+    """Echte Skill-Nutzung des Agenten, abgeleitet aus den Job-Traces.
+
+    Zaehlt pro Skill, wie oft der Agent ihn via ``skill_view``/``skill_manage``
+    in den letzten ``jobs_limit`` Jobs tatsaechlich geladen hat (inkl. letzter
+    Nutzung). Hermes' ``.usage.json`` wird nur fuer agent-erstellte Skills
+    gepflegt -- unsere Skills sind manuell authored, daher ist der Job-Trace die
+    verlaessliche Quelle. Macht im Intelligenz-Tab sichtbar, welche Skills der
+    Agent wie oft nutzt (Show-Demo des Systemwissens).
+    """
+    import json as _json
+
+    from app.services.hermes_config import discover_skills, get_hermes_home
+
+    skills = discover_skills()
+
+    rows = await db.execute(
+        select(AgentJob.metadata_json, AgentJob.completed_at, AgentJob.created_at)
+        .order_by(AgentJob.created_at.desc())
+        .limit(jobs_limit)
+    )
+
+    counts: dict[str, int] = {}
+    last_used: dict[str, str] = {}
+    jobs_scanned = 0
+    for meta, completed_at, created_at in rows.all():
+        jobs_scanned += 1
+        trace = (meta or {}).get("trace") or []
+        ts = completed_at or created_at
+        iso = ts.isoformat() if ts else None
+        for ev in trace:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") == "tool_start" and ev.get("name") in ("skill_view", "skill_manage"):
+                sk = ev.get("skill")
+                if not sk:
+                    continue
+                counts[sk] = counts.get(sk, 0) + 1
+                if iso and (sk not in last_used or iso > last_used[sk]):
+                    last_used[sk] = iso
+
+    # Provenance (agent-erstellt?) aus .usage.json -- ohne Hermes-Import direkt lesen.
+    usage_map: dict = {}
+    usage_path = get_hermes_home() / "skills" / ".usage.json"
+    if usage_path.exists():
+        try:
+            usage_map = _json.loads(usage_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            usage_map = {}
+
+    items: list[SkillUsageItem] = []
+    total = 0
+    for s in skills:
+        name = s["name"]
+        vc = counts.get(name, 0)
+        total += vc
+        rec = usage_map.get(name) if isinstance(usage_map, dict) else None
+        agent_created = bool(
+            isinstance(rec, dict)
+            and (rec.get("created_by") == "agent" or rec.get("agent_created") is True)
+        )
+        items.append(SkillUsageItem(
+            name=name,
+            description=s["description"],
+            requires_toolsets=s["requires_toolsets"],
+            view_count=vc,
+            last_used_at=last_used.get(name),
+            agent_created=agent_created,
+        ))
+
+    items.sort(key=lambda i: (i.view_count, i.name.lower()), reverse=True)
+
+    return SkillUsageResponse(
+        items=items,
+        total_invocations=total,
+        jobs_scanned=jobs_scanned,
+        period_jobs=jobs_limit,
+    )
 
 
 # ── Hermes-Brain (zentraler Runtime-Status) ──────────────
@@ -433,7 +530,7 @@ async def get_brain(
     Single Source of Truth für den Intelligence-Tab im Frontend.
     """
     import yaml
-    from app.services.hermes_config import get_hermes_home
+    from app.services.hermes_config import discover_skills, get_hermes_home
 
     home = get_hermes_home()
     config_path = home / "config.yaml"
@@ -448,10 +545,7 @@ async def get_brain(
         except Exception:
             pass
 
-    skills: list[str] = []
-    skills_dir = home / "skills"
-    if skills_dir.exists():
-        skills = sorted(f.stem for f in skills_dir.iterdir() if f.is_file() and f.suffix == ".md")
+    skills: list[str] = [s["name"] for s in discover_skills()]
 
     return BrainStatus(
         runtime="hermes",

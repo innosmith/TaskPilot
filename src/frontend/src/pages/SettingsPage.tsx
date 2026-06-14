@@ -88,6 +88,24 @@ interface AgentSkillData {
   name: string;
   description: string;
   content: string;
+  requires_toolsets?: string[];
+  size?: number;
+}
+
+interface SkillUsageItem {
+  name: string;
+  description: string;
+  requires_toolsets?: string[];
+  view_count: number;
+  last_used_at: string | null;
+  agent_created: boolean;
+}
+
+interface SkillUsageData {
+  items: SkillUsageItem[];
+  total_invocations: number;
+  jobs_scanned: number;
+  period_jobs: number;
 }
 
 interface LearningSignal {
@@ -192,6 +210,7 @@ export function SettingsPage() {
   const [senderProfiles, setSenderProfiles] = useState<SenderProfile[]>([]);
   const [triageStats, setTriageStats] = useState<TriageStatsData | null>(null);
   const [agentSkills, setAgentSkills] = useState<AgentSkillData[]>([]);
+  const [skillUsage, setSkillUsage] = useState<SkillUsageData | null>(null);
   const [totalSenders, setTotalSenders] = useState(0);
   const [learning, setLearning] = useState<LearningOverview | null>(null);
   const [learnedRules, setLearnedRules] = useState<LearnedRule[]>([]);
@@ -264,7 +283,8 @@ export function SettingsPage() {
       api.get<{ skills: AgentSkillData[] }>('/api/intelligence/skills').catch(() => ({ skills: [] })),
       api.get<LearningOverview>('/api/intelligence/learning?days=7').catch(() => null),
       api.get<{ rules: LearnedRule[] }>('/api/intelligence/rules?limit=50').catch(() => ({ rules: [] })),
-    ]).then(([hb, files, sp, ts, sk, lo, lr]) => {
+      api.get<SkillUsageData>('/api/intelligence/skill-usage?jobs_limit=500').catch(() => null),
+    ]).then(([hb, files, sp, ts, sk, lo, lr, su]) => {
       setHeartbeat(hb);
       setMemFiles(files ?? []);
       setSenderProfiles(sp?.profiles ?? []);
@@ -273,6 +293,7 @@ export function SettingsPage() {
       setAgentSkills(sk?.skills ?? []);
       setLearning(lo);
       setLearnedRules(lr?.rules ?? []);
+      setSkillUsage(su);
     }).finally(() => setMemLoading(false));
   }, [tab]);
 
@@ -1827,22 +1848,62 @@ export function SettingsPage() {
                     </CollapsibleBlock>
                   )}
 
+                  {/* Skill-Nutzung (Show-Demo): wie oft der Agent Skills wirklich lädt */}
+                  {skillUsage && skillUsage.total_invocations > 0 && (
+                    <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 px-4 py-2.5 text-xs text-indigo-700 dark:border-indigo-900/40 dark:bg-indigo-900/20 dark:text-indigo-300">
+                      Der Agent hat in den letzten {skillUsage.jobs_scanned} Jobs{' '}
+                      <span className="font-semibold">{skillUsage.total_invocations}×</span> einen Skill aktiv geladen.
+                    </div>
+                  )}
+
                   {/* Agent-Skills */}
-                  {agentSkills.length > 0 && agentSkills.map((skill) => (
+                  {agentSkills.length > 0 && agentSkills.map((skill) => {
+                    const usage = skillUsage?.items.find((i) => i.name === skill.name);
+                    const lastUsed = usage?.last_used_at
+                      ? new Date(usage.last_used_at).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit', year: 'numeric' })
+                      : null;
+                    return (
                     <CollapsibleBlock
                       key={`skill-${skill.name}`}
                       id={`skill-${skill.name}`}
                       title={skill.name}
                       subtitle={skill.description}
-                      badge={<span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">Skill</span>}
+                      badge={
+                        <span className="flex items-center gap-1.5">
+                          {usage && usage.view_count > 0 && (
+                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title={lastUsed ? `Zuletzt genutzt: ${lastUsed}` : undefined}>
+                              {usage.view_count}× genutzt
+                            </span>
+                          )}
+                          <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">Skill</span>
+                        </span>
+                      }
                       expanded={memExpanded}
                       toggle={toggleMemFile}
                     >
+                      {usage && (usage.view_count > 0 || lastUsed) && (
+                        <div className="mb-3 text-[11px] text-gray-400 dark:text-gray-500">
+                          {usage.view_count > 0
+                            ? <>Vom Agenten {usage.view_count}× geladen{lastUsed ? ` · zuletzt am ${lastUsed}` : ''}.</>
+                            : 'Noch nicht aktiv geladen.'}
+                        </div>
+                      )}
+                      {skill.requires_toolsets && skill.requires_toolsets.length > 0 && (
+                        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500">Tools:</span>
+                          {skill.requires_toolsets.map((ts) => (
+                            <span key={ts} className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                              {ts}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       <div className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-4 text-sm leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200">
                         {skill.content || <span className="italic text-gray-400">Kein Inhalt</span>}
                       </div>
                     </CollapsibleBlock>
-                  ))}
+                    );
+                  })}
 
                   {/* Memory-Dateien */}
                   {memFiles.map((file) => (

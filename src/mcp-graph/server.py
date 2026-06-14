@@ -9,6 +9,7 @@ Der Hermes-Agent kann diesen Server als Tool nutzen für:
 """
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -91,6 +92,22 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "message_id": {"type": "string"},
+            },
+            "required": ["message_id"],
+        },
+    ),
+    Tool(
+        name="get_email_attachments",
+        description=(
+            "Anhänge einer E-Mail abrufen. Bild-Anhänge (PNG/JPG/GIF/WebP) werden lokal "
+            "gespeichert und ihr Dateipfad zurückgegeben, damit du sie mit vision_analyze "
+            "(image_url=<pfad>) inhaltlich auswerten kannst. Nutze dies bei E-Mails mit "
+            "hasAttachments=true, wenn der Bildinhalt für die Triage relevant ist."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Graph-API Message-ID"},
             },
             "required": ["message_id"],
         },
@@ -496,6 +513,48 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_email_categories":
             cats = await client.get_email_categories(arguments["message_id"])
             return [TextContent(type="text", text=json.dumps(cats, indent=2, ensure_ascii=False))]
+
+        elif name == "get_email_attachments":
+            msg_id = arguments["message_id"]
+            attachments = await client.get_email_attachments(msg_id)
+            image_types = {
+                "image/png", "image/jpeg", "image/jpg",
+                "image/gif", "image/webp", "image/bmp",
+            }
+            safe_msg = re.sub(r"[^A-Za-z0-9_-]", "_", msg_id)[:60] or "msg"
+            out_dir = Path(
+                os.environ.get("TP_ATTACHMENT_DIR", "/tmp/taskpilot-attachments")
+            ) / safe_msg
+            results = []
+            for att in attachments:
+                name_a = att.get("name") or "attachment"
+                ctype = (att.get("contentType") or "").lower()
+                is_file = "fileAttachment" in (att.get("@odata.type") or "")
+                entry = {
+                    "name": name_a,
+                    "content_type": ctype,
+                    "size": att.get("size"),
+                    "is_image": ctype in image_types,
+                }
+                content_b64 = att.get("contentBytes")
+                if is_file and content_b64 and ctype in image_types:
+                    try:
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", name_a)[:80] or "image"
+                        fpath = out_dir / safe_name
+                        fpath.write_bytes(base64.b64decode(content_b64))
+                        entry["path"] = str(fpath)
+                    except Exception as exc:  # noqa: BLE001
+                        entry["error"] = f"konnte nicht gespeichert werden: {exc}"
+                results.append(entry)
+            hint = (
+                "Für Bild-Anhänge mit 'path' kannst du vision_analyze(image_url=<path>, "
+                "user_prompt='Beschreibe den Inhalt für die E-Mail-Triage') aufrufen."
+            )
+            return [TextContent(
+                type="text",
+                text=json.dumps({"attachments": results, "hint": hint}, indent=2, ensure_ascii=False),
+            )]
 
         elif name == "create_draft":
             draft = await client.create_draft(

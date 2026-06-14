@@ -80,10 +80,9 @@ async def get_heartbeat(
     if heartbeat_path.exists():
         heartbeat = heartbeat_path.read_text(encoding="utf-8", errors="replace")
 
-    skills = []
-    skills_dir = HERMES_HOME / "skills"
-    if skills_dir.exists():
-        skills = [f.stem for f in skills_dir.iterdir() if f.is_file() and f.suffix == ".md"]
+    from app.services.hermes_config import discover_skills
+
+    skills = [s["name"] for s in discover_skills()]
 
     agents_md = ""
     soul_path = HERMES_HOME / "SOUL.md"

@@ -316,10 +316,38 @@ class PipedriveClient:
 
     # ── Suche ────────────────────────────────────────────────
 
+    # Pipedrive v2 itemSearch erwartet SINGULAR item_types. LLMs liefern oft Plural
+    # ("deals,persons,organizations") -> 400 Bad Request. Defensiv normalisieren.
+    _ITEM_TYPE_ALIASES = {
+        "deals": "deal", "persons": "person", "people": "person",
+        "organizations": "organization", "organisations": "organization",
+        "orgs": "organization", "org": "organization", "leads": "lead",
+        "products": "product", "files": "file", "projects": "project",
+    }
+    _VALID_ITEM_TYPES = {
+        "deal", "person", "organization", "product", "lead", "file",
+        "mail_attachment", "project",
+    }
+
+    @classmethod
+    def _normalize_item_types(cls, item_types: str) -> str:
+        out: list[str] = []
+        for raw in (item_types or "").split(","):
+            t = raw.strip().lower()
+            if not t:
+                continue
+            t = cls._ITEM_TYPE_ALIASES.get(t, t)
+            if t in cls._VALID_ITEM_TYPES and t not in out:
+                out.append(t)
+        return ",".join(out) or "deal,person,organization"
+
     async def search_items(self, term: str, item_types: str = "deal,person,organization", limit: int = 10) -> list[dict]:
+        # Term sicherheitshalber kürzen: sehr lange Mehrwort-Suchen liefern bei
+        # itemSearch ohnehin keine Treffer und erhöhen nur das Fehlerrisiko.
+        clean_term = (term or "").strip()[:120]
         data = await self._get_v2("/itemSearch", {
-            "term": term,
-            "item_types": item_types,
+            "term": clean_term,
+            "item_types": self._normalize_item_types(item_types),
             "limit": str(limit),
         })
         items = data.get("data", {})

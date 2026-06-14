@@ -126,18 +126,31 @@ class TestTriagePrompt:
         assert "⚠️ **ACHTUNG: Anthony ist bei dieser E-Mail NUR im CC" not in prompt
 
     @pytest.mark.asyncio
-    async def test_style_block_injected(self, fake_job):
-        """Wenn der Schreibstil-Kanon existiert, wird er im Prompt-Block injiziert."""
+    async def test_style_skill_view_native(self, fake_job):
+        """Im Normalfall (nativer Skill vorhanden) wird skill_view(email-style) angewiesen."""
+        prompt = await self._build_prompt(fake_job, style_native=True)
+        assert "SCHREIBSTIL" in prompt, "SCHREIBSTIL-Block fehlt im Prompt"
+        assert "skill_view(name='email-style')" in prompt
+
+    @pytest.mark.asyncio
+    async def test_triage_skill_view_native(self, fake_job):
+        """Im Normalfall (nativer Skill vorhanden) wird skill_view(email-triage) angewiesen."""
+        prompt = await self._build_prompt(fake_job, skill_native=True)
+        assert "skill_view(name='email-triage')" in prompt
+
+    @pytest.mark.asyncio
+    async def test_style_block_injected_fallback(self, fake_job):
+        """Fallback: ohne nativen Skill wird der Schreibstil-Kanon injiziert."""
         sentinel = "Knapp, klar, kollegial, lösungsorientiert (STIL-SENTINEL)"
-        prompt = await self._build_prompt(fake_job, style_text=sentinel)
+        prompt = await self._build_prompt(fake_job, style_text=sentinel, style_native=False)
         assert "SCHREIBSTIL" in prompt, "SCHREIBSTIL-Block fehlt im Prompt"
         assert sentinel in prompt, "Schreibstil-Kanon-Inhalt fehlt im Prompt"
 
     @pytest.mark.asyncio
     async def test_style_block_absent_when_empty(self, fake_job):
-        """Ohne Schreibstil-Kanon wird kein SCHREIBSTIL-Block eingefügt."""
-        prompt = await self._build_prompt(fake_job, style_text="")
-        assert "SCHREIBSTIL (VERBINDLICH" not in prompt
+        """Ohne nativen Skill und ohne Kanon-Text wird kein SCHREIBSTIL-Block eingefügt."""
+        prompt = await self._build_prompt(fake_job, style_text="", style_native=False)
+        assert "SCHREIBSTIL" not in prompt
 
     def test_style_canon_swiss_spelling(self):
         """Der echte Schreibstil-Kanon nutzt Schweizer Schreibweise (kein ß, keine ue/ae/oe-Ersatzformen)."""
@@ -159,14 +172,24 @@ class TestTriagePrompt:
                 f"ASCII-Umlaut-Pattern '{pattern}' im Schreibstil-Kanon: {matches}"
             )
 
-    async def _build_prompt(self, job, style_text="(Schreibstil-Kanon Platzhalter)"):
+    async def _build_prompt(
+        self,
+        job,
+        style_text="(Schreibstil-Kanon Platzhalter)",
+        skill_text="(Triage-Skill Platzhalter)",
+        skill_native=True,
+        style_native=True,
+    ):
         """Importiert und ruft _build_triage_prompt auf, mit gemockten DB-Calls.
 
-        Der Schreibstil-Kanon wird gemockt, damit der Test unabhängig vom
-        Dateisystem (~/.hermes/schreibstil-anthony.md) ist.
+        Skill-Verfügbarkeit und -Inhalt werden gemockt, damit der Test unabhängig
+        vom Dateisystem (~/.hermes/skills/...) ist. Default: native Skills vorhanden.
         """
         with patch("app.services.hermes_worker._load_projects_context", new_callable=AsyncMock) as mock_projects, \
-             patch("app.services.hermes_worker._load_style_profile", return_value=style_text):
+             patch("app.services.hermes_worker._load_style_profile", return_value=style_text), \
+             patch("app.services.hermes_worker._load_triage_skill", return_value=skill_text), \
+             patch("app.services.hermes_worker._triage_skill_available", return_value=skill_native), \
+             patch("app.services.hermes_worker._style_skill_available", return_value=style_native):
             mock_projects.return_value = "## VERFÜGBARE PROJEKTE\n- \"TestProjekt\" (id: 123)"
 
             from app.services.hermes_worker import _build_triage_prompt
@@ -176,9 +199,19 @@ class TestTriagePrompt:
 class TestForcedClassCorrection:
     """Tests für den Berater-Korrektur-Block (forced_class) im Triage-Prompt."""
 
-    async def _build_prompt(self, job, style_text="(Schreibstil-Kanon Platzhalter)"):
+    async def _build_prompt(
+        self,
+        job,
+        style_text="(Schreibstil-Kanon Platzhalter)",
+        skill_text="(Triage-Skill Platzhalter)",
+        skill_native=True,
+        style_native=True,
+    ):
         with patch("app.services.hermes_worker._load_projects_context", new_callable=AsyncMock) as mock_projects, \
-             patch("app.services.hermes_worker._load_style_profile", return_value=style_text):
+             patch("app.services.hermes_worker._load_style_profile", return_value=style_text), \
+             patch("app.services.hermes_worker._load_triage_skill", return_value=skill_text), \
+             patch("app.services.hermes_worker._triage_skill_available", return_value=skill_native), \
+             patch("app.services.hermes_worker._style_skill_available", return_value=style_native):
             mock_projects.return_value = "## VERFÜGBARE PROJEKTE\n- \"TestProjekt\" (id: 123)"
             from app.services.hermes_worker import _build_triage_prompt
             return await _build_triage_prompt(job)
@@ -206,7 +239,15 @@ class TestForcedClassCorrection:
         prompt = await self._build_prompt(job)
         assert "KORREKTUR DES BERATERS" in prompt
         assert "Antwort-Entwurf (auto_reply)" in prompt
-        # Korrektur-Block soll ganz oben stehen (vor den Standard-Instruktionen).
+        # Korrektur-Block soll ganz oben stehen (vor der Skill-Sektion).
+        assert prompt.index("KORREKTUR DES BERATERS") < prompt.index("TRIAGE-SKILL")
+
+    @pytest.mark.asyncio
+    async def test_correction_block_before_skill_fallback(self):
+        """Auch im Datei-Fallback steht der Korrektur-Block vor den Instruktionen."""
+        job = _make_fake_job()
+        job.metadata_json["forced_class"] = "auto_reply"
+        prompt = await self._build_prompt(job, skill_native=False)
         assert prompt.index("KORREKTUR DES BERATERS") < prompt.index("TRIAGE-INSTRUKTIONEN")
 
 

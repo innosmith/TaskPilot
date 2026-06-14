@@ -1,4 +1,11 @@
-"""Router für klassische Websuche (Tavily API) mit Historisierung."""
+"""Router für die klassische Websuche (Tavily API) mit Historisierung.
+
+DEPRECATED: Die klassische Websuche ist zugunsten der Hermes-nativen agentischen
+Recherche (``web_search``/``web_extract`` im Agent-Modus) abgelöst. Der POST-Endpunkt
+bleibt vorerst funktionsfähig (Rückwärtskompatibilität des Chat-„web_search“-Modus),
+ist aber als veraltet markiert. Die Historie-Endpunkte sind read-only und bleiben für
+Audit/Anzeige erhalten. Für neue Recherche bitte den Agent-Modus (InnoPilot) nutzen.
+"""
 
 import logging
 import uuid
@@ -55,13 +62,17 @@ async def _tavily_search(query: str, search_depth: str = "basic", max_results: i
         return resp.json()
 
 
-@router.post("")
+@router.post("", deprecated=True)
 async def perform_search(
     body: WebSearchRequest,
     user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Websuche ausfuehren und historisieren."""
+    """DEPRECATED: Klassische Websuche. Nutze stattdessen den Agent-Modus (web_search)."""
+    logger.info(
+        "Deprecated /api/search aufgerufen (query=%.60s) — Hermes-native web_search bevorzugen.",
+        body.query,
+    )
     query = body.query.strip()
 
     search_depth = body.search_depth
@@ -109,6 +120,7 @@ async def perform_search(
         "provider": "tavily",
         "credits_used": credits,
         "created_at": search_record.created_at.isoformat(),
+        "deprecated": True,
     }
 
 

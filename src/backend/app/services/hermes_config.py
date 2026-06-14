@@ -33,6 +33,104 @@ def get_hermes_home() -> Path:
     return Path(os.path.expanduser(get_settings().hermes_home))
 
 
+def _parse_skill_frontmatter(content: str) -> dict:
+    """Liest das YAML-Frontmatter eines SKILL.md (zwischen den ``---``-Zeilen)."""
+    import yaml
+
+    if not content.startswith("---"):
+        return {}
+    end = content.find("\n---", 3)
+    if end == -1:
+        return {}
+    raw = content[3:end]
+    try:
+        data = yaml.safe_load(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _first_body_line(content: str) -> str:
+    """Erste nicht-leere, nicht-Heading-Zeile als Fallback-Beschreibung.
+
+    Ueberspringt ein etwaiges YAML-Frontmatter (Block zwischen zwei ``---``-Zeilen).
+    """
+    lines = content.splitlines()
+    start = 0
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                start = i + 1
+                break
+    for line in lines[start:]:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped != "---":
+            return stripped[:200]
+    return ""
+
+
+def discover_skills() -> list[dict]:
+    """Erkennt die Hermes-Skills im ``skills/``-Verzeichnis.
+
+    Hermes-nativ liegen Skills als ``skills/<name>/SKILL.md`` mit YAML-Frontmatter
+    (``name``, ``description``, ``metadata.hermes.requires_toolsets``). Diese Funktion
+    ist die Single Source of Truth fuer alle Skill-Listings im Frontend (Intelligenz-
+    Tab, Heartbeat, Brain). Faellt auf alte Flat-``.md``-Dateien zurueck, falls (noch)
+    keine nativen Skills vorhanden sind.
+
+    Returns: Liste von Dicts mit ``name``, ``description``, ``requires_toolsets``,
+    ``content`` und ``size``, sortiert nach Name.
+    """
+    skills_dir = get_hermes_home() / "skills"
+    if not skills_dir.exists():
+        return []
+
+    out: list[dict] = []
+    for skill_file in sorted(skills_dir.glob("*/SKILL.md")):
+        try:
+            content = skill_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fm = _parse_skill_frontmatter(content)
+        name = str(fm.get("name") or skill_file.parent.name).strip()
+        description = str(fm.get("description") or _first_body_line(content)).strip()
+        hermes_meta = (fm.get("metadata") or {}).get("hermes") or {}
+        req = hermes_meta.get("requires_toolsets") or []
+        if not isinstance(req, list):
+            req = [str(req)]
+        try:
+            size = skill_file.stat().st_size
+        except OSError:
+            size = len(content.encode("utf-8"))
+        out.append({
+            "name": name,
+            "description": description,
+            "requires_toolsets": [str(t) for t in req],
+            "content": content,
+            "size": size,
+        })
+
+    # Fallback: alte Flat-Skills (skills/<name>.md), nur wenn keine nativen da sind.
+    if not out:
+        for f in sorted(skills_dir.glob("*.md")):
+            if not f.is_file():
+                continue
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            out.append({
+                "name": f.stem,
+                "description": _first_body_line(content),
+                "requires_toolsets": [],
+                "content": content,
+                "size": f.stat().st_size,
+            })
+
+    out.sort(key=lambda s: s["name"])
+    return out
+
+
 def _mcp_base_dir() -> str:
     """Verzeichnis, das die ``mcp-*``-Server enthält (Dev: ``src/``, Prod: ``/app``)."""
     override = os.environ.get("TP_MCP_BASE_DIR")
@@ -207,6 +305,75 @@ def build_config_dict() -> dict:
             "api_key": "ollama",
             "api_mode": "chat_completions",
             "context_length": 131072,
+        },
+        # Built-in-Memory aktiv schalten: MEMORY.md + USER.md werden in den
+        # System-Prompt injiziert (nur bei lokalen Modellen, da der Worker/Chat
+        # fuer Cloud-Modelle skip_memory setzt). Kein externer Provider (Honcho):
+        # die Built-in-Layer + die DB-gestuetzten Episoden/Regeln decken das ab.
+        # Die *_char_limit-Werte sind Schreib-Budgets des memory-Tools, keine
+        # harte Kuerzung beim Laden -- USER.md/MEMORY.md werden vollstaendig injiziert.
+        "memory": {
+            "memory_enabled": True,
+            "user_profile_enabled": True,
+            "nudge_interval": 10,
+            "memory_char_limit": 2200,
+            "user_char_limit": 1375,
+            "provider": "",
+        },
+        # Skill-Selbstkuratierung: seltener zur Skill-Erstellung anstupsen,
+        # damit Fachjobs (Triage) nicht durch Meta-Hinweise gestoert werden.
+        "skills": {
+            "creation_nudge_interval": 25,
+        },
+        # Kontext-Kompression: lange Threads/Chats werden ab 70 % des Kontext-
+        # fensters zusammengefasst (die letzten 20 Turns bleiben unangetastet).
+        "compression": {
+            "enabled": True,
+            "threshold": 0.7,
+            "target_ratio": 0.3,
+            "protect_last_n": 20,
+        },
+        # Hilfsmodelle fuer Nebenaufgaben (Kompression, Vision) laufen BEWUSST auf
+        # demselben lokalen Hauptmodell. Begruendung: ein separates Modell wuerde in
+        # Ollama Model-Loading/-Offloading ausloesen (zusaetzlicher RAM + Latenz) --
+        # alles ueber das ohnehin geladene Hauptmodell ist effizienter und haelt die
+        # Daten lokal. Explizit gesetzt (provider=custom + base_url), damit der
+        # Endpoint inkl. Kontextfenster eindeutig ist und die Kompressions-
+        # Feasibility-Pruefung beim Sessionstart nicht warnt.
+        "auxiliary": {
+            "compression": {
+                "provider": "custom",
+                "base_url": ollama_v1,
+                "api_key": "ollama",
+                "api_mode": "chat_completions",
+                "model": cfg.triage_model.removeprefix("ollama/"),
+                "context_length": 131072,
+            },
+            "vision": {
+                "provider": "custom",
+                "base_url": ollama_v1,
+                "api_key": "ollama",
+                "api_mode": "chat_completions",
+                "model": cfg.triage_model.removeprefix("ollama/"),
+                "context_length": 131072,
+            },
+        },
+        # Tool-Loop-Guardrails: schuetzen vor Endlosschleifen/Token-Verbrennung.
+        # Warnungen frueh, harte Stopps nach mehrfach identischem Fehlversuch bzw.
+        # ergebnislosem Wiederholen idempotenter Tools.
+        "tool_loop_guardrails": {
+            "warnings_enabled": True,
+            "hard_stop_enabled": True,
+            "warn_after": {
+                "exact_failure": 2,
+                "same_tool_failure": 3,
+                "idempotent_no_progress": 2,
+            },
+            "hard_stop_after": {
+                "exact_failure": 4,
+                "same_tool_failure": 8,
+                "idempotent_no_progress": 4,
+            },
         },
         "mcp_servers": mcp_servers,
     }

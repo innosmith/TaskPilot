@@ -14,7 +14,17 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend", "app"))
+# Pfad zum Backend-`services`-Paket robust auflösen: im Dev-Layout liegt es unter
+# ``../backend/app`` (src/backend/app), im Docker-Image flach unter ``../app`` (/app/app).
+# Wir nehmen das erste Verzeichnis, das ``services/invoiceinsight_client.py`` enthält.
+_here = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (
+    os.path.join(_here, "..", "backend", "app"),  # Dev: src/backend/app
+    os.path.join(_here, "..", "app"),             # Docker: /app/app
+):
+    if os.path.isfile(os.path.join(_candidate, "services", "invoiceinsight_client.py")):
+        sys.path.insert(0, os.path.abspath(_candidate))
+        break
 from services.invoiceinsight_client import InvoiceInsightClient  # noqa: E402
 
 logger = logging.getLogger("mcp_invoiceinsight")

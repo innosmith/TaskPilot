@@ -255,12 +255,20 @@ TOOLS = [
     ),
     Tool(
         name="search_crm",
-        description="Volltextsuche über Deals, Personen und Organisationen in Pipedrive.",
+        description=(
+            "Volltextsuche über Deals, Personen und Organisationen in Pipedrive. "
+            "Nutze EINEN kurzen Suchbegriff (z. B. Name, Firma, E-Mail) — keine ganzen "
+            "Themensätze. item_types IMMER im SINGULAR (deal,person,organization)."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "term": {"type": "string", "description": "Suchbegriff"},
-                "item_types": {"type": "string", "default": "deal,person,organization"},
+                "term": {"type": "string", "description": "Kurzer Suchbegriff (Name/Firma/E-Mail), nicht mehrere Themen"},
+                "item_types": {
+                    "type": "string",
+                    "default": "deal,person,organization",
+                    "description": "Kommagetrennt, SINGULAR: deal, person, organization, lead, product, project",
+                },
                 "limit": {"type": "integer", "default": 10},
             },
             "required": ["term"],

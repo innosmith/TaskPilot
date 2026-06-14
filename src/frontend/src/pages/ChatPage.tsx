@@ -247,6 +247,11 @@ export function ChatPage() {
   const [contextSources, setContextSources] = useState<ContextSource[]>([]);
 
   // Per-Konversation Agent-Stream-State
+  interface ClarifyRequest {
+    clarify_id: string;
+    question: string;
+    choices: string[];
+  }
   interface AgentStreamState {
     isStreaming: boolean;
     streamingContent: string;
@@ -254,6 +259,7 @@ export function ChatPage() {
     toolTrace: ToolTraceEntry[];
     jobId: string | null;
     status: 'idle' | 'running' | 'done' | 'error';
+    clarify?: ClarifyRequest | null;
   }
   const [agentStates, setAgentStates] = useState<Record<string, AgentStreamState>>({});
 
@@ -269,6 +275,19 @@ export function ChatPage() {
   const streamingContent = activeAgent?.streamingContent ?? '';
   const thinkingContent = activeAgent?.thinkingContent ?? '';
   const toolTrace = activeAgent?.toolTrace ?? [];
+  const clarifyRequest = activeAgent?.clarify ?? null;
+
+  const [clarifyDraft, setClarifyDraft] = useState('');
+  const answerClarify = useCallback(async (convId: string, clarifyId: string, answer: string) => {
+    if (!answer.trim()) return;
+    updateAgentState(convId, { clarify: null });
+    setClarifyDraft('');
+    try {
+      await api.post(`/api/chat/conversations/${convId}/agent/clarify`, { clarify_id: clarifyId, answer });
+    } catch {
+      // Antwort konnte nicht zugestellt werden — Agent läuft nach Timeout eigenständig weiter.
+    }
+  }, [updateAgentState]);
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
@@ -658,6 +677,8 @@ export function ChatPage() {
           } else if (evt === 'tool_event') {
             traceAcc.push({ type: 'tool_event', content: typeof data === 'string' ? data : JSON.stringify(data), ts: Date.now() });
             updateAgentState(cid, { toolTrace: [...traceAcc] });
+          } else if (evt === 'clarify') {
+            updateAgentState(cid, { clarify: { clarify_id: data.clarify_id, question: data.question || '', choices: Array.isArray(data.choices) ? data.choices : [] } });
           } else if (evt === 'chunk') {
             acc += data.content || '';
             updateAgentState(cid, { streamingContent: acc });
@@ -742,6 +763,8 @@ export function ChatPage() {
             } else if (evt === 'tool_event') {
               acc.trace.push({ type: 'tool_event', content: typeof data === 'string' ? data : JSON.stringify(data), ts: Date.now() });
               updateAgentState(convId, { toolTrace: [...acc.trace] });
+            } else if (evt === 'clarify') {
+              updateAgentState(convId, { clarify: { clarify_id: data.clarify_id, question: data.question || '', choices: Array.isArray(data.choices) ? data.choices : [] } });
             } else if (evt === 'chunk') {
               acc.stream += data.content || '';
               updateAgentState(convId, { streamingContent: acc.stream });
@@ -1610,6 +1633,44 @@ export function ChatPage() {
                           )}
                         </div>
                       </details>
+                    )}
+                    {/* HITL: strukturierte Rückfrage des Agenten (clarify) */}
+                    {clarifyRequest && activeId && (
+                      <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-900/20">
+                        <p className="mb-2 flex items-center gap-1.5 text-sm font-medium text-amber-900 dark:text-amber-200">
+                          <span>❓</span> {clarifyRequest.question}
+                        </p>
+                        {clarifyRequest.choices.length > 0 && (
+                          <div className="mb-2 flex flex-wrap gap-2">
+                            {clarifyRequest.choices.map((choice, i) => (
+                              <button
+                                key={i}
+                                onClick={() => answerClarify(activeId, clarifyRequest.clarify_id, choice)}
+                                className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100 dark:border-amber-600 dark:bg-gray-800 dark:text-amber-200 dark:hover:bg-amber-900/40"
+                              >
+                                {choice}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={clarifyDraft}
+                            onChange={(e) => setClarifyDraft(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') answerClarify(activeId, clarifyRequest.clarify_id, clarifyDraft); }}
+                            placeholder="Eigene Antwort…"
+                            className="flex-1 rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 placeholder-gray-400 focus:border-amber-500 focus:outline-none dark:border-amber-700 dark:bg-gray-800 dark:text-gray-100"
+                          />
+                          <button
+                            onClick={() => answerClarify(activeId, clarifyRequest.clarify_id, clarifyDraft)}
+                            disabled={!clarifyDraft.trim()}
+                            className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-40"
+                          >
+                            Senden
+                          </button>
+                        </div>
+                      </div>
                     )}
                     {streamingContent ? (
                       <div className="chat-prose streaming-cursor prose prose-sm dark:prose-invert max-w-none">
