@@ -7,6 +7,7 @@ import { DraftEditor } from '../components/DraftEditor';
 import { FormattedOutput } from '../components/FormattedOutput';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { EmailThreadPanel } from '../components/EmailThreadPanel';
+import { EmailBody } from '../components/EmailBody';
 import { TracePanel } from '../components/TracePanel';
 import { useSSE } from '../hooks/useSSE';
 import type { AgentJob, TaskCard, PipelineData } from '../types';
@@ -910,10 +911,7 @@ export function CockpitPage() {
                                     <span className={`text-xs font-medium ${textMuted}`}>E-Mail-Entwurf</span>
                                   </div>
                                   <div className="max-h-56 overflow-y-auto px-4 py-3">
-                                    <div
-                                      className="prose prose-sm max-w-none dark:prose-invert"
-                                      dangerouslySetInnerHTML={{ __html: preview.body_html }}
-                                    />
+                                    <EmailBody html={preview.body_html} glassBg={hasBg} />
                                   </div>
                                 </div>
                               )}

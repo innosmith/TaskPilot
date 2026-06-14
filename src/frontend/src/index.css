@@ -184,6 +184,67 @@ body {
   opacity: 0.9;
 }
 
+/* E-Mail content: adapt inline-styled HTML (Microsoft Graph / Outlook) to
+   TaskPilot theme. Inline color/background/font-family are stripped in JS
+   (sanitizeEmailHtml); this neutralises remaining backgrounds and lets text
+   inherit the theme colour so it stays readable in Light, Dark and Glass. */
+.email-content,
+.email-content * {
+  background-color: transparent !important;
+  background-image: none !important;
+  font-family: inherit !important;
+}
+
+.email-content {
+  color: inherit;
+}
+.dark .email-content,
+.email-content.prose-invert {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.email-content a {
+  color: var(--color-indigo-600) !important;
+  text-decoration: underline !important;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+.email-content a:hover {
+  color: var(--color-indigo-500) !important;
+}
+.dark .email-content a,
+.email-content.prose-invert a {
+  color: var(--color-indigo-400) !important;
+}
+.dark .email-content a:hover,
+.email-content.prose-invert a:hover {
+  color: var(--color-indigo-300) !important;
+}
+
+.email-content table,
+.email-content td,
+.email-content th,
+.email-content tr {
+  border-color: var(--color-gray-200) !important;
+}
+.dark .email-content table,
+.dark .email-content td,
+.dark .email-content th,
+.dark .email-content tr,
+.email-content.prose-invert table,
+.email-content.prose-invert td,
+.email-content.prose-invert th,
+.email-content.prose-invert tr {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.email-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+}
+
 /* Pull-down filter sheet animation */
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-8px); }

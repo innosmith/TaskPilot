@@ -52,6 +52,7 @@ STALE_TIMEOUT_MINUTES = 30
 _NANOBOT_HOME = Path(os.environ.get("TP_NANOBOT_WORKSPACE", os.path.expanduser("~/.nanobot/workspace")))
 NANOBOT_CONFIG = _NANOBOT_HOME.parent / "config.json"
 TRIAGE_SKILL = _NANOBOT_HOME / "skills" / "mail-triage.md"
+STYLE_PROFILE = _NANOBOT_HOME / "schreibstil-anthony.md"
 
 PIPELINE_COLUMNS = {
     "focus": "a0000000-0000-0000-0000-000000000001",
@@ -66,6 +67,19 @@ def _load_triage_skill() -> str:
     if TRIAGE_SKILL.exists():
         return TRIAGE_SKILL.read_text(encoding="utf-8")
     logger.warning("Triage-Skill nicht gefunden: %s", TRIAGE_SKILL)
+    return ""
+
+
+def _load_style_profile() -> str:
+    """Liest den persönlichen Schreibstil-Kanon (schreibstil-anthony.md).
+
+    Wird bei der Draft-Erstellung in den Prompt injiziert, damit Anthonys
+    Schreibstil möglichst exakt übernommen wird. Auch für quick_response-Jobs
+    nutzbar.
+    """
+    if STYLE_PROFILE.exists():
+        return STYLE_PROFILE.read_text(encoding="utf-8")
+    logger.warning("Schreibstil-Kanon nicht gefunden: %s", STYLE_PROFILE)
     return ""
 
 
@@ -98,6 +112,7 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     damit Änderungen sofort wirksam werden.
     """
     skill_text = _load_triage_skill()
+    style_text = _load_style_profile()
     projects_context = await _load_projects_context()
 
     custom_triage_prompt = ""
@@ -160,7 +175,15 @@ Du hast einen email_triage Job erhalten. Führe den kompletten Triage-Ablauf gem
 **Microsoft Inference:** {inference}
 **Body-Vorschau:** {preview[:300]}
 {recipient_hint}{thread_hint}
+{(f'''
+---
 
+## SCHREIBSTIL (VERBINDLICH für jeden Antwort-Entwurf)
+
+Wenn du einen Draft (auto_reply) formulierst, halte dich strikt an den folgenden persönlichen Schreibstil-Kanon von Anthony Smith. Ziel: Anthony muss sich im Entwurf wiedererkennen.
+
+{style_text}
+''') if style_text else ''}
 ## PFLICHT-AUFRUFE VOR JEDER KLASSIFIKATION UND DRAFT-ERSTELLUNG
 
 Du MUSST die folgenden drei Kontext-Quellen laden, BEVOR du klassifizierst oder einen Draft erstellst:
@@ -184,7 +207,7 @@ Führe jetzt den Triage-Ablauf durch:
 4. Klassifiziere gemäss der Prioritätsreihenfolge
 5. Setze die Outlook-Kategorie
 6. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
-7. Erstelle Draft falls auto_reply (bei task übernimmt das Backend die Task-Erstellung automatisch)
+7. Erstelle Draft falls auto_reply. WICHTIG: Rufe VORHER search_my_replies("{from_addr}") auf und nutze die letzten von Anthony gesendeten Antworten an diesen Kontakt als VERBATIM Stil-Anker (imitiere Ton, Länge, Anrede und Schlussformel). (Bei task übernimmt das Backend die Task-Erstellung automatisch.)
 8. Gib den PFLICHT-JSON-Block aus (Schritt 8 im Skill)
 9. Aktualisiere das Absender-Profil (Schritt 9 im Skill)
 10. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
@@ -235,12 +258,24 @@ async def _build_generic_prompt(job: AgentJob) -> str:
         if skill_path.exists():
             skill_hint = f"\n## SKILL-INSTRUKTIONEN\n\n{skill_path.read_text(encoding='utf-8')}\n"
 
+    # Bei E-Mail-Antwort-Jobs (z.B. quick-response) den Schreibstil-Kanon injizieren
+    style_hint = ""
+    if skill_name in ("quick-response", "mail-triage"):
+        style_text = _load_style_profile()
+        if style_text:
+            style_hint = (
+                "\n## SCHREIBSTIL (VERBINDLICH für jeden Antwort-Entwurf)\n\n"
+                "Halte dich strikt an den folgenden persönlichen Schreibstil-Kanon "
+                "von Anthony Smith. Ziel: Anthony muss sich im Entwurf wiedererkennen.\n\n"
+                f"{style_text}\n"
+            )
+
     description = meta.get("description", meta.get("prompt", str(meta)))
 
     return f"""## AGENT-JOB
 
 {projects_context}
-{skill_hint}
+{skill_hint}{style_hint}
 
 **Job-ID:** {job.id}
 **Job-Typ:** {job.job_type or 'generic'}

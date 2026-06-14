@@ -227,6 +227,23 @@ TOOLS = [
         },
     ),
     Tool(
+        name="search_my_replies",
+        description=(
+            "Letzte vom Owner (Anthony) GESENDETE E-Mails an einen bestimmten "
+            "Empfänger abrufen (aus 'Gesendete Elemente', neueste zuerst). "
+            "Nützlich als Stil-Anker für Antwort-Entwürfe: So schreibt Anthony "
+            "wirklich an genau diesen Kontakt (Ton, Länge, Schlussformel)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "recipient_email": {"type": "string", "description": "E-Mail-Adresse des Empfängers (der Kontakt, an den geantwortet wird)"},
+                "top": {"type": "integer", "default": 3, "description": "Max. Anzahl gesendeter E-Mails"},
+            },
+            "required": ["recipient_email"],
+        },
+    ),
+    Tool(
         name="search_emails",
         description="Volltextsuche über alle E-Mails. Findet relevante Nachrichten zu einem Thema.",
         inputSchema={
@@ -616,6 +633,31 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 })
             logger.info("search_sender_history(%s): %d Ergebnisse", arguments["sender_email"], len(history))
             result_text = json.dumps(history, indent=2, ensure_ascii=False)
+            return [TextContent(type="text", text=result_text)]
+
+        elif name == "search_my_replies":
+            msgs = await client.search_my_replies_to(
+                recipient_email=arguments["recipient_email"],
+                top=arguments.get("top", 3),
+            )
+            replies = []
+            for msg in msgs:
+                to_recipients = [
+                    r.get("emailAddress", {}).get("address")
+                    for r in msg.get("toRecipients", [])
+                ]
+                body_html = msg.get("body", {}).get("content", "")
+                body_text = _html_to_text(body_html)[:1500]
+                replies.append({
+                    "id": msg.get("id"),
+                    "to": to_recipients,
+                    "subject": msg.get("subject"),
+                    "sentDateTime": msg.get("sentDateTime"),
+                    "body_text": body_text,
+                    "conversationId": msg.get("conversationId"),
+                })
+            logger.info("search_my_replies(%s): %d Ergebnisse", arguments["recipient_email"], len(replies))
+            result_text = json.dumps(replies, indent=2, ensure_ascii=False)
             return [TextContent(type="text", text=result_text)]
 
         elif name == "search_emails":

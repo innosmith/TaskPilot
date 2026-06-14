@@ -125,9 +125,48 @@ class TestTriagePrompt:
         prompt = await self._build_prompt(fake_job)
         assert "⚠️ **ACHTUNG: Anthony ist bei dieser E-Mail NUR im CC" not in prompt
 
-    async def _build_prompt(self, job):
-        """Importiert und ruft _build_triage_prompt auf, mit gemockten DB-Calls."""
-        with patch("app.services.nanobot_worker._load_projects_context", new_callable=AsyncMock) as mock_projects:
+    @pytest.mark.asyncio
+    async def test_style_block_injected(self, fake_job):
+        """Wenn der Schreibstil-Kanon existiert, wird er im Prompt-Block injiziert."""
+        sentinel = "Knapp, klar, kollegial, lösungsorientiert (STIL-SENTINEL)"
+        prompt = await self._build_prompt(fake_job, style_text=sentinel)
+        assert "SCHREIBSTIL" in prompt, "SCHREIBSTIL-Block fehlt im Prompt"
+        assert sentinel in prompt, "Schreibstil-Kanon-Inhalt fehlt im Prompt"
+
+    @pytest.mark.asyncio
+    async def test_style_block_absent_when_empty(self, fake_job):
+        """Ohne Schreibstil-Kanon wird kein SCHREIBSTIL-Block eingefügt."""
+        prompt = await self._build_prompt(fake_job, style_text="")
+        assert "SCHREIBSTIL (VERBINDLICH" not in prompt
+
+    def test_style_canon_swiss_spelling(self):
+        """Der echte Schreibstil-Kanon nutzt Schweizer Schreibweise (kein ß, keine ue/ae/oe-Ersatzformen)."""
+        from app.services.nanobot_worker import STYLE_PROFILE
+
+        if not STYLE_PROFILE.exists():
+            pytest.skip(f"Schreibstil-Kanon nicht vorhanden: {STYLE_PROFILE}")
+
+        text = STYLE_PROFILE.read_text(encoding="utf-8")
+        assert "ß" not in text, "Schreibstil-Kanon darf kein scharfes S enthalten"
+
+        ascii_umlaut_patterns = [
+            r"\bfuer\b", r"\bueber\b", r"\bmuessen\b", r"\bkoennen\b",
+            r"\bmoechte\b", r"\bGruesse\b", r"\bAendern\b", r"\bOeffnen\b",
+        ]
+        for pattern in ascii_umlaut_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            assert len(matches) == 0, (
+                f"ASCII-Umlaut-Pattern '{pattern}' im Schreibstil-Kanon: {matches}"
+            )
+
+    async def _build_prompt(self, job, style_text="(Schreibstil-Kanon Platzhalter)"):
+        """Importiert und ruft _build_triage_prompt auf, mit gemockten DB-Calls.
+
+        Der Schreibstil-Kanon wird gemockt, damit der Test unabhängig vom
+        Dateisystem (~/.nanobot/workspace/schreibstil-anthony.md) ist.
+        """
+        with patch("app.services.nanobot_worker._load_projects_context", new_callable=AsyncMock) as mock_projects, \
+             patch("app.services.nanobot_worker._load_style_profile", return_value=style_text):
             mock_projects.return_value = "## VERFÜGBARE PROJEKTE\n- \"TestProjekt\" (id: 123)"
 
             from app.services.nanobot_worker import _build_triage_prompt

@@ -59,6 +59,35 @@ Powered by [InnoSmith.ch](https://innosmith.ch) — AI-Agenten & Automation.
 4. Gewünschte Änderungen anhäkeln
 5. "Ausgewählte Felder aktualisieren" klicken
 
+## Troubleshooting
+
+### "Verbindung fehlgeschlagen" / Cloudflare-Access-Fehler
+
+Wenn das Backend hinter Cloudflare Access liegt (Prod: `tp.innosmith.ai`), authentisiert
+sich die Extension per **Service-Token**. Die häufigste Ursache für plötzliche
+Verbindungsfehler — obwohl sich nichts geändert hat — ist ein **abgelaufener Service-Token**
+(Default-Laufzeit 1 Jahr).
+
+So prüfst du das (Werte einsetzen, nicht committen):
+
+```bash
+curl -sS -o /dev/null -w "%{http_code} %{redirect_url}\n" \
+  -H "CF-Access-Client-Id: <CLIENT-ID>" \
+  -H "CF-Access-Client-Secret: <CLIENT-SECRET>" \
+  https://tp.innosmith.ai/api/pipedrive/test-connection
+```
+
+- `200` → Token gültig.
+- `302 ...cloudflareaccess.com...` → Token abgelaufen/ungültig → erneuern.
+
+### Service-Token erneuern
+
+1. Cloudflare Zero Trust → Access → **Service Auth** → neuen Token erstellen (oder Laufzeit verlängern)
+2. In der Access-Application für `tp.innosmith.ai` die **Service-Auth-Policy** auf den neuen Token zeigen lassen
+3. Extension-Optionen öffnen → Client-ID + Secret neu eintragen → **Speichern** → **Verbindung testen**
+
+Details und das dokumentierte Ablaufdatum: siehe [docs/cloudflare-tunnel.md](../../docs/cloudflare-tunnel.md).
+
 ## Architektur
 
 ```

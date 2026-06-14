@@ -51,6 +51,50 @@ Im Cloudflare Dashboard unter Access > Applications:
    - Spaeter erweitern: `@be.ch` oder weitere Kunden-Domains
 3. **Session Duration**: 24h (oder nach Bedarf)
 
+## Service-Tokens fuer die Chrome-Extension
+
+Die LinkedIn-Sync-Extension (`src/chrome-extension/`) ruft die API non-interaktiv auf
+und kann sich daher nicht per E-Mail/MFA anmelden. Stattdessen authentisiert sie sich
+bei Cloudflare Access ueber einen **Service-Token** (Header `CF-Access-Client-Id` +
+`CF-Access-Client-Secret`).
+
+### Einrichtung
+
+1. Cloudflare Zero Trust > Access > **Service Auth** > **Create Service Token**
+2. Client-ID + Client-Secret kopieren (Secret wird nur **einmal** angezeigt)
+3. In der Extension unter Optionen eintragen
+4. In der Access-Application fuer `tp.innosmith.ai` eine **zusaetzliche Policy** anlegen:
+   - Action: **Service Auth** (nicht Allow)
+   - Include: **Service Token** > den erstellten Token auswaehlen
+
+### WICHTIG: Ablaufdatum
+
+> Service-Tokens haben eine begrenzte Laufzeit (Default **1 Jahr**, konfigurierbar).
+> Laeuft der Token ab, bricht die Extension **lautlos** ab — Cloudflare blockt mit einem
+> Redirect (`service_token_status: false`) und die Extension zeigt einen Cloudflare-Access-Fehler.
+> Das ist die haeufigste Ursache fuer "Verbindung fehlgeschlagen", obwohl sich nichts
+> geaendert hat.
+
+**Ablaufdatum hier dokumentieren und rechtzeitig (ca. 2 Wochen vorher) erneuern:**
+
+| Token-Name | Erstellt | Laeuft ab | Verwendung |
+|------------|----------|-----------|------------|
+| `taskpilot-linkedin-extension` | _<Datum eintragen>_ | _<Datum eintragen>_ | Chrome-Extension |
+
+### Diagnose bei "Verbindung fehlgeschlagen"
+
+```bash
+# Mit den Extension-Creds testen (Werte einsetzen, NICHT committen):
+curl -sS -o /dev/null \
+  -w "%{http_code} %{redirect_url}\n" \
+  -H "CF-Access-Client-Id: <CLIENT-ID>" \
+  -H "CF-Access-Client-Secret: <CLIENT-SECRET>" \
+  https://tp.innosmith.ai/api/pipedrive/test-connection
+```
+
+- `200` → Token gueltig (Problem liegt woanders).
+- `302 https://innosmith.cloudflareaccess.com/...` → Token abgelaufen/ungueltig oder Policy fehlt → erneuern.
+
 ## cloudflared als systemd-Service
 
 ```bash

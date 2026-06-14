@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
 import { ChevronDown, ChevronUp, Mail, MessageSquare } from 'lucide-react';
+import { EmailBody } from './EmailBody';
 
 interface ThreadMessage {
   id: string;
@@ -138,10 +139,7 @@ export function EmailThreadPanel({ conversationId, glassBg = false, compact = fa
 
                     {isExpanded && msg.body_html && (
                       <div className={`border-t ${borderClass} px-3 py-2 max-h-48 overflow-y-auto`}>
-                        <div
-                          className="prose prose-xs max-w-none dark:prose-invert"
-                          dangerouslySetInnerHTML={{ __html: msg.body_html }}
-                        />
+                        <EmailBody html={msg.body_html} glassBg={glassBg} size="xs" />
                       </div>
                     )}
 

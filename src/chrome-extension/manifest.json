@@ -10,6 +10,7 @@
     "*://media.licdn.com/*",
     "*://*.licdn.com/*",
     "*://*.innosmith.ai/*",
+    "*://*.cloudflareaccess.com/*",
     "http://localhost/*"
   ],
   "content_scripts": [

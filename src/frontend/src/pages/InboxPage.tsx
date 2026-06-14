@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
+import { EmailBody } from '../components/EmailBody';
 import { FormattedOutput } from '../components/FormattedOutput';
 import { RichTextEditor } from '../components/RichTextEditor';
 
@@ -766,10 +767,7 @@ export function InboxPage() {
 
               {/* Body */}
               {selectedEmail.body_html ? (
-                <div
-                  className="prose prose-sm max-w-none dark:prose-invert"
-                  dangerouslySetInnerHTML={{ __html: selectedEmail.body_html }}
-                />
+                <EmailBody html={selectedEmail.body_html} />
               ) : (
                 <p className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">
                   {selectedEmail.body_preview}
@@ -1325,10 +1323,7 @@ export function ApprovalsTab({
                         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">E-Mail-Entwurf</span>
                       </div>
                       <div className="max-h-72 overflow-y-auto px-4 py-3">
-                        <div
-                          className="prose prose-sm max-w-none dark:prose-invert"
-                          dangerouslySetInnerHTML={{ __html: preview.body_html }}
-                        />
+                        <EmailBody html={preview.body_html} />
                       </div>
                     </div>
                   )}
@@ -1665,10 +1660,7 @@ function TeamsChatPanel({ hasBg }: { hasBg: boolean }) {
                         <span className="text-[10px] text-gray-400 dark:text-gray-500">{fmtDate(msg.createdDateTime)}</span>
                       </div>
                       {msg.bodyContentType === 'html' ? (
-                        <div
-                          className="mt-0.5 prose prose-sm max-w-none text-sm text-gray-700 dark:prose-invert dark:text-gray-300"
-                          dangerouslySetInnerHTML={{ __html: msg.body }}
-                        />
+                        <EmailBody html={msg.body} className="mt-0.5" />
                       ) : (
                         <p className="mt-0.5 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{msg.body}</p>
                       )}

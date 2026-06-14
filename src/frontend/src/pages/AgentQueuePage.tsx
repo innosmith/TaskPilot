@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { CrmBadge } from '../components/CrmBadge';
+import { EmailBody } from '../components/EmailBody';
 import { DraftEditor } from '../components/DraftEditor';
 import { FormattedOutput } from '../components/FormattedOutput';
 import { ReplayPanel } from '../components/ReplayPanel';
@@ -755,10 +756,7 @@ function DraftPreviewInline({
           )}
           {preview.body_html ? (
             <div className="mt-1 max-h-40 overflow-auto rounded border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-900">
-              <div
-                className="prose prose-sm max-w-none break-words dark:prose-invert [&_*]:max-w-full [&_img]:h-auto"
-                dangerouslySetInnerHTML={{ __html: preview.body_html }}
-              />
+              <EmailBody html={preview.body_html} className="[&_*]:max-w-full [&_img]:h-auto" />
             </div>
           ) : preview.body_preview ? (
             <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{preview.body_preview}</p>

@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { EmailBody } from './EmailBody';
 
 const TRIAGE_LABEL_MAP: Record<string, string> = {
   triage_class: 'Klasse',
@@ -85,7 +86,7 @@ export function FormattedOutput({ output }: { output: string }) {
   try {
     const parsed = JSON.parse(output);
     if (parsed.body_html) {
-      return <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: parsed.body_html }} />;
+      return <EmailBody html={parsed.body_html} />;
     }
     if (parsed.body || parsed.text || parsed.message) {
       return <p className="whitespace-pre-wrap">{parsed.body || parsed.text || parsed.message}</p>;

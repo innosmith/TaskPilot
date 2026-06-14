@@ -47,14 +47,17 @@ TOOLS = [
             "Für thematische Fragen und Recherche bevorzugen, wenn nicht nach einem exakten Wort gesucht wird "
             "(dafür eignet sich 'search_signals'). Die Anfrage wird als natürlichsprachiges Thema formuliert "
             "(z. B. 'agentische KI in Unternehmen'). Filter optional kombinierbar. "
-            "Hinweis: Aktuell sind nur die Signale der letzten rund 3 Monate mit Embeddings hinterlegt; "
+            "Qualität: Standardmässig werden nur starke Signale (Score >= 7) geliefert. Für eine "
+            "breitere Recherche 'min_score' senken (z. B. 0), für besonders starke Signale erhöhen "
+            "(z. B. 8). "
+            "Hinweis: Embeddings decken die Signale der letzten rund 6 Monate ab; "
             "ältere Treffer ggf. zusätzlich über 'search_signals' prüfen."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Thema/Fragestellung in natürlicher Sprache"},
-                "min_score": {"type": "number", "description": "Mindest-Score (0-10, Standard 0)"},
+                "min_score": {"type": "number", "description": "Mindest-Score (0-10, Standard 7 = nur starke Signale)"},
                 "type": {"type": "string", "enum": ["rss", "youtube", "web"], "description": "Signal-Typ filtern"},
                 "topic": {"type": "string", "description": "Topic-Name filtern"},
                 "persona": {"type": "string", "description": "Persona/Rolle filtern"},
@@ -192,7 +195,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             query_vec = await asyncio.to_thread(embed_query, query)
             results = await client.semantic_search(
                 query_vec,
-                min_score=arguments.get("min_score", 0),
+                min_score=arguments.get("min_score", 7),
                 type_filter=arguments.get("type"),
                 topic=arguments.get("topic"),
                 persona=arguments.get("persona"),

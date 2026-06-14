@@ -256,10 +256,40 @@ class GraphClient:
             ]
 
         if reply_to_id:
-            return await self._post(
+            # Exchange Online kippt bei createReply den isRead-Status der
+            # Originalmail auf true, sofern diese kurz zuvor (≈10 Min.) von
+            # einer App ge-PATCHt wurde (z.B. set_categories in der Triage).
+            # Es gibt keinen Header dagegen -- darum den Zustand vorher merken
+            # und nachher wiederherstellen, falls die Mail ungelesen war.
+            was_unread = False
+            try:
+                original = await self._get(
+                    f"{self._user_path}/messages/{reply_to_id}",
+                    {"$select": "isRead"},
+                )
+                was_unread = original.get("isRead") is False
+            except Exception:  # noqa: BLE001 - Restore ist Best-Effort
+                logger.warning(
+                    "Konnte isRead-Status vor createReply nicht lesen "
+                    "(message_id=%s)",
+                    reply_to_id,
+                )
+
+            draft = await self._post(
                 f"{self._user_path}/messages/{reply_to_id}/createReply",
                 {"message": message},
             )
+
+            if was_unread:
+                try:
+                    await self.mark_as_unread(reply_to_id)
+                except Exception:  # noqa: BLE001 - darf Draft nicht scheitern lassen
+                    logger.warning(
+                        "Konnte Originalmail nach createReply nicht wieder als "
+                        "ungelesen markieren (message_id=%s)",
+                        reply_to_id,
+                    )
+            return draft
         return await self._post(f"{self._user_path}/messages", message)
 
     async def send_draft(self, message_id: str) -> None:
@@ -319,6 +349,17 @@ class GraphClient:
             f"{GRAPH_BASE}{self._user_path}/messages/{message_id}",
             headers=headers,
             json={"isRead": True},
+        )
+        resp.raise_for_status()
+
+    async def mark_as_unread(self, message_id: str) -> None:
+        """E-Mail als ungelesen markieren."""
+        client = await self._ensure_client()
+        headers = await self._headers()
+        resp = await client.patch(
+            f"{GRAPH_BASE}{self._user_path}/messages/{message_id}",
+            headers=headers,
+            json={"isRead": False},
         )
         resp.raise_for_status()
 
@@ -433,6 +474,52 @@ class GraphClient:
             else:
                 raise
         msgs.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)
+        return msgs
+
+    async def search_my_replies_to(
+        self, recipient_email: str, top: int = 3
+    ) -> list[dict]:
+        """Letzte vom Owner GESENDETE E-Mails an einen bestimmten Empfänger.
+
+        Liest aus dem Ordner "Gesendete Elemente" (sentitems) und filtert auf
+        Empfänger == recipient_email. Dient als Stil-Anker: So schreibt Anthony
+        wirklich an genau diesen Kontakt (Ton, Länge, Schlussformel).
+        Neueste zuerst.
+        """
+        select = (
+            "id,subject,toRecipients,sentDateTime,bodyPreview,body,conversationId"
+        )
+        try:
+            data = await self._get(
+                f"{self._user_path}/mailFolders/sentitems/messages",
+                {
+                    "$filter": (
+                        "toRecipients/any(r:r/emailAddress/address eq "
+                        f"'{recipient_email}')"
+                    ),
+                    "$top": str(top),
+                    "$select": select,
+                },
+            )
+            msgs = data.get("value", [])
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400:
+                logger.warning(
+                    "search_my_replies_to $filter fehlgeschlagen (400), "
+                    "Fallback auf $search"
+                )
+                data = await self._get(
+                    f"{self._user_path}/mailFolders/sentitems/messages",
+                    {
+                        "$search": f'"to:{recipient_email}"',
+                        "$top": str(top),
+                        "$select": select,
+                    },
+                )
+                msgs = data.get("value", [])
+            else:
+                raise
+        msgs.sort(key=lambda m: m.get("sentDateTime", ""), reverse=True)
         return msgs
 
     async def search_emails(self, query: str, top: int = 5) -> list[dict]:
