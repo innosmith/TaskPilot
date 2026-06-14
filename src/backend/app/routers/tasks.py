@@ -36,6 +36,38 @@ from app.schemas import (
 )
 
 
+async def _resolve_task_origin(
+    db: AsyncSession, task: Task
+) -> tuple[bool, uuid.UUID | None, str | None]:
+    """Erkennt, ob ein Task vom Agenten stammt, und löst Job-ID + Absender auf.
+
+    Agent-stammend = aus E-Mail abgeleitet (``email_message_id``), als Vorschlag
+    markiert (``needs_review``) oder dem Agenten zugewiesen. Best-effort.
+    """
+    is_agent = (
+        bool(task.email_message_id)
+        or bool(getattr(task, "needs_review", False))
+        or task.assignee == "agent"
+    )
+    if not is_agent:
+        return False, None, None
+    job_id: uuid.UUID | None = None
+    sender: str | None = None
+    if task.email_message_id:
+        try:
+            row = await db.execute(
+                select(EmailTriage.agent_job_id, EmailTriage.from_address)
+                .where(EmailTriage.message_id == task.email_message_id)
+                .limit(1)
+            )
+            r = row.first()
+            if r:
+                job_id, sender = r[0], r[1]
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.warning("Task-Origin konnte nicht aufgelöst werden")
+    return True, job_id, sender
+
+
 def _get_email_client() -> GraphClient | None:
     s = get_settings()
     if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):
@@ -351,6 +383,7 @@ async def update_task(
         raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
 
     old_assignee = task.assignee
+    old_project_id = task.project_id
     update_data = body.model_dump(exclude_unset=True)
 
     if "assignee" in update_data:
@@ -373,6 +406,25 @@ async def update_task(
     if "due_date" in update_data and task.assignee != "agent" and task.pipeline_column_id:
         from app.services.pipeline_promoter import auto_place_task
         await auto_place_task(db, task)
+
+    # Implizites Lernsignal: agent-stammender Task in anderes Projekt verschoben.
+    if "project_id" in update_data and task.project_id != old_project_id:
+        try:
+            is_agent, job_id, sender = await _resolve_task_origin(db, task)
+            if is_agent:
+                from app.services.learning import record_feedback
+
+                await record_feedback(
+                    db,
+                    feedback_type="task_moved",
+                    agent_job_id=job_id,
+                    sender_email=sender,
+                    source="cockpit",
+                    original={"project_id": str(old_project_id)},
+                    corrected={"project_id": str(task.project_id)},
+                )
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.warning("task_moved-Signal konnte nicht erfasst werden")
 
     if body.assignee == "agent" and old_assignee != "agent" and user.role == "owner":
         job = AgentJob(task_id=task.id, llm_model=task.llm_override)
@@ -404,6 +456,28 @@ async def delete_task(
         raise HTTPException(status_code=404, detail="Task not found")
     if not await check_project_access(task.project_id, user, db):
         raise HTTPException(status_code=403, detail="Kein Zugriff auf dieses Projekt")
+
+    # Implizites Lernsignal: Löschen eines agent-stammenden Tasks = stille Korrektur.
+    try:
+        is_agent, job_id, sender = await _resolve_task_origin(db, task)
+        if is_agent:
+            from app.services.learning import mark_episode_corrected, record_feedback
+
+            await record_feedback(
+                db,
+                feedback_type="task_deleted",
+                agent_job_id=job_id,
+                sender_email=sender,
+                source="cockpit",
+                original={"title": task.title, "project_id": str(task.project_id)},
+            )
+            if job_id:
+                await mark_episode_corrected(
+                    db, agent_job_id=job_id, lesson="Abgeleiteter Task wurde gelöscht"
+                )
+    except Exception:  # noqa: BLE001 - best-effort, darf Löschen nie blockieren
+        logger.warning("task_deleted-Signal konnte nicht erfasst werden")
+
     await db.delete(task)
 
 
@@ -463,6 +537,29 @@ async def dismiss_review_task(
         raise HTTPException(status_code=404, detail="Task not found")
     if not task.needs_review:
         raise HTTPException(status_code=409, detail="Nur unbestaetigte Vorschlaege koennen verworfen werden")
+
+    # Lernsignal: Ein verworfener Agent-Vorschlag ist eine stille Korrektur.
+    try:
+        is_agent, job_id, sender = await _resolve_task_origin(db, task)
+        if is_agent:
+            from app.services.learning import mark_episode_corrected, record_feedback
+
+            await record_feedback(
+                db,
+                feedback_type="task_deleted",
+                agent_job_id=job_id,
+                sender_email=sender,
+                source="cockpit",
+                original={"title": task.title, "project_id": str(task.project_id)},
+                reason="Task-Vorschlag verworfen (dismiss-review)",
+            )
+            if job_id:
+                await mark_episode_corrected(
+                    db, agent_job_id=job_id, lesson="Abgeleiteter Task-Vorschlag verworfen"
+                )
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("dismiss-review-Signal konnte nicht erfasst werden")
+
     await db.delete(task)
 
 

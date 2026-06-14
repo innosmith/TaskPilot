@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import AgentJob, EmailTriage, User
 from app.schemas import EmailTriageOut, EmailTriageUpdate
+from app.services.learning import mark_episode_corrected, record_feedback
 from app.services.triage import run_triage_now
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
@@ -133,6 +134,137 @@ async def update_triage_item(
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(item, field, value)
 
+    return item
+
+
+class ReclassifyRequest(BaseModel):
+    triage_class: str
+    reason: str | None = None
+
+
+def _build_corrective_meta(
+    orig_meta: dict | None,
+    item: EmailTriage,
+    forced_class: str,
+    reason: str | None,
+) -> dict:
+    """Baut die metadata_json fuer einen Korrektur-Job (rein, ohne DB/IO).
+
+    Klont -- falls vorhanden -- die Metadaten des Original-Jobs, stellt die
+    Pflichtfelder fuer den Worker sicher (Fallback aus dem EmailTriage-Eintrag),
+    entfernt irrefuehrende Reste des letzten Laufs und setzt ``forced_class``.
+    """
+    meta: dict = dict(orig_meta or {})
+    meta["email_message_id"] = meta.get("email_message_id") or item.message_id
+    meta["message_id"] = meta.get("message_id") or item.message_id
+    meta.setdefault("subject", item.subject or "")
+    meta.setdefault("from_address", item.from_address or "")
+    meta.setdefault("from_name", item.from_name or "")
+    for stale in ("draft_id", "original_draft_html", "trace", "tools_used",
+                  "self_grade", "feedback_captured"):
+        meta.pop(stale, None)
+    meta["forced_class"] = forced_class
+    meta["correction_reason"] = reason or ""
+    meta["is_correction"] = True
+    return meta
+
+
+async def _enqueue_corrective_triage_job(
+    db: AsyncSession,
+    item: EmailTriage,
+    forced_class: str,
+    reason: str | None,
+) -> uuid.UUID | None:
+    """Reiht einen email_triage-Job ein, der die korrigierte Klasse erzwingt.
+
+    Wiederverwendet die bewaehrte Worker-Maschinerie (_post_process_triage legt
+    Tasks an bzw. snapshottet Entwuerfe). Das EmailTriage-Item wird auf den neuen
+    Job umgehaengt, damit das Post-Processing dieselbe Zeile aktualisiert.
+    Best-effort.
+    """
+    try:
+        orig_meta: dict | None = None
+        if item.agent_job_id:
+            orig = await db.execute(
+                select(AgentJob.metadata_json).where(AgentJob.id == item.agent_job_id)
+            )
+            orig_meta = orig.scalar_one_or_none()
+
+        meta = _build_corrective_meta(orig_meta, item, forced_class, reason)
+
+        job = AgentJob(
+            task_id=None,
+            job_type="email_triage",
+            status="queued",
+            metadata_json=meta,
+        )
+        db.add(job)
+        await db.flush()
+        # Item auf den neuen Job umhaengen, damit _post_process_triage es aktualisiert.
+        item.agent_job_id = job.id
+        item.status = "processing"
+        logger.info(
+            "Korrektur-Job %s eingereiht (forced_class=%s, triage=%s)",
+            job.id, forced_class, item.id,
+        )
+        return job.id
+    except Exception:  # noqa: BLE001 - best-effort, Korrektur darf nie scheitern
+        logger.exception("Korrektur-Job konnte nicht eingereiht werden (triage=%s)", item.id)
+        return None
+
+
+@router.post("/{triage_id}/reclassify", response_model=EmailTriageOut)
+async def reclassify_triage_item(
+    triage_id: uuid.UUID,
+    body: ReclassifyRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> EmailTriageOut:
+    """Berater korrigiert die Triage-Klasse -- lernen UND ausfuehren.
+
+    Schreibt ein ``triage_reclass``-Feedback, markiert die zugehoerige Episode als
+    korrigiert und reiht -- bei Zielklasse ``task``/``auto_reply`` -- einen
+    Korrektur-Job ein, der den richtigen Artefakt (Task bzw. Antwort-Entwurf)
+    tatsaechlich erzeugt. ``fyi`` wird nur gelernt (Item verworfen).
+    """
+    _require_owner(user)
+    if body.triage_class not in ("auto_reply", "task", "fyi"):
+        raise HTTPException(status_code=400, detail="Ungueltige Triage-Klasse")
+
+    result = await db.execute(select(EmailTriage).where(EmailTriage.id == triage_id))
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Triage-Eintrag nicht gefunden")
+
+    old_class = item.triage_class
+    if body.triage_class != old_class:
+        # 1) Lernsignal + Episode-Korrektur (mit Original-Job-Bezug, vor dem Umhaengen).
+        await record_feedback(
+            db,
+            feedback_type="triage_reclass",
+            agent_job_id=item.agent_job_id,
+            sender_email=item.from_address,
+            source="cockpit",
+            original={"triage_class": old_class},
+            corrected={"triage_class": body.triage_class},
+            reason=body.reason,
+        )
+        if item.agent_job_id:
+            await mark_episode_corrected(
+                db,
+                agent_job_id=item.agent_job_id,
+                lesson=body.reason or f"Reklassifiziert: {old_class} -> {body.triage_class}",
+            )
+
+        item.triage_class = body.triage_class
+
+        # 2) Ausfuehren: korrigierten Artefakt erzeugen (Task bzw. Entwurf).
+        if body.triage_class in ("task", "auto_reply"):
+            await _enqueue_corrective_triage_job(
+                db, item, forced_class=body.triage_class, reason=body.reason,
+            )
+        else:  # fyi -> nur lernen, Item verwerfen
+            item.status = "dismissed"
     return item
 
 

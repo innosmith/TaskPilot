@@ -90,6 +90,62 @@ interface AgentSkillData {
   content: string;
 }
 
+interface LearningSignal {
+  feedback_type: string;
+  source: string;
+  sender_email: string | null;
+  reason: string | null;
+  created_at: string | null;
+}
+
+interface LearningOverview {
+  stats: {
+    period_days: number;
+    drafts_sent: number;
+    drafts_edited: number;
+    drafts_clean: number;
+    edit_rate: number;
+    triage_reclass: number;
+    rejected: number;
+    thumbs_up: number;
+    thumbs_down: number;
+    episodes_total: number;
+    episodes_corrected: number;
+    rules_proposed: number;
+    rules_active: number;
+  };
+  recent: LearningSignal[];
+}
+
+interface LearnedRule {
+  id: string;
+  scope: string;
+  rule_text: string;
+  evidence: Record<string, unknown>;
+  status: string;
+  autonomy_hint: string | null;
+  created_at: string | null;
+  approved_at: string | null;
+}
+
+const RULE_SCOPE_LABELS: Record<string, string> = {
+  triage: 'Triage',
+  draft: 'Entwurf',
+  general: 'Allgemein',
+};
+
+const LEARN_SIGNAL_LABELS: Record<string, string> = {
+  draft_edit: 'Entwurf editiert',
+  approved_clean: 'Ohne Edit freigegeben',
+  rejected: 'Entwurf abgelehnt',
+  triage_reclass: 'Reklassifiziert',
+  task_deleted: 'Aufgabe gelöscht',
+  task_moved: 'Aufgabe verschoben',
+  thumbs_up: 'Daumen hoch',
+  thumbs_down: 'Daumen runter',
+  chat_teach: 'Im Chat gelernt',
+};
+
 type SettingsTab = 'profile' | 'display' | 'cockpit' | 'llm' | 'integrations' | 'triage' | 'team' | 'intelligence';
 
 export function SettingsPage() {
@@ -137,6 +193,9 @@ export function SettingsPage() {
   const [triageStats, setTriageStats] = useState<TriageStatsData | null>(null);
   const [agentSkills, setAgentSkills] = useState<AgentSkillData[]>([]);
   const [totalSenders, setTotalSenders] = useState(0);
+  const [learning, setLearning] = useState<LearningOverview | null>(null);
+  const [learnedRules, setLearnedRules] = useState<LearnedRule[]>([]);
+  const [ruleBusyId, setRuleBusyId] = useState<string | null>(null);
 
   const [pdToken, setPdToken] = useState('');
   const [pdDomain, setPdDomain] = useState('innosmith');
@@ -203,13 +262,17 @@ export function SettingsPage() {
       api.get<{ profiles: SenderProfile[]; total_senders: number }>('/api/intelligence/sender-profiles?limit=20').catch(() => ({ profiles: [], total_senders: 0 })),
       api.get<TriageStatsData>('/api/intelligence/triage-stats?days=30').catch(() => null),
       api.get<{ skills: AgentSkillData[] }>('/api/intelligence/skills').catch(() => ({ skills: [] })),
-    ]).then(([hb, files, sp, ts, sk]) => {
+      api.get<LearningOverview>('/api/intelligence/learning?days=7').catch(() => null),
+      api.get<{ rules: LearnedRule[] }>('/api/intelligence/rules?limit=50').catch(() => ({ rules: [] })),
+    ]).then(([hb, files, sp, ts, sk, lo, lr]) => {
       setHeartbeat(hb);
       setMemFiles(files ?? []);
       setSenderProfiles(sp?.profiles ?? []);
       setTotalSenders(sp?.total_senders ?? 0);
       setTriageStats(ts);
       setAgentSkills(sk?.skills ?? []);
+      setLearning(lo);
+      setLearnedRules(lr?.rules ?? []);
     }).finally(() => setMemLoading(false));
   }, [tab]);
 
@@ -234,6 +297,27 @@ export function SettingsPage() {
       })
       .catch(() => {});
   }, [tab]);
+
+  const handleRuleDecision = async (ruleId: string, decision: 'approve' | 'reject') => {
+    setRuleBusyId(ruleId);
+    try {
+      const updated = await api.post<LearnedRule>(`/api/intelligence/rules/${ruleId}/${decision}`);
+      setLearnedRules((prev) => prev.map((r) => (r.id === ruleId ? updated : r)));
+      setLearning((prev) =>
+        prev
+          ? {
+              ...prev,
+              stats: {
+                ...prev.stats,
+                rules_proposed: Math.max(0, prev.stats.rules_proposed - 1),
+                rules_active: prev.stats.rules_active + (decision === 'approve' ? 1 : 0),
+              },
+            }
+          : prev,
+      );
+    } catch { /* best-effort, UI bleibt unverändert */ }
+    finally { setRuleBusyId(null); }
+  };
 
   const saveProfile = async () => {
     if (!displayName.trim() || !profileEmail.trim()) return;
@@ -1606,6 +1690,107 @@ export function SettingsPage() {
                 </div>
               ) : (
                 <div className="space-y-2">
+
+                  {/* Lernfortschritt (Self-Learning) */}
+                  {learning && (
+                    <CollapsibleBlock
+                      id="learning-progress"
+                      title="Lernfortschritt"
+                      subtitle={`Letzte ${learning.stats.period_days} Tage · ${learning.stats.episodes_total} Episoden`}
+                      badge={<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Lernend</span>}
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                      defaultOpen
+                    >
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="learning-kpis">
+                        <div className="rounded-lg bg-emerald-50 p-3 text-center dark:bg-emerald-900/20">
+                          <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">{Math.round((1 - learning.stats.edit_rate) * 100)}%</div>
+                          <div className="text-xs text-emerald-600 dark:text-emerald-400">ohne Edit freigegeben</div>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 p-3 text-center dark:bg-gray-800">
+                          <div className="text-2xl font-bold text-gray-900 dark:text-white">{learning.stats.drafts_sent}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">Entwürfe versendet</div>
+                        </div>
+                        <div className="rounded-lg bg-amber-50 p-3 text-center dark:bg-amber-900/20">
+                          <div className="text-2xl font-bold text-amber-700 dark:text-amber-300">{learning.stats.triage_reclass}</div>
+                          <div className="text-xs text-amber-600 dark:text-amber-400">Reklassifikationen</div>
+                        </div>
+                        <div className="rounded-lg bg-indigo-50 p-3 text-center dark:bg-indigo-900/20">
+                          <div className="text-2xl font-bold text-indigo-700 dark:text-indigo-300">{learning.stats.rules_active}</div>
+                          <div className="text-xs text-indigo-600 dark:text-indigo-400">aktive Regeln</div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                        <span>{learning.stats.drafts_edited} editiert</span>
+                        <span>{learning.stats.episodes_corrected} korrigierte Episoden</span>
+                        <span>👍 {learning.stats.thumbs_up} · 👎 {learning.stats.thumbs_down}</span>
+                        {learning.stats.rules_proposed > 0 && <span>{learning.stats.rules_proposed} Regel-Vorschläge offen</span>}
+                      </div>
+                      {learning.recent.length > 0 && (
+                        <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+                          {learning.recent.map((sig, i) => (
+                            <div key={`sig-${i}`} className="flex items-center gap-2 py-1.5 text-xs">
+                              <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">{LEARN_SIGNAL_LABELS[sig.feedback_type] ?? sig.feedback_type}</span>
+                              {sig.source === 'outlook' && <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">Outlook</span>}
+                              <span className="min-w-0 flex-1 truncate text-gray-500 dark:text-gray-400">{sig.reason || sig.sender_email || ''}</span>
+                              <span className="shrink-0 text-gray-400 dark:text-gray-500">{sig.created_at ? new Date(sig.created_at).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit' }) : ''}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </CollapsibleBlock>
+                  )}
+
+                  {/* Gelernte Regeln (HITL-Freigabe) */}
+                  {learnedRules.length > 0 && (
+                    <CollapsibleBlock
+                      id="learned-rules"
+                      title="Gelernte Regeln"
+                      subtitle={`${learnedRules.filter((r) => r.status === 'proposed').length} Vorschläge · ${learnedRules.filter((r) => r.status === 'active').length} aktiv`}
+                      badge={learnedRules.some((r) => r.status === 'proposed') ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Freigabe nötig</span> : undefined}
+                      expanded={memExpanded}
+                      toggle={toggleMemFile}
+                      defaultOpen
+                    >
+                      <div className="space-y-2" data-testid="learned-rules">
+                        {learnedRules.map((rule) => (
+                          <div key={rule.id} className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="mb-1 flex items-center gap-2">
+                                  <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">{RULE_SCOPE_LABELS[rule.scope] ?? rule.scope}</span>
+                                  {rule.status === 'active' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">aktiv</span>}
+                                  {rule.status === 'proposed' && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">Vorschlag</span>}
+                                  {rule.status === 'rejected' && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">verworfen</span>}
+                                </div>
+                                <p className="text-sm text-gray-700 dark:text-gray-200">{rule.rule_text}</p>
+                              </div>
+                              {rule.status === 'proposed' && (
+                                <div className="flex shrink-0 gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={ruleBusyId === rule.id}
+                                    onClick={() => handleRuleDecision(rule.id, 'approve')}
+                                    className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                                  >
+                                    Freigeben
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={ruleBusyId === rule.id}
+                                    onClick={() => handleRuleDecision(rule.id, 'reject')}
+                                    className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                                  >
+                                    Verwerfen
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CollapsibleBlock>
+                  )}
 
                   {/* Triage-Statistiken */}
                   {triageStats && (

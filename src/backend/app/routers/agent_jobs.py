@@ -15,6 +15,11 @@ from app.auth.deps import get_current_user, require_role
 from app.database import get_db
 from app.models import AgentJob, ChatTriage, EmailTriage, Task, User
 from app.schemas import AgentJobCreate, AgentJobOut, AgentJobUpdate, AgentJobWithTask
+from app.services.learning import (
+    capture_draft_feedback,
+    mark_episode_corrected,
+    record_feedback,
+)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
 from graph_client import GraphClient, GraphConfig  # noqa: E402
@@ -349,6 +354,32 @@ async def update_agent_job(
             client = _get_email_client()
             if client:
                 try:
+                    # Lernsignal VOR dem Versand erfassen: Der Entwurf in Outlook
+                    # spiegelt jetzt die finale, ggf. editierte Fassung wider.
+                    try:
+                        draft_msg = await client.get_email(draft_id)
+                        body_obj = draft_msg.get("body", {}) or {}
+                        sent_html = (
+                            body_obj.get("content")
+                            if body_obj.get("contentType") == "html"
+                            else draft_msg.get("bodyPreview")
+                        )
+                        recipient = next(
+                            (
+                                r.get("emailAddress", {}).get("address", "")
+                                for r in draft_msg.get("toRecipients", [])
+                            ),
+                            None,
+                        )
+                        await capture_draft_feedback(
+                            db,
+                            draft_id=draft_id,
+                            sent_html=sent_html,
+                            recipient=recipient,
+                            source="cockpit",
+                        )
+                    except Exception:  # noqa: BLE001 - Capture darf Versand nicht blockieren
+                        logger.warning("Draft-Feedback-Capture fehlgeschlagen (job %s)", job_id)
                     await client.send_draft(draft_id)
                     job.output = (job.output or "") + "\n\nE-Mail erfolgreich gesendet."
                     source_email_id = (job.metadata_json or {}).get("email_message_id")
@@ -369,6 +400,16 @@ async def update_agent_job(
         and body.status == "failed"
         and job.job_type in ("send_email", "email_triage")
     ):
+        # Lernsignal: der Berater hat den Entwurf abgelehnt.
+        meta = job.metadata_json or {}
+        await record_feedback(
+            db,
+            feedback_type="rejected",
+            agent_job_id=job.id,
+            sender_email=meta.get("from_address"),
+            source="cockpit",
+        )
+        await mark_episode_corrected(db, agent_job_id=job.id, lesson="Entwurf abgelehnt")
         draft_id = _extract_draft_id(job)
         if draft_id:
             client = _get_email_client()
@@ -382,6 +423,42 @@ async def update_agent_job(
                     await client.close()
 
     return job
+
+
+class JobFeedbackBody(BaseModel):
+    rating: str  # 'up' | 'down'
+    reason: str | None = None
+
+
+@router.post("/{job_id}/feedback", status_code=200)
+async def submit_job_feedback(
+    job_id: uuid.UUID,
+    body: JobFeedbackBody,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> dict:
+    """Daumen hoch/runter auf einen Agent-Job -- fliesst als Lernsignal ein."""
+    if body.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating muss 'up' oder 'down' sein")
+    result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Agent job not found")
+
+    meta = job.metadata_json or {}
+    await record_feedback(
+        db,
+        feedback_type="thumbs_up" if body.rating == "up" else "thumbs_down",
+        agent_job_id=job.id,
+        sender_email=meta.get("from_address"),
+        source="cockpit",
+        reason=body.reason,
+    )
+    if body.rating == "down":
+        await mark_episode_corrected(
+            db, agent_job_id=job.id, lesson=body.reason or "Daumen runter",
+        )
+    return {"ok": True, "rating": body.rating}
 
 
 _DELETABLE_STATUSES = {"completed", "failed", "awaiting_approval"}

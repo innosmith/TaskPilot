@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, require_role
 from app.database import get_db
-from app.models import EmailTriage, User
+from app.models import AgentEpisode, AgentFeedback, EmailTriage, LearnedRule, User
 
 logger = logging.getLogger("taskpilot.intelligence")
 
@@ -134,6 +134,217 @@ async def get_triage_stats(
         avg_per_day=avg,
         period_days=days,
     )
+
+
+# ── Lern-KPIs (Self-Learning, sichtbar im Cockpit) ───────
+
+class LearningStats(BaseModel):
+    period_days: int
+    drafts_sent: int
+    drafts_edited: int
+    drafts_clean: int
+    edit_rate: float
+    triage_reclass: int
+    rejected: int
+    thumbs_up: int
+    thumbs_down: int
+    episodes_total: int
+    episodes_corrected: int
+    rules_proposed: int
+    rules_active: int
+
+
+class LearningSignal(BaseModel):
+    feedback_type: str
+    source: str
+    sender_email: str | None = None
+    reason: str | None = None
+    created_at: str | None = None
+
+
+class LearningOverview(BaseModel):
+    stats: LearningStats
+    recent: list[LearningSignal]
+
+
+@router.get("/learning", response_model=LearningOverview)
+async def get_learning_overview(
+    days: int = 7,
+    recent_limit: int = 15,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> LearningOverview:
+    """Aggregierte Lern-KPIs + jüngste Lernsignale.
+
+    Macht für Berater (und Showcase) sichtbar, was der Agent diese Woche aus
+    Korrekturen gelernt hat: Edit-Rate von Entwürfen, Reklassifikationen,
+    Daumen-Feedback, episodisches Gedächtnis und gelernte Regeln.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    fb_q = await db.execute(
+        select(
+            func.count().filter(AgentFeedback.feedback_type == "draft_edit").label("draft_edit"),
+            func.count().filter(AgentFeedback.feedback_type == "approved_clean").label("approved_clean"),
+            func.count().filter(AgentFeedback.feedback_type == "triage_reclass").label("triage_reclass"),
+            func.count().filter(AgentFeedback.feedback_type == "rejected").label("rejected"),
+            func.count().filter(AgentFeedback.feedback_type == "thumbs_up").label("thumbs_up"),
+            func.count().filter(AgentFeedback.feedback_type == "thumbs_down").label("thumbs_down"),
+        ).where(AgentFeedback.created_at >= cutoff)
+    )
+    fb = fb_q.one()
+
+    drafts_edited = fb.draft_edit or 0
+    drafts_clean = fb.approved_clean or 0
+    drafts_sent = drafts_edited + drafts_clean
+    edit_rate = round(drafts_edited / drafts_sent, 2) if drafts_sent else 0.0
+
+    ep_q = await db.execute(
+        select(
+            func.count().label("total"),
+            func.count().filter(AgentEpisode.was_corrected.is_(True)).label("corrected"),
+        ).where(AgentEpisode.created_at >= cutoff)
+    )
+    ep = ep_q.one()
+
+    rules_q = await db.execute(
+        select(
+            func.count().filter(LearnedRule.status == "proposed").label("proposed"),
+            func.count().filter(LearnedRule.status == "active").label("active"),
+        )
+    )
+    rules = rules_q.one()
+
+    recent_q = await db.execute(
+        select(AgentFeedback)
+        .order_by(AgentFeedback.created_at.desc())
+        .limit(recent_limit)
+    )
+    recent = [
+        LearningSignal(
+            feedback_type=r.feedback_type,
+            source=r.source,
+            sender_email=r.sender_email,
+            reason=r.reason,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+        )
+        for r in recent_q.scalars().all()
+    ]
+
+    return LearningOverview(
+        stats=LearningStats(
+            period_days=days,
+            drafts_sent=drafts_sent,
+            drafts_edited=drafts_edited,
+            drafts_clean=drafts_clean,
+            edit_rate=edit_rate,
+            triage_reclass=fb.triage_reclass or 0,
+            rejected=fb.rejected or 0,
+            thumbs_up=fb.thumbs_up or 0,
+            thumbs_down=fb.thumbs_down or 0,
+            episodes_total=ep.total or 0,
+            episodes_corrected=ep.corrected or 0,
+            rules_proposed=rules.proposed or 0,
+            rules_active=rules.active or 0,
+        ),
+        recent=recent,
+    )
+
+
+# ── Gelernte Regeln (HITL-Freigabe) ──────────────────────
+
+class LearnedRuleOut(BaseModel):
+    id: str
+    scope: str
+    rule_text: str
+    evidence: dict
+    status: str
+    autonomy_hint: str | None = None
+    created_at: str | None = None
+    approved_at: str | None = None
+
+
+class LearnedRulesResponse(BaseModel):
+    rules: list[LearnedRuleOut]
+
+
+def _rule_out(r: LearnedRule) -> LearnedRuleOut:
+    return LearnedRuleOut(
+        id=str(r.id),
+        scope=r.scope,
+        rule_text=r.rule_text,
+        evidence=r.evidence or {},
+        status=r.status,
+        autonomy_hint=r.autonomy_hint,
+        created_at=r.created_at.isoformat() if r.created_at else None,
+        approved_at=r.approved_at.isoformat() if r.approved_at else None,
+    )
+
+
+@router.get("/rules", response_model=LearnedRulesResponse)
+async def list_learned_rules(
+    status: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> LearnedRulesResponse:
+    """Listet gelernte Regeln (optional nach Status gefiltert)."""
+    stmt = select(LearnedRule).order_by(
+        LearnedRule.status, LearnedRule.created_at.desc()
+    ).limit(limit)
+    if status:
+        stmt = select(LearnedRule).where(LearnedRule.status == status).order_by(
+            LearnedRule.created_at.desc()
+        ).limit(limit)
+    result = await db.execute(stmt)
+    return LearnedRulesResponse(rules=[_rule_out(r) for r in result.scalars().all()])
+
+
+@router.post("/rules/{rule_id}/approve", response_model=LearnedRuleOut)
+async def approve_learned_rule(
+    rule_id: str,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> LearnedRuleOut:
+    """Gibt eine vorgeschlagene Regel frei -> ab jetzt im Triage-Prompt aktiv."""
+    import uuid as _uuid
+
+    from fastapi import HTTPException
+
+    try:
+        rid = _uuid.UUID(rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Ungueltige Regel-ID") from exc
+    rule = (await db.execute(select(LearnedRule).where(LearnedRule.id == rid))).scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Regel nicht gefunden")
+    rule.status = "active"
+    rule.approved_at = datetime.now(timezone.utc)
+    await db.flush()
+    return _rule_out(rule)
+
+
+@router.post("/rules/{rule_id}/reject", response_model=LearnedRuleOut)
+async def reject_learned_rule(
+    rule_id: str,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> LearnedRuleOut:
+    """Verwirft eine vorgeschlagene Regel (kein Einfluss auf den Agenten)."""
+    import uuid as _uuid
+
+    from fastapi import HTTPException
+
+    try:
+        rid = _uuid.UUID(rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Ungueltige Regel-ID") from exc
+    rule = (await db.execute(select(LearnedRule).where(LearnedRule.id == rid))).scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Regel nicht gefunden")
+    rule.status = "rejected"
+    await db.flush()
+    return _rule_out(rule)
 
 
 # ── Agent-Skills ─────────────────────────────────────────

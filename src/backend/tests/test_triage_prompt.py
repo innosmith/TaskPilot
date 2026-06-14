@@ -173,6 +173,43 @@ class TestTriagePrompt:
             return await _build_triage_prompt(job)
 
 
+class TestForcedClassCorrection:
+    """Tests für den Berater-Korrektur-Block (forced_class) im Triage-Prompt."""
+
+    async def _build_prompt(self, job, style_text="(Schreibstil-Kanon Platzhalter)"):
+        with patch("app.services.hermes_worker._load_projects_context", new_callable=AsyncMock) as mock_projects, \
+             patch("app.services.hermes_worker._load_style_profile", return_value=style_text):
+            mock_projects.return_value = "## VERFÜGBARE PROJEKTE\n- \"TestProjekt\" (id: 123)"
+            from app.services.hermes_worker import _build_triage_prompt
+            return await _build_triage_prompt(job)
+
+    @pytest.mark.asyncio
+    async def test_no_correction_block_without_forced_class(self, fake_job):
+        prompt = await self._build_prompt(fake_job)
+        assert "KORREKTUR DES BERATERS" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_correction_block_for_forced_task(self):
+        job = _make_fake_job()
+        job.metadata_json["forced_class"] = "task"
+        job.metadata_json["correction_reason"] = "Das ist klar eine Aufgabe"
+        prompt = await self._build_prompt(job)
+        assert "KORREKTUR DES BERATERS" in prompt
+        assert "task" in prompt
+        assert "Das ist klar eine Aufgabe" in prompt
+        assert "Aufgabe (task)" in prompt
+
+    @pytest.mark.asyncio
+    async def test_correction_block_for_forced_auto_reply(self):
+        job = _make_fake_job()
+        job.metadata_json["forced_class"] = "auto_reply"
+        prompt = await self._build_prompt(job)
+        assert "KORREKTUR DES BERATERS" in prompt
+        assert "Antwort-Entwurf (auto_reply)" in prompt
+        # Korrektur-Block soll ganz oben stehen (vor den Standard-Instruktionen).
+        assert prompt.index("KORREKTUR DES BERATERS") < prompt.index("TRIAGE-INSTRUKTIONEN")
+
+
 class TestDetermineRecipientType:
     """Tests für die recipient_type-Ableitung aus TO/CC-Feldern."""
 

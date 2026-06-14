@@ -1,9 +1,12 @@
 from app.models.models import (
     ActivityLog,
+    AgentEpisode,
+    AgentFeedback,
     AgentJob,
     Attachment,
     AuditLog,
     Base,
+    LearnedRule,
     BoardColumn,
     BoardMember,
     CapacityAllocation,
@@ -30,6 +33,9 @@ from app.models.models import (
 
 __all__ = [
     "Base",
+    "AgentEpisode",
+    "AgentFeedback",
+    "LearnedRule",
     "Project",
     "BoardColumn",
     "PipelineColumn",

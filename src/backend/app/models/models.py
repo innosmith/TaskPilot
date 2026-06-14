@@ -264,8 +264,68 @@ class SenderProfile(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     email_count: Mapped[int] = mapped_column(Integer, server_default="0")
     last_contact_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    learned_tone: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    style_notes: Mapped[str | None] = mapped_column(Text)
+    correction_count: Mapped[int] = mapped_column(Integer, server_default="0")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class AgentFeedback(Base):
+    """Erfasste Korrektursignale fuer das Self-Learning.
+
+    Quelle der Wahrheit fuer Lern-KPIs (Korrekturrate, Approval-ohne-Edit) und
+    Ausgangspunkt fuer episodische Lektionen + gelernte Regeln.
+    """
+
+    __tablename__ = "agent_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    agent_job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_jobs.id", ondelete="SET NULL"))
+    sender_email: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text, nullable=False, server_default="cockpit")
+    feedback_type: Mapped[str] = mapped_column(Text, nullable=False)
+    original: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    corrected: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    diff_text: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class AgentEpisode(Base):
+    """Episodisches Gedaechtnis: ein abgeschlossener Entscheid + sein Ausgang.
+
+    Die ``embedding``-Spalte (pgvector) wird hier bewusst NICHT gemappt, um die
+    pgvector-Python-Abhaengigkeit aus dem ORM herauszuhalten -- Schreiben/Recall
+    laufen ueber rohes SQL im Embeddings-Service.
+    """
+
+    __tablename__ = "agent_episodes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    agent_job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_jobs.id", ondelete="SET NULL"))
+    job_type: Mapped[str | None] = mapped_column(Text)
+    sender_email: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    decision: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    was_corrected: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    lesson: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class LearnedRule(Base):
+    """Vom Agenten vorgeschlagene, vom Berater freigegebene Lern-Regel."""
+
+    __tablename__ = "learned_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    scope: Mapped[str] = mapped_column(Text, nullable=False, server_default="triage")
+    rule_text: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="proposed")
+    autonomy_hint: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    approved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
 
 class LlmConversation(Base):

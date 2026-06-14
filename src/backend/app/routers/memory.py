@@ -30,6 +30,10 @@ async def list_memory_files(
 
     files = []
     for f in sorted(memory_dir.iterdir()):
+        # Obsolete Migrations-Archive (z.B. history-nanobot-import.jsonl) ausblenden:
+        # werden zur Laufzeit nicht geladen und verstopfen nur die Intelligenz-Ansicht.
+        if f.name.endswith("-import.jsonl"):
+            continue
         if f.is_file() and f.suffix in (".md", ".jsonl", ".txt"):
             try:
                 content = f.read_text(encoding="utf-8", errors="replace")

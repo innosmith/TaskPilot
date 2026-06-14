@@ -200,6 +200,9 @@ export function InboxPage() {
   const [senderAvatars, setSenderAvatars] = useState<Record<string, string | null>>({});
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
+  const [reclassReason, setReclassReason] = useState('');
+  const [reclassBusy, setReclassBusy] = useState(false);
+  const [reclassDone, setReclassDone] = useState<string | null>(null);
 
   /* -- E-Mails laden -- */
   const fetchEmails = useCallback(async () => {
@@ -330,6 +333,32 @@ export function InboxPage() {
       await fetchTriage();
     } catch {
       /* ignore */
+    }
+  };
+
+  /* -- Triage-Klasse korrigieren (lernen + ausfuehren) -- */
+  const reclassifyTriage = async (triageId: string, targetClass: 'auto_reply' | 'task' | 'fyi') => {
+    setReclassBusy(true);
+    try {
+      await api.post(`/api/triage/${triageId}/reclassify`, {
+        triage_class: targetClass,
+        reason: reclassReason.trim() || undefined,
+      });
+      setReclassReason('');
+      const label = targetClass === 'auto_reply' ? 'Entwurf' : targetClass === 'task' ? 'Aufgabe' : 'FYI';
+      setReclassDone(
+        targetClass === 'fyi'
+          ? 'Gelernt: als FYI markiert.'
+          : `InnoPilot lernt aus der Korrektur und erzeugt jetzt ${label === 'Entwurf' ? 'einen' : 'eine'} ${label}.`,
+      );
+      await fetchTriage();
+      await fetchActivity();
+      setTimeout(() => setReclassDone(null), 6000);
+    } catch {
+      setReclassDone('Korrektur fehlgeschlagen.');
+      setTimeout(() => setReclassDone(null), 4000);
+    } finally {
+      setReclassBusy(false);
     }
   };
 
@@ -710,6 +739,45 @@ export function InboxPage() {
                   )}
                 </div>
               </div>
+
+              {/* Triage-Korrektur: lernen + ausfuehren */}
+              {selectedTriage && (
+                <div className="mb-5 rounded-xl border border-indigo-200/70 bg-indigo-50/60 p-3 dark:border-indigo-800/50 dark:bg-indigo-950/30">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300">
+                      Einschätzung korrigieren:
+                    </span>
+                    {([
+                      { cls: 'auto_reply', label: 'Entwurf' },
+                      { cls: 'task', label: 'Aufgabe' },
+                      { cls: 'fyi', label: 'FYI' },
+                    ] as const).map(({ cls, label }) => (
+                      <button
+                        key={cls}
+                        disabled={reclassBusy || selectedTriage.triage_class === cls}
+                        onClick={() => reclassifyTriage(selectedTriage.id, cls)}
+                        className={`rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          selectedTriage.triage_class === cls
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-100 dark:bg-gray-800 dark:text-indigo-300 dark:ring-indigo-800 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        → {label}
+                      </button>
+                    ))}
+                    <input
+                      type="text"
+                      value={reclassReason}
+                      onChange={(e) => setReclassReason(e.target.value)}
+                      placeholder="Grund (optional) – hilft beim Lernen"
+                      className="min-w-[180px] flex-1 rounded-lg border border-indigo-200/70 bg-white/80 px-3 py-1 text-xs text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 dark:border-indigo-800/50 dark:bg-gray-900/60 dark:text-gray-200"
+                    />
+                  </div>
+                  {reclassDone && (
+                    <p className="mt-2 text-xs text-indigo-600 dark:text-indigo-400">{reclassDone}</p>
+                  )}
+                </div>
+              )}
 
               {/* Kalender-Kontext */}
               <CalendarContext selectedTriage={selectedTriage} emailSubject={selectedEmail.subject} />

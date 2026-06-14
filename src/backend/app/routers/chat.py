@@ -901,6 +901,16 @@ async def send_agent_message(
     db.add(user_msg)
     await db.flush()
 
+    # Chat-Lernkanal (Saeule 4): "merk dir ..."-Absicht erfassen -> Regel-Vorschlag (HITL).
+    try:
+        from app.services.learning import extract_teach_intent, record_chat_teach
+
+        lesson = extract_teach_intent(user_content)
+        if lesson:
+            await record_chat_teach(db, content=lesson, conversation_id=str(conv.id))
+    except Exception:  # noqa: BLE001 - best-effort, darf den Chat nie blockieren
+        logger.warning("Chat-Teach-Erfassung fehlgeschlagen")
+
     if not conv.title and len(conv.messages) <= 1:
         conv.title = user_content[:80] + ("..." if len(user_content) > 80 else "")
 

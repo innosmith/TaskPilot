@@ -98,6 +98,46 @@ interface PipedriveActivitySummary {
   person_name: string | null;
 }
 
+interface LearningStats {
+  period_days: number;
+  drafts_sent: number;
+  drafts_edited: number;
+  drafts_clean: number;
+  edit_rate: number;
+  triage_reclass: number;
+  rejected: number;
+  thumbs_up: number;
+  thumbs_down: number;
+  episodes_total: number;
+  episodes_corrected: number;
+  rules_proposed: number;
+  rules_active: number;
+}
+
+interface LearningSignal {
+  feedback_type: string;
+  source: string;
+  sender_email: string | null;
+  reason: string | null;
+  created_at: string | null;
+}
+
+interface LearningOverview {
+  stats: LearningStats;
+  recent: LearningSignal[];
+}
+
+interface LearnedRule {
+  id: string;
+  scope: string;
+  rule_text: string;
+  evidence: Record<string, unknown>;
+  status: string;
+  autonomy_hint: string | null;
+  created_at: string | null;
+  approved_at: string | null;
+}
+
 export const JOB_TYPE_LABELS: Record<string, string> = {
   email_triage: 'E-Mail-Triage',
   draft_email_reply: 'Antwort-Entwurf',
@@ -166,6 +206,10 @@ export function CockpitPage() {
   const [weekCapacity, setWeekCapacity] = useState<{ total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number } | null>(null);
   const [monthCapacity, setMonthCapacity] = useState<{ total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number } | null>(null);
   const [aiStats, setAiStats] = useState<{ pending_decisions: number; completed_week: number; completed_month: number; breakdown_week: { triage: number; drafts: number; suggestions: number; other: number } } | null>(null);
+  const [learning, setLearning] = useState<LearningOverview | null>(null);
+  const [proposedRules, setProposedRules] = useState<LearnedRule[]>([]);
+  const [ruleBusyId, setRuleBusyId] = useState<string | null>(null);
+  const [jobFeedback, setJobFeedback] = useState<Record<string, 'up' | 'down'>>({});
 
   const loadSignaSignals = useCallback(async (reset = false) => {
     if (signaLoading) return;
@@ -257,7 +301,36 @@ export function CockpitPage() {
     api.get<{ pending_decisions: number; completed_week: number; completed_month: number; breakdown_week: { triage: number; drafts: number; suggestions: number; other: number } }>('/api/agent-jobs/stats')
       .then(data => setAiStats(data))
       .catch(() => {});
+
+    // Lern-Feed: KPIs + offene Regel-Vorschläge (nur sichtbar, wenn es etwas gibt)
+    api.get<LearningOverview>('/api/intelligence/learning?days=7')
+      .then(data => setLearning(data))
+      .catch(() => {});
+    api.get<{ rules: LearnedRule[] }>('/api/intelligence/rules?status=proposed')
+      .then(data => setProposedRules(data.rules))
+      .catch(() => {});
   }, []);
+
+  const handleRuleDecision = async (ruleId: string, decision: 'approve' | 'reject') => {
+    setRuleBusyId(ruleId);
+    try {
+      await api.post(`/api/intelligence/rules/${ruleId}/${decision}`, {});
+      setProposedRules(prev => prev.filter(r => r.id !== ruleId));
+      api.get<LearningOverview>('/api/intelligence/learning?days=7')
+        .then(data => setLearning(data))
+        .catch(() => {});
+    } catch { /* */ }
+    finally { setRuleBusyId(null); }
+  };
+
+  const handleJobFeedback = async (jobId: string, rating: 'up' | 'down') => {
+    setJobFeedback(prev => ({ ...prev, [jobId]: rating }));
+    try {
+      await api.post(`/api/agent-jobs/${jobId}/feedback`, { rating });
+    } catch {
+      setJobFeedback(prev => { const n = { ...prev }; delete n[jobId]; return n; });
+    }
+  };
 
   useEffect(() => { fetchAppData(); fetchPipedriveData(); }, [fetchAppData, fetchPipedriveData]);
 
@@ -500,6 +573,19 @@ export function CockpitPage() {
             <AgendaKpiCard fokus={focusTasks.length} overdue={overdueTasks.length} week={weekTasks.length} hasBg={hasBg} />
             <CapacityCard weekCapacity={weekCapacity} monthCapacity={monthCapacity} hasBg={hasBg} />
           </div>
+
+          {/* ── Diese Woche gelernt (Self-Learning, nur wenn Daten vorhanden) ── */}
+          <LearningFeedCard
+            learning={learning}
+            rules={proposedRules}
+            ruleBusyId={ruleBusyId}
+            onRuleDecision={handleRuleDecision}
+            cardClass={cardClass}
+            textPrimary={textPrimary}
+            textSecondary={textSecondary}
+            textMuted={textMuted}
+            hasBg={hasBg}
+          />
 
           {/* ── Zone 2: Aufgaben (Fokus | Überfällig | Diese Woche) | Kalender | E-Mails & Aufgaben ── */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -970,6 +1056,31 @@ export function CockpitPage() {
                                 >
                                   Ablehnen
                                 </button>
+                                <div className="ml-auto flex items-center gap-1">
+                                  <span className={`text-[11px] ${textMuted}`}>War das gut?</span>
+                                  <button
+                                    onClick={() => handleJobFeedback(job.id, 'up')}
+                                    title="Guter Entwurf — InnoPilot lernt daraus"
+                                    className={`rounded-lg px-2 py-1 text-sm transition-colors ${
+                                      jobFeedback[job.id] === 'up'
+                                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                        : `${textMuted} hover:bg-emerald-50 dark:hover:bg-emerald-900/20`
+                                    }`}
+                                  >
+                                    👍
+                                  </button>
+                                  <button
+                                    onClick={() => handleJobFeedback(job.id, 'down')}
+                                    title="Daneben — InnoPilot lernt daraus"
+                                    className={`rounded-lg px-2 py-1 text-sm transition-colors ${
+                                      jobFeedback[job.id] === 'down'
+                                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                        : `${textMuted} hover:bg-red-50 dark:hover:bg-red-900/20`
+                                    }`}
+                                  >
+                                    👎
+                                  </button>
+                                </div>
                               </div>
                             </>
                           )}
@@ -1348,6 +1459,134 @@ function CapacityCard({ weekCapacity, monthCapacity, hasBg }: { weekCapacity: Ca
         {renderCol('Monat', monthCapacity)}
       </div>
     </div>
+  );
+}
+
+/* ── Diese Woche gelernt (Self-Learning Feed) ── */
+
+const FEEDBACK_LABELS: Record<string, string> = {
+  draft_edit: 'Entwurf nachbearbeitet',
+  approved_clean: 'Entwurf unverändert gesendet',
+  triage_reclass: 'Einschätzung korrigiert',
+  rejected: 'Vorschlag abgelehnt',
+  thumbs_up: 'Positiv bewertet',
+  thumbs_down: 'Negativ bewertet',
+  task_deleted: 'Aufgaben-Vorschlag verworfen',
+  task_moved: 'Aufgabe verschoben',
+  chat_teach: 'Im Chat beigebracht',
+};
+
+function signalLabel(s: { feedback_type: string }): string {
+  return FEEDBACK_LABELS[s.feedback_type] ?? s.feedback_type;
+}
+
+function LearningFeedCard({
+  learning, rules, ruleBusyId, onRuleDecision,
+  cardClass, textPrimary, textSecondary, textMuted, hasBg,
+}: {
+  learning: LearningOverview | null;
+  rules: LearnedRule[];
+  ruleBusyId: string | null;
+  onRuleDecision: (id: string, decision: 'approve' | 'reject') => void;
+  cardClass: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  hasBg: boolean;
+}) {
+  const s = learning?.stats;
+  const hasSignals =
+    !!s &&
+    (s.drafts_sent + s.triage_reclass + s.rejected + s.thumbs_up + s.thumbs_down +
+      s.episodes_corrected + s.rules_active + s.rules_proposed) > 0;
+  // Zeigt sich erst, wenn es etwas zu zeigen gibt (Lern-Aktivität ODER offene Regeln).
+  if (!hasSignals && rules.length === 0) return null;
+
+  const chip = (value: number | string, label: string) => (
+    <div className={`rounded-lg px-2.5 py-1.5 ${hasBg ? 'bg-white/10' : 'bg-gray-50 dark:bg-gray-800/50'}`}>
+      <div className={`text-sm font-semibold ${textPrimary}`}>{value}</div>
+      <div className={`text-[10px] ${textMuted}`}>{label}</div>
+    </div>
+  );
+
+  return (
+    <section className={`rounded-xl border p-4 ${cardClass}`}>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+          Diese Woche gelernt
+        </h2>
+        <span className={`text-[11px] ${textMuted}`}>Letzte 7 Tage</span>
+      </div>
+
+      {s && (
+        <div className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-6">
+          {chip(`${Math.round(s.edit_rate * 100)}%`, 'Entwurf-Edits')}
+          {chip(s.drafts_sent, 'Entwürfe gesendet')}
+          {chip(s.triage_reclass, 'Korrekturen')}
+          {chip(s.episodes_corrected, 'Episoden gelernt')}
+          {chip(s.rules_active, 'Regeln aktiv')}
+          {chip(s.rules_proposed, 'Regeln offen')}
+        </div>
+      )}
+
+      {/* Offene Regel-Vorschläge mit Freigabe */}
+      {rules.length > 0 && (
+        <div className="mb-3 space-y-2">
+          <div className={`text-xs font-medium ${textSecondary}`}>Vorgeschlagene Regeln (Freigabe nötig)</div>
+          {rules.map(rule => (
+            <div
+              key={rule.id}
+              className={`flex items-start gap-3 rounded-lg border p-3 ${
+                hasBg ? 'border-white/15 bg-white/5' : 'border-indigo-100 bg-indigo-50/50 dark:border-indigo-900/40 dark:bg-indigo-950/20'
+              }`}
+            >
+              <div className="min-w-0 flex-1">
+                <div className={`text-sm ${textPrimary}`}>{rule.rule_text}</div>
+                <div className={`mt-0.5 text-[11px] ${textMuted}`}>{rule.scope}</div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  disabled={ruleBusyId === rule.id}
+                  onClick={() => onRuleDecision(rule.id, 'approve')}
+                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  Freigeben
+                </button>
+                <button
+                  disabled={ruleBusyId === rule.id}
+                  onClick={() => onRuleDecision(rule.id, 'reject')}
+                  className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                    hasBg ? 'text-red-300 hover:bg-red-500/20' : 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20'
+                  }`}
+                >
+                  Verwerfen
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Jüngste Lernsignale */}
+      {learning && learning.recent.length > 0 && (
+        <div className="space-y-1">
+          {learning.recent.slice(0, 6).map((sig, i) => (
+            <div key={i} className="flex items-center gap-2 text-xs">
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                sig.feedback_type === 'thumbs_down' || sig.feedback_type === 'rejected' || sig.feedback_type === 'task_deleted'
+                  ? 'bg-red-400'
+                  : sig.feedback_type === 'thumbs_up' || sig.feedback_type === 'approved_clean'
+                    ? 'bg-emerald-400'
+                    : 'bg-indigo-400'
+              }`} />
+              <span className={textPrimary}>{signalLabel(sig)}</span>
+              {sig.sender_email && <span className={textMuted}>· {sig.sender_email}</span>}
+              {sig.reason && <span className={`truncate ${textMuted}`}>— {sig.reason}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

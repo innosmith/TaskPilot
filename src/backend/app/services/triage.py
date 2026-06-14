@@ -230,6 +230,121 @@ async def run_triage_now(top: int = 50) -> int:
     return processed
 
 
+RECONCILE_LOOKBACK_DAYS = 7
+
+
+async def _reconcile_sent_drafts(limit: int = 25) -> int:
+    """Sent-Items-Reconciliation: erkennt in Outlook versendete/editierte Entwuerfe.
+
+    Wichtigstes implizites Lernsignal OHNE Verhaltensaenderung des Beraters:
+    Wird ein Agent-Entwurf direkt in Outlook (statt im Cockpit) versendet, bleibt
+    der ``email_triage``-Job sonst ewig in ``awaiting_approval`` und kein Stil-Edit
+    wird gelernt. Diese Funktion gleicht den Entwurf-Snapshot
+    (``original_draft_html`` + ``draft_conversation_id``) gegen die tatsaechlich
+    gesendete Fassung in derselben Konversation (Ordner ``sentitems``) ab und
+    schreibt ein ``draft_edit``/``approved_clean``-Signal (``source='outlook'``).
+
+    Matching: ``conversationId`` + Empfaenger + ``sentDateTime`` nach Job-Erstellung.
+    Best-effort -- darf den Poll-Loop nie scheitern lassen.
+    """
+    from app.services.learning import (
+        compute_draft_diff,
+        mark_episode_corrected,
+        record_feedback,
+    )
+
+    client = _get_graph_client()
+    if client is None:
+        return 0
+
+    reconciled = 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RECONCILE_LOOKBACK_DAYS)
+    try:
+        async with async_session() as db:
+            rows = await db.execute(
+                select(AgentJob)
+                .where(
+                    AgentJob.job_type == "email_triage",
+                    AgentJob.status == "awaiting_approval",
+                    AgentJob.created_at >= cutoff,
+                )
+                .order_by(AgentJob.created_at.desc())
+                .limit(limit)
+            )
+            jobs = list(rows.scalars().all())
+            for job in jobs:
+                meta = dict(job.metadata_json or {})
+                if meta.get("feedback_captured"):
+                    continue
+                original_html = meta.get("original_draft_html")
+                conv_id = meta.get("draft_conversation_id")
+                to_list = meta.get("draft_to") or []
+                recipient = to_list[0] if to_list else None
+                # Ohne Snapshot + conversationId + Empfaenger kein sicheres Matching.
+                if not (original_html and conv_id and recipient):
+                    continue
+
+                try:
+                    sent = await client.search_my_replies_to(recipient, top=5)
+                except Exception:
+                    logger.warning("Reconciliation: sentitems-Abfrage fehlgeschlagen (%s)", recipient)
+                    continue
+
+                match = None
+                for m in sent:
+                    if m.get("conversationId") != conv_id:
+                        continue
+                    sent_dt = m.get("sentDateTime")
+                    try:
+                        sent_at = isoparse(sent_dt) if sent_dt else None
+                    except Exception:
+                        sent_at = None
+                    if sent_at and job.created_at and sent_at <= job.created_at:
+                        continue
+                    match = m
+                    break
+                if match is None:
+                    continue
+
+                body = match.get("body", {}) or {}
+                sent_html = (
+                    body.get("content")
+                    if body.get("contentType") == "html"
+                    else match.get("bodyPreview")
+                )
+                diff_text, is_clean = compute_draft_diff(original_html, sent_html)
+                await record_feedback(
+                    db,
+                    feedback_type="approved_clean" if is_clean else "draft_edit",
+                    agent_job_id=job.id,
+                    sender_email=recipient,
+                    source="outlook",
+                    original={"body_html": original_html},
+                    corrected={"body_html": sent_html},
+                    diff_text=diff_text or None,
+                )
+                if not is_clean:
+                    await mark_episode_corrected(db, agent_job_id=job.id)
+
+                meta["feedback_captured"] = True
+                job.metadata_json = meta
+                job.status = "completed"
+                job.completed_at = datetime.now(timezone.utc)
+                job.output = (job.output or "") + (
+                    "\n\n--- In Outlook versendet erkannt; Lernsignal erfasst. ---"
+                )
+                reconciled += 1
+
+            await db.commit()
+    except Exception:
+        logger.exception("Sent-Items-Reconciliation fehlgeschlagen")
+    finally:
+        if client:
+            await client.close()
+
+    return reconciled
+
+
 async def triage_loop() -> None:
     """Automatische Endlosschleife: Prueft alle 2 Minuten auf neue E-Mails.
 
@@ -255,6 +370,10 @@ async def triage_loop() -> None:
             count = await _triage_cycle()
             if count:
                 logger.info("Triage: %d neue E-Mail(s) → AgentJobs für Hermes-Worker erstellt", count)
+            # Sent-Items-Reconciliation: in Outlook versendete Entwuerfe als Lernsignal erfassen.
+            reconciled = await _reconcile_sent_drafts()
+            if reconciled:
+                logger.info("Reconciliation: %d in Outlook versendete Entwurf/Entwuerfe als Lernsignal erfasst", reconciled)
         except Exception:
             logger.exception("Triage-Service: unerwarteter Fehler")
         await asyncio.sleep(interval)

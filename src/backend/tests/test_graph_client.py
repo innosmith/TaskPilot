@@ -145,6 +145,91 @@ async def test_search_sender_emails_fallback_on_400(graph_client):
 
 
 # ---------------------------------------------------------------------------
+# create_draft: Reply-im-Thread + Empfaenger-Korrektheit (Stil-Lern-Signal)
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_draft_reply_uses_createreply_without_overriding_recipients(graph_client):
+    """Reply: createReply nutzen, toRecipients NICHT mitschicken (Default behalten)."""
+    isread_route = respx.get(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-1",
+    ).respond(json={"id": "orig-1", "isRead": True})
+    reply_route = respx.post(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-1/createReply",
+    ).respond(json={"id": "draft-1", "conversationId": "conv-1"})
+    new_mail_route = respx.post(
+        url="https://graph.microsoft.com/v1.0/users/user@example.com/messages",
+    ).respond(json={"id": "should-not-be-used"})
+
+    draft = await graph_client.create_draft(
+        subject="RE: Test",
+        body_html="<p>Antwort</p>",
+        to_recipients=["falsch@example.com"],
+        reply_to_id="orig-1",
+    )
+
+    assert draft["id"] == "draft-1"
+    assert reply_route.called
+    # Niemals ein neuer Thread bei Reply.
+    assert not new_mail_route.called
+    assert isread_route.called
+    body = _json.loads(reply_route.calls[0].request.content)
+    # createReply-Default-Empfaenger NICHT ueberschreiben.
+    assert "toRecipients" not in body["message"]
+    assert body["message"]["body"]["content"] == "<p>Antwort</p>"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_draft_reply_adds_cc_additively(graph_client):
+    """CC darf bei Reply ergaenzt werden (additiv), TO bleibt createReply-Default."""
+    respx.get(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-2",
+    ).respond(json={"id": "orig-2", "isRead": True})
+    reply_route = respx.post(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-2/createReply",
+    ).respond(json={"id": "draft-2"})
+
+    await graph_client.create_draft(
+        subject="RE: Test",
+        body_html="<p>Hi</p>",
+        to_recipients=["sender@example.com"],
+        cc_recipients=["chef@example.com"],
+        reply_to_id="orig-2",
+    )
+
+    body = _json.loads(reply_route.calls[0].request.content)
+    assert "toRecipients" not in body["message"]
+    cc = [r["emailAddress"]["address"] for r in body["message"]["ccRecipients"]]
+    assert cc == ["chef@example.com"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_draft_new_mail_sets_recipients(graph_client):
+    """Ohne reply_to_id: normale neue Mail mit explizitem TO-Empfaenger."""
+    new_mail_route = respx.post(
+        url="https://graph.microsoft.com/v1.0/users/user@example.com/messages",
+    ).respond(json={"id": "draft-new"})
+
+    draft = await graph_client.create_draft(
+        subject="Neue Mail",
+        body_html="<p>Text</p>",
+        to_recipients=["empfaenger@example.com"],
+    )
+
+    assert draft["id"] == "draft-new"
+    assert new_mail_route.called
+    body = _json.loads(new_mail_route.calls[0].request.content)
+    to = [r["emailAddress"]["address"] for r in body["toRecipients"]]
+    assert to == ["empfaenger@example.com"]
+
+
+# ---------------------------------------------------------------------------
 # Kalender: Zeitzonen-Offset in der calendarView-Abfrage (Überbuchungs-Fix)
 # ---------------------------------------------------------------------------
 

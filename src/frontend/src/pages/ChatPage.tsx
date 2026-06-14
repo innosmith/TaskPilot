@@ -180,6 +180,23 @@ const chatMdComponents: Partial<Components> = {
   },
 };
 
+// Spiegelt extract_teach_intent (Backend): erkennt "merk dir ..."-Lehr-Absichten,
+// damit das UI sofort einen dezenten Lern-Hinweis anzeigen kann.
+const TEACH_TRIGGERS = [
+  /\bmerk(?:e)?\s+dir\b/i,
+  /\bnotier(?:e)?\s+dir\b/i,
+  /\bpräg(?:e)?\s+dir\b.*?\bein\b/i,
+  /\bvergiss\s+nicht\b/i,
+  /\bbehalte\b.*?\bim\s+hinterkopf\b/i,
+  /\b(?:für\s+die\s+zukunft|ab\s+jetzt|künftig|in\s+zukunft)\b/i,
+  /\blern(?:e)?(?:\s+bitte)?[:,]?\s+\S/i,
+];
+
+function detectTeachIntent(text: string): boolean {
+  if (!text || !text.trim()) return false;
+  return TEACH_TRIGGERS.some((re) => re.test(text));
+}
+
 const PROVIDER_ORDER = ['ollama', 'openai', 'anthropic', 'gemini', 'perplexity'];
 const PROVIDER_LABELS: Record<string, string> = {
   ollama: 'Ollama (Lokal)',
@@ -1385,6 +1402,15 @@ export function ChatPage() {
                   </div>
                 </div>
               </div>
+              {detectTeachIntent(input) ? (
+                <p className="mt-1.5 px-1 text-[11px] text-indigo-600 dark:text-indigo-400">
+                  Wird als Lern-Vorschlag erfasst — Freigabe später im Intelligenz-Tab.
+                </p>
+              ) : (
+                <p className="mt-1.5 px-1 text-[11px] text-gray-400 dark:text-gray-500">
+                  Tipp: «Merk dir …» bringt InnoPilot etwas dauerhaft bei.
+                </p>
+              )}
             </div>
           </div>
         ) : (
@@ -1768,6 +1794,11 @@ export function ChatPage() {
                   </button>
                 </div>
               </div>
+              {detectTeachIntent(input) && (
+                <p className="mt-1.5 px-1 text-[11px] text-indigo-600 dark:text-indigo-400">
+                  Wird als Lern-Vorschlag erfasst — Freigabe später im Intelligenz-Tab.
+                </p>
+              )}
             </div>
           </div>
         </div>}

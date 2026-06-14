@@ -43,6 +43,7 @@ from app.services.hermes_config import (
     populate_hermes_env,
     write_hermes_config,
 )
+from app.services.learning import record_episode
 from app.services.notification import notify_agent_awaiting_approval, notify_task_suggested
 
 logger = logging.getLogger("taskpilot.hermes_worker")
@@ -159,6 +160,120 @@ async def _load_projects_context() -> str:
     return "\n".join(lines)
 
 
+async def _build_recall_block(meta: dict) -> str:
+    """Few-Shot-Recall: gelernte Lektionen aus aehnlichen frueheren Korrekturen.
+
+    Hoechstes Lernsignal -- zeigt dem Agenten, wie der Berater in vergleichbaren
+    Faellen frueher korrigiert hat, damit derselbe Fehler nicht wiederholt wird.
+    Best-effort: ohne Embedding-Modell/Episoden faellt der Block weg.
+    """
+    cfg = get_settings()
+    if not cfg.agent_recall_enabled:
+        return ""
+    try:
+        from app.services.learning import recall_similar_episodes
+
+        subject = meta.get("subject", "")
+        from_addr = meta.get("from_address", "")
+        from_name = meta.get("from_name", "")
+        preview = meta.get("body_preview", "")
+        query = f"E-Mail von {from_name} <{from_addr}>: '{subject}'. {preview[:300]}"
+
+        async with async_session() as db:
+            episodes = await recall_similar_episodes(
+                db, query=query, job_type="email_triage", k=3, corrected_only=True,
+            )
+        lessons = [e for e in episodes if (e.get("lesson") or "").strip()]
+        if not lessons:
+            return ""
+
+        lines = []
+        for e in lessons:
+            sim = e.get("similarity")
+            sim_pct = f" ({round(float(sim) * 100)}% aehnlich)" if isinstance(sim, (int, float)) else ""
+            sender = e.get("sender_email") or "?"
+            lines.append(f"- Frueherer Fall ({sender}){sim_pct}: {e['lesson'].strip()}")
+
+        return (
+            "\n---\n\n## GELERNTE LEKTIONEN AUS FRÜHEREN KORREKTUREN (BEACHTEN!)\n"
+            "Der Berater hat in ähnlichen Fällen früher korrigiert. Wiederhole diese "
+            "Fehler NICHT:\n" + "\n".join(lines) + "\n"
+        )
+    except Exception:  # noqa: BLE001 - best-effort, darf Prompt-Bau nie stoppen
+        logger.warning("Recall-Block konnte nicht erzeugt werden")
+        return ""
+
+
+def _compute_self_grade(
+    meta: dict, result_meta: dict, tools_used: list[str]
+) -> dict:
+    """Deterministisches Self-Grading eines Triage-Jobs (Saeule 3).
+
+    Prueft anhand der tatsaechlich aufgerufenen Tools, ob der Agent die im Prompt
+    geforderten Pflicht-Kontexte geladen hat (Thread/Absender-History/-Profil) und
+    -- bei einem Entwurf -- den Stil-Anker (`search_my_replies`) genutzt hat. Rein
+    und damit unabhaengig testbar. Tool-Namen werden per Substring gematcht, um
+    MCP-Praefixe abzufangen.
+    """
+
+    def used(key: str) -> bool:
+        return any(key in (t or "") for t in tools_used)
+
+    has_conversation = bool(meta.get("conversation_id"))
+    has_draft = bool(result_meta.get("draft_id"))
+
+    checks: dict[str, bool] = {
+        "sender_history_loaded": used("search_sender_history"),
+        "sender_profile_loaded": used("get_sender_profile"),
+    }
+    if has_conversation:
+        checks["thread_loaded"] = used("get_thread")
+    if has_draft:
+        checks["style_anchor_used"] = used("search_my_replies")
+
+    passed = sum(1 for v in checks.values() if v)
+    total = len(checks) or 1
+    missing = [k for k, v in checks.items() if not v]
+    return {
+        "score": round(passed / total, 2),
+        "checks": checks,
+        "missing": missing,
+    }
+
+
+async def _build_active_rules_block() -> str:
+    """Vom Berater freigegebene gelernte Regeln (Saeule 5) in den Prompt einspeisen.
+
+    Nur ``status='active'``-Regeln wirken -- Vorschlaege (``proposed``) bleiben bis
+    zur HITL-Freigabe folgenlos. Best-effort.
+    """
+    try:
+        from app.models import LearnedRule
+
+        async with async_session() as db:
+            result = await db.execute(
+                select(LearnedRule)
+                .where(
+                    LearnedRule.status == "active",
+                    LearnedRule.scope.in_(("triage", "draft", "general")),
+                )
+                .order_by(LearnedRule.approved_at.desc())
+                .limit(20)
+            )
+            rules = result.scalars().all()
+        if not rules:
+            return ""
+        lines = [f"- [{r.scope}] {r.rule_text}" for r in rules]
+        return (
+            "\n---\n\n## AKTIVE GELERNTE REGELN (vom Berater freigegeben -- VERBINDLICH)\n"
+            "Diese Regeln wurden aus deinen frueheren Korrekturen abgeleitet und "
+            "freigegeben. Befolge sie:\n" + "\n".join(lines) + "\n"
+        )
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("Aktive-Regeln-Block konnte nicht erzeugt werden")
+        return ""
+
+
 async def _build_triage_prompt(job: AgentJob) -> str:
     """Baut den Prompt für einen email_triage Job aus Metadata."""
     skill_text = _load_triage_skill()
@@ -185,6 +300,26 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     inference = meta.get("inference_classification", "")
     conversation_id = meta.get("conversation_id", "")
     recipient_type = meta.get("recipient_type", "unknown")
+    forced_class = meta.get("forced_class")
+    correction_reason = meta.get("correction_reason") or ""
+    recall_block = await _build_recall_block(meta)
+    rules_block = await _build_active_rules_block()
+
+    correction_block = ""
+    if forced_class:
+        artefakt = "einen Antwort-Entwurf (auto_reply)" if forced_class == "auto_reply" else "eine Aufgabe (task)"
+        correction_block = (
+            "## ⚠️ KORREKTUR DES BERATERS (HÖCHSTE PRIORITÄT)\n\n"
+            f"Der Berater hat entschieden: Diese E-Mail MUSS als **{forced_class}** behandelt werden "
+            f"-> erzeuge {artefakt}.\n"
+            "→ Klassifiziere NICHT neu und überschreibe diese Entscheidung NICHT.\n"
+            "→ Lade dennoch die Pflicht-Kontexte (Thread, Absender-History, -Profil) "
+            "und nutze bei auto_reply den Stil-Anker (search_my_replies), bevor du den "
+            "Artefakt erzeugst.\n"
+            f"→ Setze triage_class im JSON-Block zwingend auf \"{forced_class}\".\n"
+            + (f"→ Begründung des Beraters: {correction_reason}\n" if correction_reason else "")
+            + "\n---\n\n"
+        )
 
     thread_hint = ""
     if conversation_id:
@@ -203,14 +338,14 @@ async def _build_triage_prompt(job: AgentJob) -> str:
             "es sei denn, Anthony wird im Body direkt angesprochen.\n"
         )
 
-    return f"""## TRIAGE-INSTRUKTIONEN (STRIKT befolgen!)
+    return f"""{correction_block}## TRIAGE-INSTRUKTIONEN (STRIKT befolgen!)
 
 {skill_text}
 
 ---
 
 {projects_context}
-
+{recall_block}{rules_block}
 ---
 
 ## AKTUELLER JOB
@@ -257,7 +392,7 @@ Führe jetzt den Triage-Ablauf durch:
 4. Klassifiziere gemäss der Prioritätsreihenfolge
 5. Setze die Outlook-Kategorie
 6. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
-7. Erstelle Draft falls auto_reply. WICHTIG: Rufe VORHER search_my_replies("{from_addr}") auf und nutze die letzten von Anthony gesendeten Antworten an diesen Kontakt als VERBATIM Stil-Anker (imitiere Ton, Länge, Anrede und Schlussformel). (Bei task übernimmt das Backend die Task-Erstellung automatisch.)
+7. Erstelle Draft falls auto_reply. WICHTIG: Rufe VORHER search_my_replies("{from_addr}") auf und nutze die letzten von Anthony gesendeten Antworten an diesen Kontakt als VERBATIM Stil-Anker (imitiere Ton, Länge, Anrede und Schlussformel). PFLICHT: Übergib bei create_draft IMMER reply_to_id="{email_id}", damit die Antwort im selben Thread landet (NIEMALS einen neuen Thread starten). Empfänger NICHT manuell überschreiben — createReply setzt den korrekten Empfänger automatisch. (Bei task übernimmt das Backend die Task-Erstellung automatisch.)
 8. Gib den PFLICHT-JSON-Block aus (Schritt 8 im Skill)
 9. Aktualisiere das Absender-Profil (Schritt 9 im Skill)
 10. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
@@ -390,6 +525,51 @@ def _determine_pipeline_column(deadline_str: str | None) -> str | None:
     return PIPELINE_COLUMNS["this_month"]
 
 
+async def _build_graph_client():
+    """Baut einen GraphClient aus den Settings (oder None, wenn nicht konfiguriert)."""
+    s = get_settings()
+    if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):
+        return None
+    import sys as _sys
+
+    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
+    from graph_client import GraphClient, GraphConfig  # noqa: E402
+
+    return GraphClient(GraphConfig(
+        tenant_id=s.graph_tenant_id,
+        client_id=s.graph_client_id,
+        client_secret=s.graph_client_secret,
+        user_email=s.graph_user_email,
+    ))
+
+
+async def _snapshot_agent_draft(draft_id: str) -> dict | None:
+    """Liest den vom Agenten erstellten Entwurf (Body + Empfaenger + conversationId).
+
+    Dient als Original-Referenz fuer den spaeteren Stil-Diff (Lernsignal). Best-effort.
+    """
+    client = await _build_graph_client()
+    if client is None:
+        return None
+    try:
+        msg = await client.get_email(draft_id)
+        body = msg.get("body", {}) or {}
+        return {
+            "body_html": body.get("content") if body.get("contentType") == "html" else msg.get("bodyPreview"),
+            "conversation_id": msg.get("conversationId"),
+            "to": [r.get("emailAddress", {}).get("address", "") for r in msg.get("toRecipients", [])],
+            "cc": [r.get("emailAddress", {}).get("address", "") for r in msg.get("ccRecipients", [])],
+        }
+    except Exception:  # noqa: BLE001 - best-effort, darf Job nicht stoppen
+        logger.warning("Draft-Snapshot fehlgeschlagen (draft_id=%s)", str(draft_id)[:40])
+        return None
+    finally:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     """Deterministische Post-Processing-Logik nach LLM-Klassifikation."""
     parsed = _extract_json_block(content)
@@ -415,7 +595,19 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     elif triage_class == "bedenkzeit":
         triage_class = "task"
 
-    if draft_id and triage_class != "auto_reply":
+    # Berater-Korrektur erzwingen: Eine vom Menschen vorgegebene Klasse hat Vorrang
+    # vor der (ggf. abweichenden) Selbst-Klassifikation des Agenten.
+    forced_class = meta.get("forced_class")
+    if forced_class in ("auto_reply", "task", "fyi") and triage_class != forced_class:
+        logger.info(
+            "Job %s: forced_class=%s erzwingt Korrektur (Agent wollte %s)",
+            job_id, forced_class, triage_class,
+        )
+        triage_class = forced_class
+
+    # Bei erzwungener Klasse den Draft-basierten Auto-Switch unterdruecken, damit
+    # eine bewusst gewollte 'task'-Korrektur nicht zurueck auf auto_reply kippt.
+    if draft_id and triage_class != "auto_reply" and forced_class != "task":
         logger.warning("Job %s: draft_id vorhanden aber triage_class=%s, korrigiere zu auto_reply", job_id, triage_class)
         triage_class = "auto_reply"
 
@@ -528,10 +720,40 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
             if job:
                 existing_meta = dict(job.metadata_json or {})
                 existing_meta["draft_id"] = draft_id
+                # Original-Entwurf als Referenz fuer den spaeteren Stil-Diff snapshotten.
+                snapshot = await _snapshot_agent_draft(draft_id)
+                if snapshot:
+                    existing_meta["original_draft_html"] = snapshot.get("body_html")
+                    existing_meta["draft_conversation_id"] = snapshot.get("conversation_id")
+                    existing_meta["draft_to"] = snapshot.get("to")
+                    existing_meta["draft_cc"] = snapshot.get("cc")
                 job.metadata_json = existing_meta
             final_status = "awaiting_approval"
             await notify_agent_awaiting_approval(
                 db, job_id=job_id, subject=meta.get("subject"),
+            )
+
+        # Episode fuer das episodische Gedaechtnis ablegen (Recall-Basis).
+        if triage_class:
+            from_name = meta.get("from_name") or ""
+            from_address = meta.get("from_address") or ""
+            subject = meta.get("subject") or "(kein Betreff)"
+            summary = (
+                f"E-Mail von {from_name} <{from_address}>: '{subject}'. "
+                f"Triage-Entscheid: {triage_class}"
+                + (", Antwort erwartet" if reply_expected else "")
+            )
+            await record_episode(
+                db,
+                summary=summary,
+                job_type="email_triage",
+                agent_job_id=job_id,
+                sender_email=from_address or None,
+                decision={
+                    "triage_class": triage_class,
+                    "reply_expected": bool(reply_expected),
+                    "draft_id": draft_id,
+                },
             )
 
         await db.commit()
@@ -631,7 +853,9 @@ def _build_worker_agent():
         max_iterations=90,
         tool_delay=0.0,
         quiet_mode=True,
-        save_trajectories=False,
+        # Hermes-native: Trajektorien persistieren (Grundlage fuer Inspektion +
+        # spaeteres Fine-Tuning/Lernen). Best-effort in Hermes, schreibt JSONL.
+        save_trajectories=True,
         session_id="taskpilot-worker",
         reasoning_callback=_on_reasoning,
         tool_start_callback=_on_tool_start,
@@ -735,7 +959,7 @@ def build_chat_agent(
         max_iterations=90,
         tool_delay=0.0,
         quiet_mode=True,
-        save_trajectories=False,
+        save_trajectories=True,
         session_id=session_id or "taskpilot-chat",
         stream_delta_callback=on_text,
         reasoning_callback=on_reasoning,
@@ -822,6 +1046,14 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
             new_meta = dict((job.metadata_json if job else None) or meta)
             new_meta["trace"] = trace
             new_meta["tools_used"] = tools_used
+            if job_type == "email_triage":
+                grade = _compute_self_grade(meta, new_meta, tools_used)
+                new_meta["self_grade"] = grade
+                if grade["missing"]:
+                    logger.info(
+                        "Job %s Self-Grade %.2f, fehlende Pflicht-Kontexte: %s",
+                        job_id, grade["score"], grade["missing"],
+                    )
             await db.execute(
                 update(AgentJob)
                 .where(AgentJob.id == job_id)

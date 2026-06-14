@@ -242,20 +242,27 @@ class GraphClient:
         cc_recipients: list[str] | None = None,
         reply_to_id: str | None = None,
     ) -> dict:
-        """Entwurf im Drafts-Ordner erstellen."""
-        message: dict = {
-            "subject": subject,
-            "body": {"contentType": "HTML", "content": body_html},
-            "toRecipients": [
-                {"emailAddress": {"address": addr}} for addr in to_recipients
-            ],
-        }
-        if cc_recipients:
-            message["ccRecipients"] = [
-                {"emailAddress": {"address": addr}} for addr in cc_recipients
-            ]
+        """Entwurf im Drafts-Ordner erstellen.
 
+        Bei ``reply_to_id`` wird ``createReply`` genutzt: Microsoft Graph befuellt
+        Empfaenger (Original-Absender) und Betreff ("RE: ...") korrekt vor. Wir
+        ueberschreiben diese Defaults NICHT mehr mit eigenen ``toRecipients`` --
+        das hatte zu falschen/fehlenden Empfaengern und (bei fehlendem
+        ``reply_to_id``) zu neuen Threads gefuehrt. Wir setzen nur den Body und
+        ergaenzen optionale CC-Empfaenger additiv.
+        """
         if reply_to_id:
+            # Reply-Pfad: Empfaenger-Defaults von createReply uebernehmen,
+            # nur Body setzen (+ optional CC ergaenzen). Betreff bleibt der
+            # createReply-Default ("RE: ..."), Thread-Zugehoerigkeit garantiert.
+            reply_message: dict = {
+                "body": {"contentType": "HTML", "content": body_html},
+            }
+            if cc_recipients:
+                reply_message["ccRecipients"] = [
+                    {"emailAddress": {"address": addr}} for addr in cc_recipients
+                ]
+
             # Exchange Online kippt bei createReply den isRead-Status der
             # Originalmail auf true, sofern diese kurz zuvor (≈10 Min.) von
             # einer App ge-PATCHt wurde (z.B. set_categories in der Triage).
@@ -277,7 +284,7 @@ class GraphClient:
 
             draft = await self._post(
                 f"{self._user_path}/messages/{reply_to_id}/createReply",
-                {"message": message},
+                {"message": reply_message},
             )
 
             if was_unread:
@@ -290,6 +297,19 @@ class GraphClient:
                         reply_to_id,
                     )
             return draft
+
+        # Neue Mail (kein Reply): Empfaenger explizit setzen.
+        message: dict = {
+            "subject": subject,
+            "body": {"contentType": "HTML", "content": body_html},
+            "toRecipients": [
+                {"emailAddress": {"address": addr}} for addr in to_recipients
+            ],
+        }
+        if cc_recipients:
+            message["ccRecipients"] = [
+                {"emailAddress": {"address": addr}} for addr in cc_recipients
+            ]
         return await self._post(f"{self._user_path}/messages", message)
 
     async def send_draft(self, message_id: str) -> None:

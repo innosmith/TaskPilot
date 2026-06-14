@@ -208,6 +208,10 @@ CREATE TABLE sender_profiles (
     notes           TEXT,
     email_count     INT DEFAULT 0,
     last_contact_at TIMESTAMPTZ,
+    -- Tone-of-Voice-Lernen (Migration 005)
+    learned_tone    JSONB DEFAULT '{}'::jsonb,
+    style_notes     TEXT,
+    correction_count INT DEFAULT 0,
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now()
 );
@@ -496,3 +500,75 @@ CREATE TRIGGER capacity_projects_updated_at BEFORE UPDATE ON capacity_projects
 
 CREATE TRIGGER capacity_allocations_updated_at BEFORE UPDATE ON capacity_allocations
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ─────────────────────────────────────────────────────────
+-- Agent-Lern-Schicht (Memory & Self-Learning, Migration 005)
+-- ─────────────────────────────────────────────────────────
+
+-- Erfasste Korrektursignale (Draft-Edits, Reklassifikation, Daumen, Chat-Teach)
+CREATE TABLE agent_feedback (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_job_id    UUID REFERENCES agent_jobs(id) ON DELETE SET NULL,
+    sender_email    TEXT,
+    source          TEXT NOT NULL DEFAULT 'cockpit'
+                    CHECK (source IN ('cockpit', 'outlook', 'chat', 'system')),
+    feedback_type   TEXT NOT NULL CHECK (feedback_type IN (
+        'draft_edit', 'approved_clean', 'rejected',
+        'triage_reclass', 'task_deleted', 'task_moved',
+        'thumbs_up', 'thumbs_down', 'chat_teach'
+    )),
+    original        JSONB DEFAULT '{}'::jsonb,
+    corrected       JSONB DEFAULT '{}'::jsonb,
+    diff_text       TEXT,
+    reason          TEXT,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_agent_feedback_job ON agent_feedback(agent_job_id);
+CREATE INDEX idx_agent_feedback_type ON agent_feedback(feedback_type);
+CREATE INDEX idx_agent_feedback_sender ON agent_feedback(sender_email);
+CREATE INDEX idx_agent_feedback_created ON agent_feedback(created_at DESC);
+
+-- Episodisches Gedaechtnis mit lokalem Embedding (pgvector-Recall)
+CREATE TABLE agent_episodes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_job_id    UUID REFERENCES agent_jobs(id) ON DELETE SET NULL,
+    job_type        TEXT,
+    sender_email    TEXT,
+    summary         TEXT NOT NULL,
+    decision        JSONB DEFAULT '{}'::jsonb,
+    was_corrected   BOOLEAN DEFAULT false,
+    lesson          TEXT,
+    embedding       vector(1024),
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_agent_episodes_job ON agent_episodes(agent_job_id);
+CREATE INDEX idx_agent_episodes_type ON agent_episodes(job_type);
+CREATE INDEX idx_agent_episodes_sender ON agent_episodes(sender_email);
+CREATE INDEX idx_agent_episodes_corrected ON agent_episodes(was_corrected);
+CREATE INDEX idx_agent_episodes_embedding
+    ON agent_episodes USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- Gelernte Regeln (Agent schlaegt vor, Berater gibt frei)
+CREATE TABLE learned_rules (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scope           TEXT NOT NULL DEFAULT 'triage'
+                    CHECK (scope IN ('triage', 'draft', 'task', 'calendar', 'general')),
+    rule_text       TEXT NOT NULL,
+    evidence        JSONB DEFAULT '{}'::jsonb,
+    status          TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK (status IN ('proposed', 'active', 'rejected', 'archived')),
+    autonomy_hint   TEXT,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    approved_at     TIMESTAMPTZ
+);
+
+CREATE INDEX idx_learned_rules_status ON learned_rules(status);
+CREATE INDEX idx_learned_rules_scope ON learned_rules(scope);
+
+CREATE TRIGGER agent_feedback_notify AFTER INSERT OR UPDATE ON agent_feedback
+    FOR EACH ROW EXECUTE FUNCTION notify_change('agent_feedback_changed');
+
+CREATE TRIGGER learned_rules_notify AFTER INSERT OR UPDATE ON learned_rules
+    FOR EACH ROW EXECUTE FUNCTION notify_change('learned_rules_changed');

@@ -85,6 +85,20 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     triage_model: str = "ollama/qwen3.6:latest"  # Legacy — wird durch llm_default_local_model ersetzt
 
+    # Agent-Memory / Lernen (lokale Embeddings via Ollama)
+    # Qwen3-Embedding-0.6B: SOTA-Familie (MTEB-Multilingual #1 bei 8B), exzellentes
+    # Deutsch, native Dimension 1024 -> passt exakt zum vector(1024)-Schema.
+    embed_model: str = "qwen3-embedding:0.6b-fp16"
+    embed_dim: int = 1024
+    # Episodischen Recall + Few-Shot-Injektion ein-/ausschalten (Saeule 2)
+    agent_recall_enabled: bool = True
+    # Reflexions-Job (lokal): konsolidiert Korrektursignale zu Regel-Vorschlaegen
+    agent_reflection_enabled: bool = True
+    # Intervall des Reflexions-Jobs in Sekunden (Default: taeglich)
+    agent_reflection_interval_seconds: int = 86400
+    # Mindestzahl gleichartiger Korrekturen, bevor eine Regel vorgeschlagen wird
+    agent_reflection_min_occurrences: int = 2
+
     # Pipedrive CRM
     pipedrive_api_token: str = ""
     pipedrive_domain: str = "innosmith"

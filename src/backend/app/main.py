@@ -56,6 +56,10 @@ from app.services.hermes_worker import start_hermes_worker, stop_hermes_worker
 from app.services.notification import start_notification_scheduler, stop_notification_scheduler
 from app.services.pipeline_promoter import start_pipeline_promoter, stop_pipeline_promoter
 from app.services.recurring import start_recurring_scheduler, stop_recurring_scheduler
+from app.services.reflection import (
+    start_reflection_scheduler,
+    stop_reflection_scheduler,
+)
 from app.services.triage import start_triage_service, stop_triage_service
 
 logging.basicConfig(level=logging.INFO)
@@ -149,7 +153,9 @@ async def lifespan(app: FastAPI):
     await start_pipeline_promoter()
     await start_triage_service()
     await start_notification_scheduler()
+    await start_reflection_scheduler()
     yield
+    await stop_reflection_scheduler()
     await stop_notification_scheduler()
     await stop_triage_service()
     await stop_pipeline_promoter()
