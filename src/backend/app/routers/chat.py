@@ -146,6 +146,7 @@ async def create_conversation(
         model=body.get("model", default_model),
         mode=body.get("mode", "chat"),
         temperature=body.get("temperature", default_temp),
+        grounding=body.get("grounding") or {},
     )
     db.add(conv)
     await db.flush()
@@ -156,6 +157,7 @@ async def create_conversation(
         "model": conv.model,
         "mode": conv.mode,
         "temperature": conv.temperature,
+        "grounding": conv.grounding or {},
         "total_tokens": conv.total_tokens,
         "total_cost_usd": float(conv.total_cost_usd),
         "created_at": conv.created_at.isoformat(),
@@ -198,6 +200,7 @@ async def get_conversation(
         "model": conv.model,
         "mode": conv.mode,
         "temperature": conv.temperature,
+        "grounding": conv.grounding or {},
         "total_tokens": conv.total_tokens,
         "total_cost_usd": float(conv.total_cost_usd),
         "created_at": conv.created_at.isoformat(),
@@ -260,6 +263,8 @@ async def update_conversation(
         conv.temperature = body["temperature"]
     if "mode" in body:
         conv.mode = body["mode"]
+    if "grounding" in body:
+        conv.grounding = body["grounding"] or {}
 
     await db.flush()
     return {
@@ -268,6 +273,7 @@ async def update_conversation(
         "model": conv.model,
         "mode": conv.mode,
         "temperature": conv.temperature,
+        "grounding": conv.grounding or {},
     }
 
 
@@ -623,8 +629,6 @@ async def create_task_from_message(
 
 
 MAX_AGENT_TIMEOUT = 600
-_NANOBOT_HOME = os.path.expanduser("~/.nanobot")
-_NANOBOT_CONFIG = os.path.join(_NANOBOT_HOME, "config.json")
 
 # ── Agent-Event-Buffer (Background-Decoupling) ──────────────────
 # Jeder laufende/kürzlich beendete Agent-Run hat eine Event-Liste.
@@ -656,13 +660,10 @@ async def _cleanup_agent_events(job_id: str):
 
 
 def _load_agent_skills() -> str:
-    """Lädt alle .md-Skill-Dateien dynamisch aus dem Nanobot-Workspace."""
-    from pathlib import Path
+    """Lädt alle .md-Skill-Dateien dynamisch aus dem Hermes-Home."""
+    from app.services.hermes_config import get_hermes_home
 
-    skills_dir = Path(os.environ.get(
-        "TP_NANOBOT_WORKSPACE",
-        os.path.expanduser("~/.nanobot/workspace"),
-    )) / "skills"
+    skills_dir = get_hermes_home() / "skills"
 
     if not skills_dir.exists():
         return ""
@@ -754,18 +755,21 @@ MCP_SERVER_DESCRIPTIONS: dict[str, dict[str, str]] = {
 
 
 def _get_configured_mcp_servers() -> dict:
-    """Liest die MCP-Server-Liste aus der Nanobot-Config."""
-    config_path = os.path.join(_NANOBOT_HOME, "config.json")
+    """Liest die MCP-Server-Liste aus der Hermes-Config (~/.hermes/config.yaml)."""
+    import yaml
+    from app.services.hermes_config import get_hermes_home
+
+    config_path = get_hermes_home() / "config.yaml"
     try:
         with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-        return config.get("tools", {}).get("mcpServers", {})
+            config = yaml.safe_load(f) or {}
+        return config.get("mcp_servers", {})
     except Exception:
         return {}
 
 
 def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
-    """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Nanobot SDK via MCP."""
+    """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Hermes-Agent via MCP."""
     from datetime import datetime, timezone as tz
     from zoneinfo import ZoneInfo
 
@@ -854,8 +858,40 @@ async def send_agent_message(
         raise HTTPException(status_code=404, detail="Konversation nicht gefunden")
 
     user_content = body.get("content", "")
-    selected_model = body.get("model", "nanobot")
+    selected_model = body.get("model", "hermes")
     logger.info("[agent] Nachricht (%.80s…), conv=%s", user_content, conversation_id)
+
+    # Grounding-Politik: Lokale Modelle = voller Zugriff. Cloud-Modelle =
+    # Default-Deny; nur explizit freigegebene MCP-Server + optional Memory.
+    from app.services.hermes_worker import (
+        CLOUD_TOOL_LIMIT,
+        _is_local_model,
+        count_tools,
+        resolve_cloud_toolsets,
+    )
+
+    requested_servers = body.get("enabled_servers") or []
+    include_memory = bool(body.get("include_memory", False))
+
+    if _is_local_model(selected_model):
+        grounding = {"enabled_servers": list(requested_servers), "include_memory": include_memory}
+    else:
+        valid_servers = resolve_cloud_toolsets(requested_servers)
+        tool_count = count_tools(valid_servers) if valid_servers else 0
+        if tool_count > CLOUD_TOOL_LIMIT:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Zu viele Tools für ein Cloud-Modell ({tool_count} > {CLOUD_TOOL_LIMIT}). "
+                    "Bitte weniger MCP-Server aktivieren."
+                ),
+            )
+        grounding = {"enabled_servers": valid_servers, "include_memory": include_memory}
+
+    conv.grounding = grounding
+    # Gewaehltes Modell pro Konversation merken (statt Platzhalter 'hermes'),
+    # damit die UI es beim Wiederoeffnen/Reload korrekt wiederherstellen kann.
+    conv.model = selected_model
 
     user_msg = LlmMessage(
         conversation_id=conv.id,
@@ -894,7 +930,14 @@ async def send_agent_message(
     _agent_running[job_id_str] = True
 
     asyncio.create_task(
-        _run_agent_background(job_id_str, conv_id_str, full_prompt, selected_model)
+        _run_agent_background(
+            job_id_str,
+            conv_id_str,
+            full_prompt,
+            selected_model,
+            enabled_servers=grounding["enabled_servers"],
+            include_memory=grounding["include_memory"],
+        )
     )
 
     return {
@@ -904,109 +947,29 @@ async def send_agent_message(
     }
 
 
-def _build_cloud_provider(loop, api_base: str):
-    """Erzeugt (einmalig) einen OpenAI-kompatiblen Provider, dessen HTTP-Client
-    fest an den LiteLLM-Proxy gebunden ist.
-
-    Hintergrund: Der ``AsyncOpenAI``-Client wird im Provider-Konstruktor gebaut
-    und cached die ``base_url``. Ein nachträgliches Setzen von
-    ``provider.api_base`` bleibt deshalb wirkungslos -- der Call ginge weiter an
-    den ursprünglichen (Ollama-)Endpoint. Wir erstellen darum einen eigenen
-    Provider mit korrekt gebundenem Client und verwenden ihn wieder.
-    """
-    cached = getattr(loop, "_tp_cloud_provider", None)
-    if cached is not None and getattr(cached, "_effective_base", None) == api_base:
-        return cached
-
-    from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-    from nanobot.providers.registry import find_by_name
-
-    # 'custom'-Spec: backend=openai_compat, is_direct, KEIN strip_model_prefix.
-    # Dadurch wird der volle Modellstring (z.B. 'openai/gpt-4o-mini') unverändert
-    # an den Proxy gesendet, der per Wildcard (openai/*, anthropic/*, gemini/*)
-    # zum jeweiligen Provider routet.
-    provider = OpenAICompatProvider(
-        api_key="sk-litellm-local",
-        api_base=api_base,
-        default_model="openai/gpt-4o-mini",
-        spec=find_by_name("custom"),
-    )
-    local = getattr(loop, "_tp_local_provider", None) or loop.provider
-    gen = getattr(local, "generation", None)
-    if gen is not None:
-        provider.generation = gen
-    loop._tp_cloud_provider = provider
-    return provider
-
-
-def _swap_loop_provider(loop, provider, model: str) -> None:
-    """Setzt Provider + Modell auf dem Loop UND allen abhängigen Komponenten.
-
-    Spiegelt nanobot's ``_apply_provider_snapshot``: Runner, Subagents,
-    Consolidator und Dream halten je eine eigene Provider-Referenz und müssen
-    mitgezogen werden, sonst nutzt z.B. der Runner weiter den alten Endpoint.
-    """
-    loop.provider = provider
-    loop.model = model
-    runner = getattr(loop, "runner", None)
-    if runner is not None:
-        runner.provider = provider
-    subagents = getattr(loop, "subagents", None)
-    if subagents is not None:
-        subagents.set_provider(provider, model)
-    consolidator = getattr(loop, "consolidator", None)
-    if consolidator is not None:
-        consolidator.set_provider(provider, model, loop.context_window_tokens)
-    dream = getattr(loop, "dream", None)
-    if dream is not None:
-        dream.set_provider(provider, model)
-
-
-def _apply_model_routing(bot, selected_model: str) -> None:
-    """Setzt Modell und Provider basierend auf User-Wahl.
-
-    Modell-ID-Format aus Frontend: 'ollama/qwen3.5:35b', 'openai/gpt-4o-mini',
-    'anthropic/claude-sonnet-4-6', etc. Lokale Modelle → Ollama direkt;
-    Cloud-Modelle → LiteLLM-Proxy (custom-Provider).
-
-    Wichtig: Es wird ein echter Provider-Wechsel durchgeführt (nicht nur eine
-    ``api_base``-Mutation), da der OpenAI-Client die ``base_url`` beim Bau cached.
-    """
-    if not selected_model or selected_model == "nanobot":
-        return
-
-    loop = bot._loop
-    s = get_settings()
-
-    # Den ursprünglichen (lokalen) Provider einmalig festhalten, um bei
-    # Ollama-Auswahl wieder darauf zurückschalten zu können.
-    if not hasattr(loop, "_tp_local_provider"):
-        loop._tp_local_provider = loop.provider
-
-    # Config-Snapshot-Loader deaktivieren: Das Routing erfolgt explizit pro
-    # Request. Ein Refresh aus der Config (Default-Provider = Ollama) würde
-    # unsere Auswahl zu Turn-Beginn (_process_message → _refresh_provider_snapshot)
-    # sonst wieder überschreiben.
-    loop._provider_snapshot_loader = None
-
-    if selected_model.startswith("ollama/"):
-        _swap_loop_provider(
-            loop, loop._tp_local_provider, selected_model.removeprefix("ollama/")
-        )
-    else:
-        provider = _build_cloud_provider(loop, f"{s.litellm_base_url}/v1")
-        _swap_loop_provider(loop, provider, selected_model)
-
-
 async def _run_agent_background(
-    job_id: str, conv_id: str, prompt: str, model: str
+    job_id: str,
+    conv_id: str,
+    prompt: str,
+    model: str,
+    *,
+    enabled_servers: list[str] | None = None,
+    include_memory: bool = False,
 ):
-    """Führt den Nanobot-Agent als Background-Task aus, schreibt Events in den Buffer."""
+    """Führt den Hermes-Agent (InnoPilot) als Background-Task aus.
+
+    Hermes ist synchron: ``AIAgent.run_conversation`` läuft in einem Thread
+    (``asyncio.to_thread``). Die synchronen Callbacks (Text/Reasoning/Tools)
+    feuern aus dem Worker-Thread und werden via ``loop.call_soon_threadsafe``
+    threadsicher in eine ``asyncio.Queue`` gebrückt. So bleibt die volle
+    Transparenz erhalten: man sieht InnoPilot denken (``thinking``), Tools
+    aufrufen (``tool_start``/``tool_event``) und streamen (``chunk``).
+    """
     from datetime import datetime, timezone as tz
-    from nanobot.agent.hook import AgentHook
-    from app.services.nanobot_worker import _init_chat_bot, reset_chat_bot
+    from app.services.hermes_worker import build_chat_agent, ensure_runtime_ready
 
     t_start = time.time()
+    loop = asyncio.get_running_loop()
 
     async def _update_agent_job(
         status: str,
@@ -1036,78 +999,92 @@ async def _run_agent_background(
 
     queue: asyncio.Queue = asyncio.Queue()
 
-    class BufferedHook(AgentHook):
-        """Nanobot-Events in Queue schreiben (Background-safe)."""
+    def _emit(evt_type: str, payload):
+        """Threadsicher ein Event in die Queue legen (aus dem Agent-Thread)."""
+        loop.call_soon_threadsafe(queue.put_nowait, (evt_type, payload))
 
-        def wants_streaming(self) -> bool:
-            return True
+    # Synchrone Hermes-Callbacks -> Queue-Brücke
+    def on_text(text: str):
+        if text:
+            _emit("chunk", text)
 
-        async def on_stream(self, context, delta: str):
-            await queue.put(("chunk", delta))
+    def on_reasoning(text: str):
+        if text:
+            _emit("thinking", text)
 
-        async def on_stream_end(self, context, *, resuming: bool = False):
-            if resuming:
-                await queue.put(("status", "InnoPilot arbeitet weiter..."))
+    _tools_used: list[str] = []
 
-        async def before_execute_tools(self, context):
-            tool_names = [tc.name for tc in (context.tool_calls or [])]
-            if tool_names:
-                await queue.put(("tool_start", ", ".join(tool_names)))
+    def on_tool_start(tc_id, name, args):
+        if name and name not in _tools_used:
+            _tools_used.append(str(name))
+        _emit("tool_start", str(name))
 
-        async def after_iteration(self, context):
-            for ev in (context.tool_events or []):
-                await queue.put(("tool_event", json.dumps(ev, ensure_ascii=False)))
+    def on_tool_complete(tc_id, name, args, result):
+        _emit("tool_event", json.dumps(
+            {"tool": str(name), "result": str(result)[:500]}, ensure_ascii=False
+        ))
 
     await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": "InnoPilot wird initialisiert..."})})
-    await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": "Agenten-Konfiguration und MCP-Server werden geladen..."})})
+
+    if not await ensure_runtime_ready():
+        logger.error("[agent-bg] Hermes-Runtime nicht verfügbar")
+        await _update_agent_job("failed", error_message="Hermes-Runtime nicht verfügbar")
+        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot nicht verfügbar — prüfe ~/.hermes/config.yaml"})})
+        _agent_running[job_id] = False
+        asyncio.create_task(_cleanup_agent_events(job_id))
+        return
 
     try:
-        bot = await _init_chat_bot()
-    except Exception as e:
-        logger.exception("[agent-bg] Bot-Init fehlgeschlagen")
-        await _update_agent_job("failed", error_message="Bot-Initialisierung fehlgeschlagen")
+        agent = await asyncio.to_thread(
+            build_chat_agent,
+            model,
+            enabled_servers=enabled_servers,
+            include_memory=include_memory,
+            on_text=on_text,
+            on_reasoning=on_reasoning,
+            on_tool_start=on_tool_start,
+            on_tool_complete=on_tool_complete,
+            session_id=f"chat-{conv_id}",
+        )
+    except Exception:
+        logger.exception("[agent-bg] Agent-Init fehlgeschlagen")
+        await _update_agent_job("failed", error_message="Agent-Initialisierung fehlgeschlagen")
         await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot konnte nicht initialisiert werden"})})
         _agent_running[job_id] = False
         asyncio.create_task(_cleanup_agent_events(job_id))
         return
 
-    if bot is None:
-        logger.error("[agent-bg] Chat-Bot nicht verfügbar")
-        await _update_agent_job("failed", error_message="Bot nicht verfügbar")
-        await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot nicht verfügbar — prüfe ~/.nanobot/config.json"})})
-        _agent_running[job_id] = False
-        asyncio.create_task(_cleanup_agent_events(job_id))
-        return
-
-    session_key = f"chat:{conv_id}"
-    hook = BufferedHook()
-
-    _apply_model_routing(bot, model)
-
-    mcp_count = len(getattr(bot._loop, '_mcp_servers', None) or {})
-    active_model = getattr(bot._loop, 'model', '?')
+    active_model = getattr(agent, "model", "?")
     await _push_agent_event(job_id, {"event": "status", "data": json.dumps(
-        {"content": f"InnoPilot bereit ({mcp_count} MCP-Server, Modell: {active_model}) — Aufgabe wird verarbeitet..."})})
-    logger.info("[agent-bg] Run gestartet, session=%s, model=%s, prompt_len=%d, mcp_servers=%d",
-                session_key, active_model, len(prompt), mcp_count)
+        {"content": f"InnoPilot bereit (Modell: {active_model}) — Aufgabe wird verarbeitet..."})})
+    logger.info("[agent-bg] Run gestartet, conv=%s, model=%s, prompt_len=%d",
+                conv_id, active_model, len(prompt))
 
-    bot_task = asyncio.create_task(
-        bot.run(prompt, session_key=session_key, hooks=[hook])
-    )
+    def _run_sync() -> str:
+        result = agent.run_conversation(prompt)
+        if isinstance(result, dict):
+            return str(result.get("final_response") or "")
+        return str(result or "")
+
+    bot_task = asyncio.create_task(asyncio.to_thread(_run_sync))
+
+    async def _drain(evt_type: str, evt_data):
+        if evt_type == "chunk":
+            await _push_agent_event(job_id, {"event": "chunk", "data": json.dumps({"content": evt_data})})
+        elif evt_type == "thinking":
+            await _push_agent_event(job_id, {"event": "thinking", "data": json.dumps({"content": evt_data})})
+        elif evt_type == "tool_start":
+            await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": evt_data})})
+        elif evt_type == "tool_event":
+            await _push_agent_event(job_id, {"event": "tool_event", "data": evt_data})
+        elif evt_type == "status":
+            await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": evt_data})})
 
     try:
         while not bot_task.done():
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=2.0)
-                evt_type, evt_data = item
-                if evt_type == "chunk":
-                    await _push_agent_event(job_id, {"event": "chunk", "data": json.dumps({"content": evt_data})})
-                elif evt_type == "tool_start":
-                    await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": evt_data})})
-                elif evt_type == "tool_event":
-                    await _push_agent_event(job_id, {"event": "tool_event", "data": evt_data})
-                elif evt_type == "status":
-                    await _push_agent_event(job_id, {"event": "status", "data": json.dumps({"content": evt_data})})
+                evt_type, evt_data = await asyncio.wait_for(queue.get(), timeout=2.0)
+                await _drain(evt_type, evt_data)
             except asyncio.TimeoutError:
                 elapsed = time.time() - t_start
                 if elapsed > MAX_AGENT_TIMEOUT:
@@ -1120,25 +1097,17 @@ async def _run_agent_background(
                     return
 
         while not queue.empty():
-            item = queue.get_nowait()
-            evt_type, evt_data = item
-            if evt_type == "chunk":
-                await _push_agent_event(job_id, {"event": "chunk", "data": json.dumps({"content": evt_data})})
-            elif evt_type == "tool_start":
-                await _push_agent_event(job_id, {"event": "tool_start", "data": json.dumps({"tools": evt_data})})
-            elif evt_type == "tool_event":
-                await _push_agent_event(job_id, {"event": "tool_event", "data": evt_data})
+            evt_type, evt_data = queue.get_nowait()
+            await _drain(evt_type, evt_data)
 
-        bot_result = bot_task.result()
-        content = bot_result.content or ""
-        tools_used = bot_result.tools_used or []
+        content = bot_task.result()
+        tools_used = list(_tools_used)
         elapsed = time.time() - t_start
         logger.info("[agent-bg] Fertig in %.1fs, Antwort=%d Zeichen, Tools=%s, job=%s",
                     elapsed, len(content), tools_used, job_id)
 
-    except Exception as e:
+    except Exception:
         logger.exception("[agent-bg] Fehler in job=%s", job_id)
-        reset_chat_bot()
         await _update_agent_job("failed", error_message="Agent-Ausführung fehlgeschlagen")
         await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot-Ausführung fehlgeschlagen"})})
         _agent_running[job_id] = False

@@ -1,6 +1,5 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:where(.dark, .dark *));
@@ -83,7 +82,7 @@ body {
 
 .signa-content h1 {
   color: var(--color-amber-600);
-  border-bottom: 2px solid var(--color-amber-500 / 0.3);
+  border-bottom: 2px solid color-mix(in oklab, var(--color-amber-500) 30%, transparent);
   padding-bottom: 0.5rem;
 }
 .signa-content h2 {
@@ -118,7 +117,7 @@ body {
 .dark .signa-content h1,
 .signa-content.prose-invert h1 {
   color: var(--color-amber-400);
-  border-bottom-color: var(--color-amber-400 / 0.25);
+  border-bottom-color: color-mix(in oklab, var(--color-amber-400) 25%, transparent);
 }
 .dark .signa-content h2,
 .signa-content.prose-invert h2 {
@@ -177,7 +176,7 @@ body {
 }
 
 .signa-content blockquote {
-  border-left: 3px solid var(--color-indigo-400 / 0.5);
+  border-left: 3px solid color-mix(in oklab, var(--color-indigo-400) 50%, transparent);
   padding-left: 1em;
   margin: 1em 0;
   font-style: italic;

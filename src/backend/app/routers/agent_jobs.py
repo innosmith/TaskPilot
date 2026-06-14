@@ -504,23 +504,21 @@ async def get_agent_job_trace(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require_role("owner")),
 ) -> dict:
-    """Session-Trace eines Agent-Jobs: Tool-Aufrufe, Reasoning, Fehler."""
-    from app.routers.memory import NANOBOT_WORKSPACE
+    """Trace eines Agent-Jobs: Reasoning (Thinking), Tool-Aufrufe, Ergebnisse.
 
+    Quelle ist der vom Hermes-Worker in ``metadata_json['trace']`` gespeicherte
+    Event-Stream (Typen: ``thinking``, ``tool_start``, ``tool_complete``). So
+    bleibt die volle Transparenz erhalten, ohne externe Session-Dateien.
+    """
     result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Agent job not found")
 
-    sessions_dir = NANOBOT_WORKSPACE / "sessions"
-    prefix = f"{job.job_type or 'generic'}_{job_id}_"
-    session_file = None
-    if sessions_dir.exists():
-        for f in sorted(sessions_dir.glob(f"{prefix}*.jsonl"), reverse=True):
-            session_file = f
-            break
+    meta = job.metadata_json or {}
+    trace = meta.get("trace") or []
 
-    if not session_file or not session_file.exists():
+    if not trace:
         return {
             "job_id": str(job_id),
             "status": job.status,
@@ -528,83 +526,31 @@ async def get_agent_job_trace(
             "steps": [],
         }
 
-    steps = []
-    metadata = {}
-    try:
-        with open(session_file, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    steps: list[dict] = []
+    for ev in trace:
+        etype = ev.get("type")
+        if etype == "thinking":
+            steps.append({"type": "reasoning", "text": str(ev.get("text", ""))[:1000]})
+        elif etype == "tool_start":
+            steps.append({"type": "tool_call", "tool": ev.get("name", "?")})
+        elif etype == "tool_complete":
+            preview = str(ev.get("result", ""))
+            is_error = "Fehler" in preview[:80] or "Error" in preview[:80]
+            steps.append({
+                "type": "tool_result",
+                "tool_name": ev.get("name", "?"),
+                "chars": len(preview),
+                "is_error": is_error,
+                "preview": preview[:300],
+            })
 
-                if entry.get("_type") == "metadata":
-                    metadata = entry
-                    continue
+    if job.output:
+        steps.append({"type": "assistant_message", "text": str(job.output)[:800]})
 
-                role = entry.get("role")
-                if role == "assistant":
-                    tool_calls = entry.get("tool_calls", [])
-                    if tool_calls:
-                        for tc in tool_calls:
-                            fn = tc.get("function", {})
-                            args_str = fn.get("arguments", "{}")
-                            try:
-                                args = json.loads(args_str)
-                                args_summary = {k: str(v)[:120] for k, v in args.items()}
-                            except (json.JSONDecodeError, AttributeError):
-                                args_summary = {"raw": args_str[:200]}
-                            steps.append({
-                                "type": "tool_call",
-                                "tool": fn.get("name", "?"),
-                                "call_id": tc.get("id"),
-                                "arguments": args_summary,
-                            })
-                    reasoning = entry.get("reasoning_content")
-                    content = entry.get("content", "")
-                    if reasoning:
-                        steps.append({
-                            "type": "reasoning",
-                            "text": reasoning[:500],
-                        })
-                    if content and not tool_calls:
-                        steps.append({
-                            "type": "assistant_message",
-                            "text": content[:800],
-                        })
-
-                elif role == "tool":
-                    tool_content = entry.get("content", "")
-                    is_error = "Fehler:" in tool_content or "Error" in tool_content[:50]
-                    steps.append({
-                        "type": "tool_result",
-                        "call_id": entry.get("tool_call_id"),
-                        "tool_name": entry.get("name", "?"),
-                        "chars": len(tool_content),
-                        "is_error": is_error,
-                        "preview": tool_content[:300] if is_error else tool_content[:150],
-                    })
-    except Exception as e:
-        return {
-            "job_id": str(job_id),
-            "status": job.status,
-            "session_found": True,
-            "parse_error": str(e),
-            "steps": [],
-        }
-
-    created = metadata.get("created_at")
-    updated = metadata.get("updated_at")
     duration_s = None
-    if created and updated:
+    if job.started_at and job.completed_at:
         try:
-            from datetime import datetime as _dt
-            t0 = _dt.fromisoformat(created)
-            t1 = _dt.fromisoformat(updated)
-            duration_s = round((t1 - t0).total_seconds(), 1)
+            duration_s = round((job.completed_at - job.started_at).total_seconds(), 1)
         except Exception:
             pass
 
@@ -616,7 +562,6 @@ async def get_agent_job_trace(
         "job_id": str(job_id),
         "status": job.status,
         "session_found": True,
-        "session_file": session_file.name,
         "duration_seconds": duration_s,
         "summary": {
             "total_tool_calls": len(tool_calls),

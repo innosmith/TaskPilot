@@ -66,9 +66,10 @@ class Settings(BaseSettings):
         "https://tp.innosmith.ai",
     ]
 
-    # nanobot WebSocket Bridge
-    nanobot_ws_url: str = "ws://127.0.0.1:8765"
-    nanobot_ws_token: str = "taskpilot-dev-token"
+    # Hermes Agent-Runtime
+    # Home-Verzeichnis fuer Hermes (config.yaml, skills/, memories/, SOUL.md).
+    # Ersetzt das fruehere ~/.nanobot/workspace.
+    hermes_home: str = "~/.hermes"
 
     # Unsplash (optional, for background image search)
     unsplash_access_key: str = ""

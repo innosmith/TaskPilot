@@ -4,6 +4,7 @@ import { api, getToken } from '../api/client';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/tokyo-night-dark.css';
 import { unified } from 'unified';
@@ -208,6 +209,10 @@ export function ChatPage() {
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [mcpServers, setMcpServers] = useState<{ key: string; label: string; description: string }[]>([]);
   const [mcpOpen, setMcpOpen] = useState(false);
+  // Grounding fuer Cloud-Modelle: Default-Deny. Nur explizit aktivierte
+  // MCP-Server und optional Memory/USER-Profil werden an Cloud-Modelle gesendet.
+  const [enabledServers, setEnabledServers] = useState<Set<string>>(new Set());
+  const [includeMemory, setIncludeMemory] = useState(false);
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -258,6 +263,7 @@ export function ChatPage() {
   const mcpPopoverRef = useRef<HTMLDivElement>(null);
   const copyMenuRef = useRef<HTMLDivElement>(null);
   const skipNextFetchRef = useRef(false);
+  const settingsInitRef = useRef(false);
   const sendingRef = useRef(false);
 
   const loadConversations = useCallback(async () => {
@@ -274,6 +280,11 @@ export function ChatPage() {
       .catch(() => {});
     api.get<{ llm_default_model: string | null; llm_default_local_model: string | null; llm_default_temperature: number | null }>('/api/settings/llm')
       .then(s => {
+        // Default-Modell/-Temperatur nur einmalig beim ersten Laden anwenden.
+        // Der Focus-Refresh darf eine bewusste Modellwahl (z. B. Cloud-Modell)
+        // NICHT ueberschreiben, sonst springt es nach jedem Task auf den Default.
+        if (settingsInitRef.current) return;
+        settingsInitRef.current = true;
         const defaultModel = s.llm_default_model || s.llm_default_local_model;
         if (defaultModel) setSelectedModel(defaultModel);
         if (s.llm_default_temperature !== null) setTemperature(s.llm_default_temperature);
@@ -309,10 +320,17 @@ export function ChatPage() {
   useEffect(() => {
     if (!activeId) { setMessages([]); return; }
     if (skipNextFetchRef.current) { skipNextFetchRef.current = false; return; }
-    api.get<{ messages: ChatMessage[]; mode?: string }>(`/api/chat/conversations/${activeId}`)
+    api.get<{ messages: ChatMessage[]; mode?: string; model?: string; grounding?: { enabled_servers?: string[]; include_memory?: boolean } }>(`/api/chat/conversations/${activeId}`)
       .then(d => {
         setMessages(d.messages || []);
         if (d.mode) setMode(d.mode as ChatMode);
+        setEnabledServers(new Set(d.grounding?.enabled_servers || []));
+        setIncludeMemory(Boolean(d.grounding?.include_memory));
+        // Modell der Konversation wiederherstellen. Legacy-Platzhalter
+        // ('hermes'/'nanobot') ignorieren, damit nicht 'InnoPilot' als Modell erscheint.
+        if (d.model && d.model !== 'hermes' && d.model !== 'nanobot') {
+          setSelectedModel(d.model);
+        }
       })
       .catch(() => {});
   }, [activeId]);
@@ -345,12 +363,13 @@ export function ChatPage() {
   }, []);
 
   const modelLabel = (id: string) => {
-    if (id === 'nanobot') return 'InnoPilot';
+    if (id === 'nanobot' || id === 'hermes') return 'InnoPilot';
     const m = models.find(x => x.id === id);
     return m?.name || id.split('/').pop() || id;
   };
 
-  const isAgentConversation = (c: Conversation) => c.mode === 'agent' || c.model === 'nanobot';
+  const isAgentConversation = (c: Conversation) =>
+    c.mode === 'agent' || c.model === 'nanobot' || c.model === 'hermes';
 
   const modelInfo = (id: string) => models.find(x => x.id === id);
 
@@ -792,7 +811,7 @@ export function ChatPage() {
     if (!convId) {
       try {
         const conv = await api.post<Conversation>('/api/chat/conversations', {
-          model: mode === 'agent' ? 'nanobot' : selectedModel,
+          model: selectedModel,
           temperature,
           mode,
         });
@@ -832,7 +851,13 @@ export function ChatPage() {
         const resp = await fetch(`/api/chat/conversations/${convId}/agent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: JSON.stringify({ content, model: selectedModel, temperature }),
+          body: JSON.stringify({
+            content,
+            model: selectedModel,
+            temperature,
+            enabled_servers: Array.from(enabledServers),
+            include_memory: includeMemory,
+          }),
         });
         if (!resp.ok) {
           const errorText = await resp.text().catch(() => `HTTP ${resp.status}`);
@@ -1119,40 +1144,104 @@ export function ChatPage() {
 
           <div className="flex-1" />
 
-          {mode === 'agent' && (
+          {mode === 'agent' && (() => {
+            const isCloud = !!selectedModelInfo && selectedModelInfo.type !== 'local';
+            const provider = (selectedModel.split('/')[0] || 'Cloud');
+            const activeCount = enabledServers.size;
+            const toggleServer = (key: string) => setEnabledServers(prev => {
+              const next = new Set(prev);
+              if (next.has(key)) next.delete(key); else next.add(key);
+              return next;
+            });
+            const badgeClass = isCloud
+              ? 'flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300 dark:hover:bg-amber-900/50'
+              : 'flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-300 dark:hover:bg-violet-900/50';
+            return (
             <div className="relative" ref={mcpPopoverRef}>
-              <button
-                onClick={() => setMcpOpen(!mcpOpen)}
-                className="flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-300 dark:hover:bg-violet-900/50"
-              >
-                <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
-                InnoPilot · {mcpServers.length} Tools
+              <button onClick={() => setMcpOpen(!mcpOpen)} className={badgeClass}>
+                {isCloud ? (
+                  <>
+                    <CloudIcon className="h-3 w-3" />
+                    Cloud · {activeCount} aktiv{includeMemory ? ' · Profil' : ''}
+                  </>
+                ) : (
+                  <>
+                    <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
+                    InnoPilot · Voller Zugriff (lokal)
+                  </>
+                )}
                 <svg className={`h-3 w-3 transition-transform ${mcpOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
               </button>
               {mcpOpen && (
                 <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-gray-200/80 bg-white p-4 shadow-2xl dark:border-gray-700/80 dark:bg-gray-800">
-                  <div className="mb-3 flex items-center gap-2">
-                    <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100 dark:bg-violet-900/40">
-                      <SparkleIcon className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
-                    </div>
-                    <span className="text-xs font-semibold text-gray-800 dark:text-gray-100">Verfügbare MCP-Server</span>
-                  </div>
-                  <div className="max-h-[320px] space-y-2 overflow-y-auto">
-                    {mcpServers.map(s => (
-                      <div key={s.key} className="flex items-start gap-2.5 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
-                        <div className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-green-400" />
-                        <div className="min-w-0">
-                          <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">{s.label}</div>
-                          {s.description && <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{s.description}</div>}
+                  {isCloud ? (
+                    <>
+                      <div className="mb-2 flex items-center gap-2">
+                        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-amber-100 dark:bg-amber-900/40">
+                          <CloudIcon className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
                         </div>
+                        <span className="text-xs font-semibold text-gray-800 dark:text-gray-100">Grounding für Cloud-Modell</span>
                       </div>
-                    ))}
-                    {mcpServers.length === 0 && <div className="py-2 text-center text-[11px] italic text-gray-400">Keine Server konfiguriert</div>}
-                  </div>
+                      <div className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-[10px] leading-snug text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                        Standardmässig ist alles deaktiviert. Nur aktivierte Inhalte werden an <span className="font-semibold">{provider}</span> gesendet.
+                      </div>
+                      <div className="max-h-[260px] space-y-1.5 overflow-y-auto">
+                        {mcpServers.map(s => {
+                          const on = enabledServers.has(s.key);
+                          return (
+                            <button key={s.key} onClick={() => toggleServer(s.key)} className={`flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-colors ${on ? 'bg-indigo-50 dark:bg-indigo-900/30' : 'bg-gray-50 hover:bg-gray-100 dark:bg-gray-900/40 dark:hover:bg-gray-900/70'}`}>
+                              <span className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${on ? 'border-indigo-500 bg-indigo-500' : 'border-gray-300 dark:border-gray-600'}`}>
+                                {on && <svg className="h-2.5 w-2.5 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>}
+                              </span>
+                              <div className="min-w-0">
+                                <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">{s.label}</div>
+                                {s.description && <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{s.description}</div>}
+                              </div>
+                            </button>
+                          );
+                        })}
+                        {mcpServers.length === 0 && <div className="py-2 text-center text-[11px] italic text-gray-400">Keine Server konfiguriert</div>}
+                      </div>
+                      <button onClick={() => setIncludeMemory(v => !v)} className={`mt-2 flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-colors ${includeMemory ? 'bg-indigo-50 dark:bg-indigo-900/30' : 'bg-gray-50 hover:bg-gray-100 dark:bg-gray-900/40 dark:hover:bg-gray-900/70'}`}>
+                        <span className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${includeMemory ? 'border-indigo-500 bg-indigo-500' : 'border-gray-300 dark:border-gray-600'}`}>
+                          {includeMemory && <svg className="h-2.5 w-2.5 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">Memory & USER-Profil</div>
+                          <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">Persönliche Präferenzen und gelerntes Wissen einbeziehen</div>
+                        </div>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="mb-3 flex items-center gap-2">
+                        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100 dark:bg-violet-900/40">
+                          <SparkleIcon className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+                        </div>
+                        <span className="text-xs font-semibold text-gray-800 dark:text-gray-100">Voller Zugriff (lokal)</span>
+                      </div>
+                      <div className="mb-3 rounded-lg bg-green-50 px-3 py-2 text-[10px] leading-snug text-green-700 dark:bg-green-900/20 dark:text-green-300">
+                        Lokales Modell — alle MCP-Server, Memory und Profil verfügbar. Daten bleiben auf dem Server.
+                      </div>
+                      <div className="max-h-[320px] space-y-2 overflow-y-auto">
+                        {mcpServers.map(s => (
+                          <div key={s.key} className="flex items-start gap-2.5 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
+                            <div className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-green-400" />
+                            <div className="min-w-0">
+                              <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">{s.label}</div>
+                              {s.description && <div className="mt-0.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{s.description}</div>}
+                            </div>
+                          </div>
+                        ))}
+                        {mcpServers.length === 0 && <div className="py-2 text-center text-[11px] italic text-gray-400">Keine Server konfiguriert</div>}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
-          )}
+            );
+          })()}
 
           <button onClick={() => setBgPickerOpen(true)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="Hintergrund ändern">
             <ImageIcon className="h-5 w-5" />
@@ -1326,7 +1415,7 @@ export function ChatPage() {
                             {msg.thinking && (
                               <div className="mt-2 max-h-[400px] overflow-y-auto text-violet-800 dark:text-violet-300">
                                 <div className="prose prose-xs prose-violet dark:prose-invert max-w-none [&_p]:my-1 [&_li]:my-0.5 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_code]:text-[10px]">
-                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.thinking}</ReactMarkdown>
+                                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{msg.thinking}</ReactMarkdown>
                                 </div>
                               </div>
                             )}
@@ -1345,7 +1434,7 @@ export function ChatPage() {
 
                     {msg.role === 'assistant' ? (
                       <div className="chat-prose prose prose-sm dark:prose-invert max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={chatMdComponents}>{msg.content}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeHighlight]} components={chatMdComponents}>{msg.content}</ReactMarkdown>
                       </div>
                     ) : (
                       <div className="whitespace-pre-wrap" style={{ fontSize: '0.9375rem', lineHeight: 1.7 }}>{msg.content}</div>
@@ -1489,7 +1578,7 @@ export function ChatPage() {
                           {thinkingContent && !toolTrace.some(t => t.content === thinkingContent) && (
                             <div className="max-h-[300px] overflow-y-auto text-violet-700 dark:text-violet-400">
                               <div className="prose prose-xs prose-violet dark:prose-invert max-w-none [&_p]:my-1 [&_li]:my-0.5 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_code]:text-[10px]">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{thinkingContent}</ReactMarkdown>
+                                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{thinkingContent}</ReactMarkdown>
                               </div>
                             </div>
                           )}
@@ -1498,7 +1587,7 @@ export function ChatPage() {
                     )}
                     {streamingContent ? (
                       <div className="chat-prose streaming-cursor prose prose-sm dark:prose-invert max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={chatMdComponents}>{streamingContent}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeHighlight]} components={chatMdComponents}>{streamingContent}</ReactMarkdown>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">

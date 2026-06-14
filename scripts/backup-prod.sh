@@ -4,8 +4,8 @@
 # Sichert alle produktionsrelevanten Daten als verschluesseltes Archiv auf OneDrive:
 #   - PostgreSQL-Datenbank (pg_dump)
 #   - Uploads (Task-Attachments, Avatare, Icons)
-#   - Nanobot-Workspace (Skills, Memory, Sessions)
-#   - Konfigurationsdateien (.env.prod, nanobot-config, secrets)
+#   - Hermes-Home (Skills, Memory, Sessions, SOUL/USER)
+#   - Konfigurationsdateien (.env.prod, hermes config.yaml, secrets)
 #
 # Voraussetzung: Prod-Container laufen (make prod), gpg installiert, TP_BACKUP_PASSPHRASE gesetzt
 # Aufruf: ./scripts/backup-prod.sh  oder  make backup-prod
@@ -21,8 +21,8 @@ PROD_DB_CONTAINER="taskpilot-postgres-prod"
 PROD_BACKEND_CONTAINER="taskpilot-backend-prod"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-NANOBOT_CONFIG="${HOME}/.nanobot/config.json"
-NANOBOT_WORKSPACE="${HOME}/.nanobot/workspace"
+HERMES_HOME="${HOME}/.hermes"
+HERMES_CONFIG="${HERMES_HOME}/config.yaml"
 SECRETS_DIR="${HOME}/.secrets/taskpilot"
 
 TIMESTAMP="$(date +%Y-%m-%d_%H%M%S)"
@@ -127,18 +127,18 @@ else
     log_warn "Backend-Container nicht verfuegbar, Uploads uebersprungen."
 fi
 
-# ── 3. Nanobot-Workspace sichern ────────────────────────────────────────────
+# ── 3. Hermes-Home sichern ──────────────────────────────────────────────────
 
-log_step "3/5 Nanobot-Workspace sichern"
+log_step "3/5 Hermes-Home sichern"
 
-if [[ -d "${NANOBOT_WORKSPACE}" ]]; then
-    tar -czf "${WORK_DIR}/nanobot-workspace.tar.gz" \
-        -C "$(dirname "${NANOBOT_WORKSPACE}")" \
-        "$(basename "${NANOBOT_WORKSPACE}")"
-    WS_SIZE=$(du -h "${WORK_DIR}/nanobot-workspace.tar.gz" | cut -f1)
-    log_info "Nanobot-Workspace gesichert: ${WS_SIZE}"
+if [[ -d "${HERMES_HOME}" ]]; then
+    tar -czf "${WORK_DIR}/hermes-home.tar.gz" \
+        -C "$(dirname "${HERMES_HOME}")" \
+        "$(basename "${HERMES_HOME}")"
+    WS_SIZE=$(du -h "${WORK_DIR}/hermes-home.tar.gz" | cut -f1)
+    log_info "Hermes-Home gesichert: ${WS_SIZE}"
 else
-    log_warn "Nanobot-Workspace nicht gefunden unter ${NANOBOT_WORKSPACE}"
+    log_warn "Hermes-Home nicht gefunden unter ${HERMES_HOME}"
 fi
 
 # ── 4. Konfigurationsdateien kopieren ────────────────────────────────────────
@@ -152,11 +152,11 @@ else
     log_warn ".env.prod nicht gefunden unter ${PROJECT_ROOT}/.env.prod"
 fi
 
-if [[ -f "${NANOBOT_CONFIG}" ]]; then
-    cp "${NANOBOT_CONFIG}" "${WORK_DIR}/config/nanobot-config.json"
-    log_info "nanobot-config.json gesichert"
+if [[ -f "${HERMES_CONFIG}" ]]; then
+    cp "${HERMES_CONFIG}" "${WORK_DIR}/config/hermes-config.yaml"
+    log_info "hermes config.yaml gesichert"
 else
-    log_warn "Nanobot-Config nicht gefunden unter ${NANOBOT_CONFIG}"
+    log_warn "Hermes-Config nicht gefunden unter ${HERMES_CONFIG}"
 fi
 
 if [[ -d "${SECRETS_DIR}" ]]; then

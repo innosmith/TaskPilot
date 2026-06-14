@@ -52,7 +52,7 @@ from app.routers import (
 from app.routers import settings as user_settings
 from app.routers.auth import ensure_owner_exists
 from app.services.content_converter import start_content_converter, stop_content_converter
-from app.services.nanobot_worker import start_nanobot_worker, stop_nanobot_worker
+from app.services.hermes_worker import start_hermes_worker, stop_hermes_worker
 from app.services.notification import start_notification_scheduler, stop_notification_scheduler
 from app.services.pipeline_promoter import start_pipeline_promoter, stop_pipeline_promoter
 from app.services.recurring import start_recurring_scheduler, stop_recurring_scheduler
@@ -77,6 +77,42 @@ UPLOADS_DIR = pathlib.Path(__file__).resolve().parent.parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 (UPLOADS_DIR / "avatars").mkdir(exist_ok=True)
 (UPLOADS_DIR / "icons").mkdir(exist_ok=True)
+
+
+def _check_bexio_token_expiry() -> None:
+    """Warnt beim Start, wenn der Bexio-Token bald ablaeuft oder bereits abgelaufen ist.
+
+    Ein Bexio Personal Access Token (PAT) ist 6 Monate gueltig; danach liefert die
+    API stillschweigend 401. Diese Pruefung macht den Ablauf sichtbar, bevor er
+    Buchhaltungs- und Finanzansicht lahmlegt.
+    """
+    token = app_settings.bexio_api_token
+    if not token:
+        return
+    log = logging.getLogger("taskpilot.lifespan")
+    try:
+        from bexio_client import decode_token_expiry
+    except ImportError:
+        return
+    info = decode_token_expiry(token)
+    if not info:
+        return
+    days = info["days_remaining"]
+    if info["is_expired"]:
+        log.error(
+            "Bexio-Token ist ABGELAUFEN (seit %s). Buchhaltungs-/Finanzdaten sind nicht "
+            "verfuegbar. Neuen Personal Access Token unter developer.bexio.com/pat erstellen.",
+            info["expires_at"],
+        )
+    elif days <= 14:
+        log.warning(
+            "Bexio-Token laeuft in %.0f Tagen ab (%s). Rechtzeitig unter "
+            "developer.bexio.com/pat erneuern, sonst brechen die Finanzdaten weg.",
+            days,
+            info["expires_at"],
+        )
+    else:
+        log.info("Bexio-Token gueltig fuer noch %.0f Tage (%s).", days, info["expires_at"])
 
 
 @asynccontextmanager
@@ -105,8 +141,10 @@ async def lifespan(app: FastAPI):
             )
         await db.commit()
 
+    _check_bexio_token_expiry()
+
     await start_content_converter()
-    await start_nanobot_worker()
+    await start_hermes_worker()
     await start_recurring_scheduler()
     await start_pipeline_promoter()
     await start_triage_service()
@@ -116,7 +154,7 @@ async def lifespan(app: FastAPI):
     await stop_triage_service()
     await stop_pipeline_promoter()
     await stop_recurring_scheduler()
-    await stop_nanobot_worker()
+    await stop_hermes_worker()
     await stop_content_converter()
 
 

@@ -1,7 +1,7 @@
 """Notification-Service: Erstellt, dedupliziert und verwaltet In-App-Notifications.
 
 Enthält ausserdem den periodischen Due-Soon-Scheduler und den
-Health-Check-Monitor für den Nanobot-Worker.
+Health-Check-Monitor für den Hermes-Worker.
 """
 
 import asyncio

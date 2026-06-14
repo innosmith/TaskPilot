@@ -31,7 +31,7 @@ litellm>=1.83
 openai>=2.24
 anthropic>=0.97
 tiktoken>=0.12
-nanobot-ai>=0.2.0
+hermes-agent>=0.16.0
 
 # ── MCP (Model Context Protocol) ──
 mcp>=1.27
@@ -65,7 +65,9 @@ pymupdf>=1.27
 ddgs>=9.14
 
 # ── Scheduling ──
-croniter>=6.2
+# hermes-agent pinnt croniter==6.0.0 (PyPI-Wheel); untere Grenze entsprechend
+# gelockert, damit pip beide Constraints erfüllen kann (API ist stabil).
+croniter>=6.0,<7
 APScheduler>=3.11
 
 # ── Security ──

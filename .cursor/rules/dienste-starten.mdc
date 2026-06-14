@@ -38,7 +38,7 @@ make migrate-prod  # Schema auf Prod-DB anwenden
 
 - Python-venv: `/home/innosmith/dev/github/TaskPilot/.venv/`
 - Docker (Snap): Volumes nur unter `$HOME` moeglich
-- Nanobot Config: `~/.nanobot/config.json`
+- Hermes-Home: `~/.hermes/` (config.yaml zur Laufzeit generiert)
 - Cloudflare Tunnel: `cloudflared` als systemd-Service
 - Ollama: systemd-Service (Port 11434, geteilt von allen Umgebungen)
 
@@ -143,7 +143,7 @@ lsof -ti:5173 | xargs -r kill -9   # Frontend
 | `.env.*` geaendert | Ja (restart) | Ja (restart) | Ja (restart) |
 | DB-Schema geaendert | Ja (alembic upgrade head) | Ja (alembic im Container) | Ja (alembic im Container) |
 | Docker-Compose geaendert | - | Ja (make int) | Ja (make prod) |
-| MCP-Server-Code | Nein (Nanobot laedt neu) | Ja (rebuild) | Ja (rebuild) |
+| MCP-Server-Code | Nein (Hermes laedt neu) | Ja (rebuild) | Ja (rebuild) |
 
 ## DEV-DB zuruecksetzen
 

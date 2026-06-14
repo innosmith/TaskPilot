@@ -1,0 +1,130 @@
+---
+description: Hermes Agent-Runtime, MCP-Server und Worker-Konventionen
+globs: "**/*hermes*,**/*triage*,**/*mcp*"
+alwaysApply: false
+---
+
+# Hermes Agent-Runtime
+
+TaskPilot nutzt **Hermes** (`hermes-agent`, Nous Research) als Agent-Runtime — synchron,
+in-process im FastAPI-Backend. Der frühere Nanobot-Stand ist als Git-Tag `nanobot-final`
+archiviert (Rollback-Referenz, kein Parallelbetrieb).
+
+## Konfiguration
+
+- Hermes-Home: `~/.hermes/` (Mount in Prod/Int via docker-compose)
+- Config-Datei: `~/.hermes/config.yaml` — **zur Laufzeit generiert** durch
+  `app/services/hermes_config.py` (`write_hermes_config()`), nicht von Hand pflegen.
+- Skills: `~/.hermes/skills/*.md` (mail-triage, quick-response, calendar-management, crm-assistant, …)
+- Memory/Identität: `~/.hermes/memories/{MEMORY,USER}.md`, `~/.hermes/SOUL.md`
+- Schreibstil-Kanon: `~/.hermes/schreibstil-anthony.md`
+- Assets-Migration aus Nanobot: `scripts/migrate-nanobot-to-hermes.py`
+
+### Modell & Provider
+- Worker-Default: `triage_model` (z. B. `qwen3.6:latest`) via Ollama `/v1`, Provider `custom`, `api_mode=chat_completions`.
+- Cloud-Modelle (Chat/InnoPilot): über LiteLLM-Proxy (`custom`-Provider, voller Modellstring).
+- Context-Length: 131072 (qwen3.6 unterstützt nativ bis 262K).
+- Konstruktion: `AIAgent(base_url=…, api_key=…, provider="custom", api_mode="chat_completions", model=…)`.
+
+## Architektur-Eckpunkte (Spike-validiert)
+
+- Hermes ist **synchron**: `AIAgent.run_conversation(...)` blockiert → immer via `asyncio.to_thread` aufrufen.
+- MCP-Discovery: `discover_mcp_tools()` läuft auf einem **eigenen Hintergrund-Event-Loop** (Hermes-intern),
+  füllt eine globale Tool-Registry; `enabled_toolsets=None` ⇒ alle Tools verfügbar. Aus dem Backend
+  via `asyncio.to_thread` aufrufen (siehe `ensure_runtime_ready()`).
+- Worker hält **einen** persistenten `AIAgent` und verarbeitet Jobs sequentiell. Chat baut **pro Anfrage**
+  einen eigenen `AIAgent` (eigene Callbacks), Tools aus der globalen Registry.
+
+## Callbacks / Transparenz
+
+| Callback | Signatur | Zweck |
+|----------|----------|-------|
+| `reasoning_callback` | `(text)` | **echtes Thinking** (für „dem Agent beim Denken zuschauen") |
+| `stream_delta_callback` | `(text)` | Antwort-Text-Deltas (Chat-Streaming) |
+| `tool_start_callback` | `(id, name, args)` | Tool-Aufruf beginnt |
+| `tool_complete_callback` | `(id, name, args, result)` | Tool-Ergebnis |
+| `thinking_callback` | `(status)` | Spinner-Status (z. B. „🤔 Pondering…"), kein Content |
+
+Aus dem Agent-Thread werden Events threadsicher gebrückt: Chat via `loop.call_soon_threadsafe`
+in eine `asyncio.Queue` (SSE-Events `chunk`/`thinking`/`tool_start`/`tool_event`); Worker in
+`metadata_json['trace']` (Events `thinking`/`tool_start`/`tool_complete`, Anzeige via `/api/agent-jobs/{id}/trace`).
+
+## Thinking-Politik
+
+- **Default: AN** (Transparenz + Demo). Reasoning ist sichtbar.
+- Disable-Hebel für qwen3.5/3.6: `extra_body.chat_template_kwargs.enable_thinking=False`
+  (gesetzt via `agent.request_overrides`). **`/no_think` funktioniert in dieser Modellgeneration NICHT.**
+- Selektives Abschalten (triviale Jobtypen) ist als opt-in-Policy `_thinking_disabled()` vorbereitet,
+  aber bewusst leer — Verhalten über Ollama `/v1` ist versionsabhängig und vor Aktivierung live zu verifizieren.
+
+## Grounding-Politik (Cloud-Datenschutz)
+
+Datenexposition haengt am gewaehlten Modell (`build_chat_agent` in `hermes_worker.py`):
+
+- **Lokales Modell** (qwen3.6 via Ollama): voller Zugriff. `enabled_toolsets=None`
+  (alle MCP-Tools), `skip_memory=False`, `skip_context_files=False`. Daten bleiben lokal.
+- **Cloud-Modell** (openai/anthropic/gemini via LiteLLM): **Default-Deny**. Nur explizit
+  freigegebene MCP-Server (`enabled_toolsets=<Server-Aliase>`); `skip_memory=not include_memory`
+  (kein MEMORY.md/USER.md ausser opt-in); `skip_context_files=True` (kein SOUL/AGENTS).
+
+Steuerung pro Anfrage ueber den Chat-Body (`POST /conversations/{id}/agent`):
+`enabled_servers: list[str]`, `include_memory: bool`. Validierung/Default-Deny wird
+**serverseitig** in `send_agent_message` erzwungen (UI-Auswahl ist nur ein Vorschlag); die
+Auswahl wird in `LlmConversation.grounding` (JSONB) persistiert. MCP-Server werden ueber
+ihren Server-Namen/Alias selektiert (z. B. `graph`, `bexio`) — `validate_toolset` akzeptiert
+Aliase; der `mcp-`-Praefix erscheint NICHT in `get_toolset_names()`.
+
+`skip_memory=True` deaktiviert MEMORY.md UND USER.md (`agent/agent_init.py`). Cloud-Provider
+(OpenAI) begrenzen Tools auf max. 128 (`CLOUD_TOOL_LIMIT`); der Cloud-Pfad prueft das vorab.
+Anonymisierung (`contentConverter`) ist als spaetere Phase vorgesehen.
+
+## MCP-Server (in `config.yaml → mcp_servers`)
+
+| Name | Quellcode | Zweck | Tool-Prefix |
+|------|-----------|-------|-------------|
+| `taskpilot` | `src/mcp-taskpilot/server.py` | DB (Tasks, Projekte, Boards) | `mcp_taskpilot_*` |
+| `graph` | `src/mcp-graph/server.py` | Microsoft Graph (E-Mail, Kalender, Chat, Files, Planner) | `mcp_graph_*` |
+| `pipedrive` | `src/mcp-pipedrive/server.py` | Pipedrive CRM | `mcp_pipedrive_*` |
+| `bexio` | `src/mcp-bexio/server.py` | Buchhaltung | `mcp_bexio_*` |
+| `toggl` | `src/mcp-toggl/server.py` | Zeiterfassung | `mcp_toggl_*` |
+| `signa` | `src/mcp-signa/server.py` | SIGNA Strategic Intelligence | `mcp_signa_*` |
+| `invoiceinsight` | `src/mcp-invoiceinsight/server.py` | Kreditoren-Analyse | `mcp_invoiceinsight_*` |
+| `scripts` | `src/mcp-scripts/server.py` | Script-Orchestrierung (Docker) | `mcp_scripts_*` |
+| `sandbox` | `src/mcp-sandbox/server.py` | Code-Sandbox (isoliert) | `mcp_sandbox_*` |
+| `contentConverter` | `cconv serve` | md → docx/pptx (nur im Docker-Image) | `mcp_contentConverter_*` |
+
+Alle Server werden als Subprocess (stdio) gestartet. **Env-Propagation:** Hermes filtert die
+Subprocess-Umgebung (`_build_safe_env`); deshalb referenziert jeder `env`-Block in `config.yaml`
+die Variablen explizit als `${VAR}`. `populate_hermes_env()` schreibt die Werte (aus DB-Settings
+bzw. `.env.dev`) vorher in `os.environ`. In Docker: `TP_MCP_BASE_DIR=/app`.
+
+## Worker-Loop (`app/services/hermes_worker.py`)
+
+1. `ensure_runtime_ready()`: Config schreiben, Env füllen, MCP-Discovery (idempotent).
+2. Polling alle 10s nach `status='queued'` Jobs.
+3. Prompt-Bau je Jobtyp: `_build_triage_prompt` / `_build_chat_triage_prompt` / `_build_generic_prompt`.
+4. `run_conversation(prompt, system_message=WORKER_SYSTEM_PROMPT)` via `asyncio.to_thread`.
+5. Post-Processing (`_post_process_triage`): JSON-Block parsen, Task anlegen / Draft zuordnen,
+   Status auf `awaiting_approval` (Drafts) oder `completed`.
+6. Wartung: `_reap_stale_jobs` (60s), `_cleanup_orphaned_drafts` (300s).
+
+## Metadata-Keys für AgentJobs (KRITISCH)
+
+| Key | PFLICHT | Beschreibung |
+|-----|---------|-------------|
+| `email_message_id` | **Ja** | Graph-API Message-ID (NICHT `message_id`!) |
+| `subject` / `from_address` / `from_name` | Ja | E-Mail-Kopf |
+| `conversation_id` | Ja | Graph-Conversation-ID (Thread-Zuordnung) |
+| `body_preview` | Ja | Vorschau (max 300 Zeichen) |
+| `inference_classification` | Ja | Graph-Klassifikation (focused/other) |
+| `recipient_type` | Nein | `to` / `cc` (steuert CC-Regeln) |
+
+**Bug-Hinweis:** Immer `email_message_id` (nicht `message_id`) setzen, sonst leere E-Mail-ID im Prompt.
+
+## Bekannte Gotchas
+
+1. **`max_iterations` (90)** — bei langen Newsletter-Mails beachten.
+2. **Graph API `$filter` + `$orderby`** — nicht kombinierbar; Python-seitig sortieren.
+3. **HTML-Body** — `_html_to_text()` in `mcp-graph/server.py` konvertiert zu Plain-Text.
+4. **Schweizer Deutsch** — generierte Texte mit „ss" statt „ß", korrekte Umlaute (im Prompt + `WORKER_SYSTEM_PROMPT` instruiert).
+5. **MCP-Tool-Anzahl** — viele Server = viele Tool-Definitionen im Kontext; bei Token-Druck per Server `tools.include/exclude` in `config.yaml` einschränken. Cloud-Modelle (OpenAI) erlauben max. **128 Tools** pro Request (`CLOUD_TOOL_LIMIT`) — Lokales Ollama kennt dieses Limit nicht.

@@ -82,5 +82,6 @@ tests/ai-audit/reports/*.md
 test-results/
 playwright-report/
 
-# Nanobot Runtime (User-spezifisch)
+# Agent-Runtime (User-spezifisch)
 .nanobot/
+.hermes/

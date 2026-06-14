@@ -12,7 +12,7 @@ from app.auth.deps import get_current_user, require_role
 from app.models import User
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "bexio"))
-from bexio_client import BexioClient, BexioConfig  # noqa: E402
+from bexio_client import BexioClient, BexioConfig, decode_token_expiry  # noqa: E402
 
 logger = logging.getLogger("taskpilot.bexio.router")
 
@@ -44,6 +44,16 @@ def _get_bexio_client(user: User) -> BexioClient:
 
 # ── Verbindungstest ──────────────────────────────────────
 
+def _augment_with_token_expiry(client: BexioClient, result: dict) -> dict:
+    """Ergaenzt das Ergebnis um die Ablauf-Info des Tokens (PAT laeuft nach 6 Monaten ab)."""
+    expiry = client.token_expiry()
+    if expiry:
+        result["token_expires_at"] = expiry["expires_at"]
+        result["token_days_remaining"] = expiry["days_remaining"]
+        result["token_expired"] = expiry["is_expired"]
+    return result
+
+
 @router.get("/test-connection")
 async def test_connection(user: User = Depends(require_role("owner"))):
     try:
@@ -55,7 +65,7 @@ async def test_connection(user: User = Depends(require_role("owner"))):
         raise HTTPException(status_code=400, detail="Bexio-Client konnte nicht erstellt werden")
     try:
         result = await client.test_connection()
-        return result
+        return _augment_with_token_expiry(client, result)
     except Exception as e:
         logger.exception("Bexio Verbindungstest fehlgeschlagen")
         raise HTTPException(status_code=502, detail="Bexio-Verbindungstest fehlgeschlagen")

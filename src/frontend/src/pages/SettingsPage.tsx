@@ -149,7 +149,7 @@ export function SettingsPage() {
   const [togglTesting, setTogglTesting] = useState(false);
 
   const [bexioToken, setBexioToken] = useState('');
-  const [bexioMsg, setBexioMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [bexioMsg, setBexioMsg] = useState<{ type: 'ok' | 'err' | 'warn'; text: string } | null>(null);
   const [bexioTesting, setBexioTesting] = useState(false);
 
   const [extApiKey, setExtApiKey] = useState('');
@@ -479,9 +479,19 @@ export function SettingsPage() {
     setBexioTesting(true);
     setBexioMsg(null);
     try {
-      const result = await api.get<{ ok: boolean; name: string; email: string }>('/api/bexio/test-connection');
-      if (result.ok) {
-        setBexioMsg({ type: 'ok', text: `Verbunden als ${result.name} (${result.email})` });
+      const result = await api.get<{ ok: boolean; name: string; email: string; token_expires_at?: string; token_days_remaining?: number; token_expired?: boolean }>('/api/bexio/test-connection');
+      const days = result.token_days_remaining;
+      const expDate = result.token_expires_at ? new Date(result.token_expires_at).toLocaleDateString('de-CH') : null;
+      if (result.token_expired) {
+        setBexioMsg({ type: 'err', text: `Token abgelaufen${expDate ? ` (seit ${expDate})` : ''}. Neuen Token unter developer.bexio.com/pat erstellen.` });
+      } else if (result.ok) {
+        if (typeof days === 'number' && days <= 14) {
+          setBexioMsg({ type: 'warn', text: `Verbunden als ${result.name} — Token läuft in ${Math.round(days)} Tagen ab${expDate ? ` (${expDate})` : ''}. Bald erneuern.` });
+        } else if (typeof days === 'number' && expDate) {
+          setBexioMsg({ type: 'ok', text: `Verbunden als ${result.name} (${result.email}) — Token gültig bis ${expDate}.` });
+        } else {
+          setBexioMsg({ type: 'ok', text: `Verbunden als ${result.name} (${result.email})` });
+        }
       } else {
         setBexioMsg({ type: 'err', text: 'Verbindung fehlgeschlagen' });
       }
@@ -1200,7 +1210,7 @@ export function SettingsPage() {
                   <div>
                     <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">API-Token</label>
                     <input type="password" className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white" value={bexioToken} onChange={(e) => setBexioToken(e.target.value)} placeholder="Bexio API-Token eingeben" />
-                    <p className="mt-1 text-[10px] text-gray-400">Zu finden unter: Bexio → Einstellungen → Sicherheit → API-Zugänge</p>
+                    <p className="mt-1 text-[10px] text-gray-400">Personal Access Token (PAT) erstellen unter: developer.bexio.com/pat — gültig für 6 Monate, danach erneuern.</p>
                   </div>
                   <div className="flex items-center gap-3 pt-2">
                     <button onClick={saveIntegrations} className="rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Speichern</button>
@@ -1208,7 +1218,7 @@ export function SettingsPage() {
                       {bexioTesting ? 'Teste...' : 'Verbindung testen'}
                     </button>
                     {bexioMsg && (
-                      <span className={`text-sm ${bexioMsg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{bexioMsg.text}</span>
+                      <span className={`text-sm ${bexioMsg.type === 'ok' ? 'text-green-600' : bexioMsg.type === 'warn' ? 'text-amber-600' : 'text-red-600'}`}>{bexioMsg.text}</span>
                     )}
                   </div>
                 </div>

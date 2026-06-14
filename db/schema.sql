@@ -276,6 +276,7 @@ CREATE TABLE llm_conversations (
     model           TEXT NOT NULL,
     mode            TEXT DEFAULT 'chat' CHECK (mode IN ('chat', 'deep_research', 'web_search', 'agent', 'code_execute')),
     temperature     REAL DEFAULT 0.7,
+    grounding       JSONB DEFAULT '{}'::jsonb,
     total_tokens    INT DEFAULT 0,
     total_cost_usd  NUMERIC(10,4) DEFAULT 0,
     created_at      TIMESTAMPTZ DEFAULT now(),

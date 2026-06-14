@@ -152,12 +152,10 @@ class AgentSkillsResponse(BaseModel):
 async def get_agent_skills(
     _user: User = Depends(require_role("owner")),
 ) -> AgentSkillsResponse:
-    """Listet die verfügbaren Nanobot-Skills mit Kurzbeschreibung."""
-    import os
-    from pathlib import Path
+    """Listet die verfügbaren Hermes-Skills mit Kurzbeschreibung."""
+    from app.services.hermes_config import get_hermes_home
 
-    workspace = Path(os.environ.get("TP_NANOBOT_WORKSPACE", os.path.expanduser("~/.nanobot/workspace")))
-    skills_dir = workspace / "skills"
+    skills_dir = get_hermes_home() / "skills"
 
     skills: list[AgentSkill] = []
     if skills_dir.exists():
@@ -176,3 +174,80 @@ async def get_agent_skills(
                     continue
 
     return AgentSkillsResponse(skills=skills)
+
+
+# ── Hermes-Brain (zentraler Runtime-Status) ──────────────
+
+class BrainFile(BaseModel):
+    name: str
+    content: str
+    size: int
+    last_modified: str | None = None
+
+
+class BrainStatus(BaseModel):
+    runtime: str = "hermes"
+    model: str | None = None
+    mcp_servers: list[str] = []
+    skills: list[str] = []
+    user_profile: BrainFile | None = None
+    memory: BrainFile | None = None
+    soul: BrainFile | None = None
+
+
+def _read_brain_file(path) -> BrainFile | None:
+    from datetime import datetime, timezone as _tz
+
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        stat = path.stat()
+        return BrainFile(
+            name=path.name,
+            content=content[:50000],
+            size=stat.st_size,
+            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=_tz.utc).isoformat(),
+        )
+    except OSError:
+        return None
+
+
+@router.get("/brain", response_model=BrainStatus)
+async def get_brain(
+    _user: User = Depends(require_role("owner")),
+) -> BrainStatus:
+    """Aggregierter Hermes-Status: Modell, MCP-Server, Skills, Memory, Identität.
+
+    Single Source of Truth für den Intelligence-Tab im Frontend.
+    """
+    import yaml
+    from app.services.hermes_config import get_hermes_home
+
+    home = get_hermes_home()
+    config_path = home / "config.yaml"
+
+    model: str | None = None
+    mcp_servers: list[str] = []
+    if config_path.exists():
+        try:
+            cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            model = (cfg.get("model") or {}).get("default")
+            mcp_servers = sorted((cfg.get("mcp_servers") or {}).keys())
+        except Exception:
+            pass
+
+    skills: list[str] = []
+    skills_dir = home / "skills"
+    if skills_dir.exists():
+        skills = sorted(f.stem for f in skills_dir.iterdir() if f.is_file() and f.suffix == ".md")
+
+    return BrainStatus(
+        runtime="hermes",
+        model=model,
+        mcp_servers=mcp_servers,
+        skills=skills,
+        user_profile=_read_brain_file(home / "memories" / "USER.md"),
+        memory=_read_brain_file(home / "memories" / "MEMORY.md"),
+        soul=_read_brain_file(home / "SOUL.md"),
+    )

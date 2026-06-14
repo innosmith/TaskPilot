@@ -6,9 +6,13 @@ API v3.0 für /users/me, Banking, Journal.
 """
 
 import asyncio
+import base64
+import binascii
+import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx
 
@@ -19,6 +23,42 @@ RETRY_BASE_DELAY = 1.0
 
 BASE_URL_V2 = "https://api.bexio.com/2.0"
 BASE_URL_V3 = "https://api.bexio.com/3.0"
+
+
+def decode_token_expiry(token: str) -> dict | None:
+    """Liest das Ablaufdatum (exp-Claim) aus einem Bexio-Token.
+
+    Bexio Personal Access Tokens (PAT) und OAuth2-Access-Tokens sind JWTs mit
+    einem 'exp'-Claim. Ein PAT ist ab Erstellung 6 Monate gueltig; laeuft er ab,
+    liefert die API stillschweigend 401 -- ohne jede Code-Aenderung.
+
+    Diese Funktion dekodiert ausschliesslich den (nicht signierten) Payload-Teil,
+    um den Ablauf-Zeitstempel zu lesen. Sie validiert die Signatur NICHT und gibt
+    den Token-Wert selbst nicht zurueck.
+
+    Returns:
+        dict mit ``expires_at`` (ISO-8601), ``days_remaining`` (float) und
+        ``is_expired`` (bool) -- oder ``None``, wenn der Token kein JWT mit
+        exp-Claim ist (z.B. ein alter statischer API-Token).
+    """
+    if not token or token.count(".") != 2:
+        return None
+    payload_seg = token.split(".")[1]
+    payload_seg += "=" * (-len(payload_seg) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(payload_seg))
+    except (ValueError, binascii.Error, json.JSONDecodeError):
+        return None
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        return None
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+    delta = expires_at - datetime.now(timezone.utc)
+    return {
+        "expires_at": expires_at.isoformat(),
+        "days_remaining": round(delta.total_seconds() / 86400, 1),
+        "is_expired": delta.total_seconds() <= 0,
+    }
 
 
 @dataclass
@@ -85,6 +125,12 @@ class BexioClient:
 
     async def _get_v3(self, path: str, params: dict | None = None) -> dict | list:
         return await self._request("GET", f"{BASE_URL_V3}{path}", params=params)
+
+    # ── Token-Ablauf ─────────────────────────────────────────
+
+    def token_expiry(self) -> dict | None:
+        """Ablauf-Info des konfigurierten Tokens (siehe ``decode_token_expiry``)."""
+        return decode_token_expiry(self.config.api_token)
 
     # ── Verbindungstest ──────────────────────────────────────
 

@@ -65,8 +65,7 @@ COPY src/signa/ /app/signa/
 
 ENV PYTHONPATH=/app:/app/email-graph:/app/pipedrive:/app/bexio:/app/toggl:/app/signa
 
-# Nanobot-Config Template + Entrypoint
-COPY docker/nanobot-config.template.json /app/
+# Entrypoint (Hermes-Config wird zur Laufzeit vom Backend generiert)
 COPY docker/entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
@@ -79,7 +78,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf 
 
 RUN useradd -m -d /home/taskpilot -u 1000 -s /usr/sbin/nologin taskpilot && \
     mkdir -p /app/uploads/avatars /app/uploads/tasks /app/uploads/backgrounds /app/uploads/projects \
-             /tmp/taskpilot-exports /home/taskpilot/.nanobot && \
+             /tmp/taskpilot-exports /home/taskpilot/.hermes && \
     chown -R taskpilot:taskpilot /app /tmp/taskpilot-exports /home/taskpilot /opt/hf-cache
 
 EXPOSE 8000

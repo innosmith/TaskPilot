@@ -1,18 +1,17 @@
-import json
-import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user, require_role
+from app.auth.deps import require_role
 from app.models import User
+from app.services.hermes_config import get_hermes_home
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
-NANOBOT_WORKSPACE = Path(os.environ.get("TP_NANOBOT_WORKSPACE", os.path.expanduser("~/.nanobot/workspace")))
+# Hermes-Home: memories/, skills/, SOUL.md, config.yaml
+HERMES_HOME = get_hermes_home()
 
 
 class MemoryFile(BaseModel):
@@ -25,7 +24,7 @@ class MemoryFile(BaseModel):
 async def list_memory_files(
     _user: User = Depends(require_role("owner")),
 ) -> list[MemoryFile]:
-    memory_dir = NANOBOT_WORKSPACE / "memory"
+    memory_dir = HERMES_HOME / "memories"
     if not memory_dir.exists():
         return []
 
@@ -48,7 +47,7 @@ async def get_memory_file(
     if ".." in filename or "/" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    filepath = NANOBOT_WORKSPACE / "memory" / filename
+    filepath = HERMES_HOME / "memories" / filename
     if not filepath.exists() or not filepath.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -71,52 +70,39 @@ class HeartbeatInfo(BaseModel):
 async def get_heartbeat(
     _user: User = Depends(require_role("owner")),
 ) -> HeartbeatInfo:
+    """Status der Hermes-Runtime: SOUL/Identitaet, Skills, Memory-Stand."""
     heartbeat = ""
-    heartbeat_path = NANOBOT_WORKSPACE / "HEARTBEAT.md"
+    heartbeat_path = HERMES_HOME / "memories" / "USER.md"
     if heartbeat_path.exists():
         heartbeat = heartbeat_path.read_text(encoding="utf-8", errors="replace")
 
     skills = []
-    skills_dir = NANOBOT_WORKSPACE / "skills"
+    skills_dir = HERMES_HOME / "skills"
     if skills_dir.exists():
         skills = [f.stem for f in skills_dir.iterdir() if f.is_file() and f.suffix == ".md"]
 
     agents_md = ""
-    agents_path = NANOBOT_WORKSPACE / "AGENTS.md"
-    if agents_path.exists():
-        agents_md = agents_path.read_text(encoding="utf-8", errors="replace")
+    soul_path = HERMES_HOME / "SOUL.md"
+    if soul_path.exists():
+        agents_md = soul_path.read_text(encoding="utf-8", errors="replace")
 
+    # Hermes nutzt always-on Memory statt eines Dream-Zyklus.
     dream_configured = False
     dream_interval_h: Optional[float] = None
-    config_path = NANOBOT_WORKSPACE.parent / "config.json"
-    if config_path.exists():
-        try:
-            cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            dream_cfg = cfg.get("agents", {}).get("defaults", {}).get("dream", {})
-            if dream_cfg:
-                dream_configured = True
-                dream_interval_h = dream_cfg.get("intervalH")
-        except (json.JSONDecodeError, OSError):
-            pass
 
     history_entries = 0
-    history_path = NANOBOT_WORKSPACE / "memory" / "history.jsonl"
-    if history_path.exists():
-        try:
-            history_entries = sum(1 for _ in history_path.open(encoding="utf-8"))
-        except OSError:
-            pass
+    memories_dir = HERMES_HOME / "memories"
+    if memories_dir.exists():
+        for hist in memories_dir.glob("history*.jsonl"):
+            try:
+                history_entries += sum(1 for _ in hist.open(encoding="utf-8"))
+            except OSError:
+                pass
 
     dream_cursor = 0
-    cursor_path = NANOBOT_WORKSPACE / "memory" / ".dream_cursor"
-    if cursor_path.exists():
-        try:
-            dream_cursor = int(cursor_path.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            pass
 
     memory_md_last_modified: Optional[str] = None
-    memory_path = NANOBOT_WORKSPACE / "memory" / "MEMORY.md"
+    memory_path = HERMES_HOME / "memories" / "MEMORY.md"
     if memory_path.exists():
         try:
             mtime = memory_path.stat().st_mtime

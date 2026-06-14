@@ -1,18 +1,27 @@
-"""Nanobot SDK Worker: Verarbeitet queued AgentJobs direkt via Python SDK.
+"""Hermes Agent-Runtime Worker: verarbeitet queued AgentJobs via Hermes AIAgent.
 
-Läuft als Hintergrund-Task beim Backend-Start. Pollt alle 10 Sekunden nach
-queued AgentJobs und verarbeitet sie sequentiell mit dem Nanobot SDK:
+Ersetzt den fruheren Nanobot-Worker. Laeuft als Hintergrund-Task im FastAPI-
+Backend und pollt alle 10s die ``agent_jobs``-Queue. Hermes ist synchron
+(``AIAgent.run_conversation`` blockiert), deshalb wird jeder Job ueber
+``asyncio.to_thread`` ausgefuehrt, damit der Event-Loop frei bleibt.
 
-    bot = Nanobot.from_config()
-    result = await bot.run(prompt, session_key=f"triage:{job_id}:{ts}")
+Architektur (Spike-validiert, siehe docs/hermes-vs-nanobot-entscheidung.md):
+- Persistenter ``AIAgent`` pro Worker (Provider ``custom`` -> Ollama ``/v1``).
+- MCP-Tools werden einmalig via ``discover_mcp_tools()`` registriert (eigener
+  Hintergrund-Event-Loop in Hermes) und vom Agent automatisch genutzt.
+- Nach der LLM-Klassifikation laeuft dieselbe deterministische Post-Processing-
+  Logik wie zuvor (JSON parsen, Task erstellen, Draft zuordnen).
 
-Nanobot nutzt dabei seine konfigurierten MCP-Tools (email, taskpilot) um
-E-Mails zu lesen, zu klassifizieren und Aktionen auszuführen.
-Jeder Durchlauf verwendet einen einzigartigen Session-Key (mit Timestamp),
-damit keine alte Konversationshistorie wiederverwendet wird.
+Transparenz: ``reasoning_callback`` (echtes Thinking) und die Tool-Callbacks
+werden in einen Job-Trace geschrieben (``metadata_json['trace']``), damit man
+in der Agent-Queue nachvollziehen kann, was der Agent gedacht und getan hat.
 
-Nach der LLM-Klassifikation führt der Worker deterministische Post-Processing-
-Logik aus: JSON-Output parsen, Tasks erstellen, Drafts zuordnen.
+Thinking-Politik: Standardmaessig AN (Transparenz + Demo). Der Disable-Hebel
+fuer qwen3.5/3.6 ist ``extra_body.chat_template_kwargs.enable_thinking=False``
+(``/no_think`` funktioniert in dieser Modellgeneration NICHT). Er ist als
+opt-in-Policy vorbereitet (``_thinking_disabled``), aber bewusst nicht im
+Default-Pfad scharfgeschaltet, da das Verhalten ueber Ollama ``/v1``
+versionsabhaengig ist und vor Aktivierung live verifiziert werden muss.
 """
 
 import asyncio
@@ -24,35 +33,28 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from nanobot import Nanobot
 from sqlalchemy import select, update
 
+from app.config import get_settings
 from app.database import async_session
 from app.models import AgentJob, BoardColumn, EmailTriage, Project, Task, User
+from app.services.hermes_config import (
+    get_hermes_home,
+    populate_hermes_env,
+    write_hermes_config,
+)
 from app.services.notification import notify_agent_awaiting_approval, notify_task_suggested
 
-logger = logging.getLogger("taskpilot.nanobot_worker")
-
-_worker_task: asyncio.Task | None = None
-_bot: Nanobot | None = None
-_chat_bot: Nanobot | None = None
-_init_lock: asyncio.Lock | None = None
-
-def _get_init_lock() -> asyncio.Lock:
-    global _init_lock
-    if _init_lock is None:
-        _init_lock = asyncio.Lock()
-    return _init_lock
+logger = logging.getLogger("taskpilot.hermes_worker")
 
 POLL_INTERVAL = 10
 REAP_INTERVAL = 60
 DRAFT_CLEANUP_INTERVAL = 300  # 5 Minuten
-DREAM_INTERVAL = 2 * 3600  # 2 Stunden
 STALE_TIMEOUT_MINUTES = 30
-_NANOBOT_HOME = Path(os.environ.get("TP_NANOBOT_WORKSPACE", os.path.expanduser("~/.nanobot/workspace")))
-NANOBOT_CONFIG = _NANOBOT_HOME.parent / "config.json"
-TRIAGE_SKILL = _NANOBOT_HOME / "skills" / "mail-triage.md"
-STYLE_PROFILE = _NANOBOT_HOME / "schreibstil-anthony.md"
+
+HERMES_HOME = get_hermes_home()
+TRIAGE_SKILL = HERMES_HOME / "skills" / "mail-triage.md"
+STYLE_PROFILE = HERMES_HOME / "schreibstil-anthony.md"
 
 PIPELINE_COLUMNS = {
     "focus": "a0000000-0000-0000-0000-000000000001",
@@ -61,9 +63,68 @@ PIPELINE_COLUMNS = {
     "this_month": "a0000000-0000-0000-0000-000000000005",
 }
 
+WORKER_SYSTEM_PROMPT = (
+    "Du bist der TaskPilot-Agent von Anthony Smith (InnoSmith GmbH, Schweiz). "
+    "Du nutzt deine MCP-Tools aktiv und behauptest nie, keinen Zugriff zu haben. "
+    "Befolge die Instruktionen in der Nachricht exakt und Schritt fuer Schritt. "
+    "Sprache: Schweizer Hochdeutsch (ss statt scharfem S, korrekte Umlaute ae/oe/ue als ä/ö/ü). "
+    "Zeitzone: Europe/Zurich."
+)
+
+# ── Runtime-State ────────────────────────────────────────
+_worker_task: asyncio.Task | None = None
+_agent = None  # persistenter Worker-AIAgent
+_runtime_ready = False
+_runtime_lock: asyncio.Lock | None = None
+
+# Trace-Sink fuer den aktuellen Job (Worker verarbeitet sequentiell).
+_job_trace: list[dict] = []
+_MAX_TRACE_EVENTS = 200
+
+
+def _get_runtime_lock() -> asyncio.Lock:
+    global _runtime_lock
+    if _runtime_lock is None:
+        _runtime_lock = asyncio.Lock()
+    return _runtime_lock
+
+
+# ── Thinking-Policy ──────────────────────────────────────
+
+# Jobtypen/Skills, bei denen Thinking deaktiviert werden DARF (rein mechanisch).
+# Leer im Default: Thinking bleibt ueberall an (Transparenz). Erst nach
+# Live-Verifikation gegen die Ollama-Version befuellen.
+_THINKING_DISABLED_JOB_TYPES: set[str] = set()
+
+
+def _thinking_disabled(job_type: str | None, skill: str | None) -> bool:
+    """True, wenn Thinking fuer diesen Job deaktiviert werden soll (Default: nie)."""
+    return bool(job_type and job_type in _THINKING_DISABLED_JOB_TYPES)
+
+
+# ── Trace-Callbacks (Transparenz) ────────────────────────
+
+def _trace_append(event: dict) -> None:
+    if len(_job_trace) < _MAX_TRACE_EVENTS:
+        _job_trace.append(event)
+
+
+def _on_reasoning(text: str) -> None:
+    if text:
+        _trace_append({"type": "thinking", "text": str(text)[:2000]})
+
+
+def _on_tool_start(tc_id, name, args) -> None:
+    _trace_append({"type": "tool_start", "name": str(name)})
+
+
+def _on_tool_complete(tc_id, name, args, result) -> None:
+    _trace_append({"type": "tool_complete", "name": str(name), "result": str(result)[:500]})
+
+
+# ── Prompt-Bausteine (framework-agnostisch) ──────────────
 
 def _load_triage_skill() -> str:
-    """Liest den mail-triage.md Skill als Systeminstruktion."""
     if TRIAGE_SKILL.exists():
         return TRIAGE_SKILL.read_text(encoding="utf-8")
     logger.warning("Triage-Skill nicht gefunden: %s", TRIAGE_SKILL)
@@ -71,12 +132,7 @@ def _load_triage_skill() -> str:
 
 
 def _load_style_profile() -> str:
-    """Liest den persönlichen Schreibstil-Kanon (schreibstil-anthony.md).
-
-    Wird bei der Draft-Erstellung in den Prompt injiziert, damit Anthonys
-    Schreibstil möglichst exakt übernommen wird. Auch für quick_response-Jobs
-    nutzbar.
-    """
+    """Liest den persoenlichen Schreibstil-Kanon (schreibstil-anthony.md)."""
     if STYLE_PROFILE.exists():
         return STYLE_PROFILE.read_text(encoding="utf-8")
     logger.warning("Schreibstil-Kanon nicht gefunden: %s", STYLE_PROFILE)
@@ -84,12 +140,10 @@ def _load_style_profile() -> str:
 
 
 async def _load_projects_context() -> str:
-    """Lädt alle aktiven Projekte aus der DB und formatiert sie als Prompt-Kontext."""
+    """Laedt alle aktiven Projekte aus der DB und formatiert sie als Prompt-Kontext."""
     async with async_session() as db:
         result = await db.execute(
-            select(Project)
-            .where(Project.status != "archived")
-            .order_by(Project.name)
+            select(Project).where(Project.status != "archived").order_by(Project.name)
         )
         projects = list(result.scalars().all())
 
@@ -106,11 +160,7 @@ async def _load_projects_context() -> str:
 
 
 async def _build_triage_prompt(job: AgentJob) -> str:
-    """Baut den Prompt für einen email_triage Job aus Metadata.
-
-    Lädt den Triage-Skill und die Projektliste bei jedem Aufruf frisch,
-    damit Änderungen sofort wirksam werden.
-    """
+    """Baut den Prompt für einen email_triage Job aus Metadata."""
     skill_text = _load_triage_skill()
     style_text = _load_style_profile()
     projects_context = await _load_projects_context()
@@ -254,11 +304,10 @@ async def _build_generic_prompt(job: AgentJob) -> str:
     skill_hint = ""
     skill_name = meta.get("skill")
     if skill_name:
-        skill_path = _NANOBOT_HOME / "skills" / f"{skill_name}.md"
+        skill_path = HERMES_HOME / "skills" / f"{skill_name}.md"
         if skill_path.exists():
             skill_hint = f"\n## SKILL-INSTRUKTIONEN\n\n{skill_path.read_text(encoding='utf-8')}\n"
 
-    # Bei E-Mail-Antwort-Jobs (z.B. quick-response) den Schreibstil-Kanon injizieren
     style_hint = ""
     if skill_name in ("quick-response", "mail-triage"):
         style_text = _load_style_profile()
@@ -285,6 +334,8 @@ Führe den Auftrag aus und melde das Ergebnis mit update_agent_job("{job.id}", s
 """
 
 
+# ── Post-Processing (framework-agnostisch) ───────────────
+
 def _extract_json_block(content: str) -> dict | None:
     """Extrahiert den JSON-Block aus dem LLM-Output."""
     pattern = r"```json\s*\n(.*?)\n\s*```"
@@ -296,7 +347,6 @@ def _extract_json_block(content: str) -> dict | None:
             logger.warning("JSON-Block gefunden aber nicht parsebar: %s", match.group(1)[:200])
             return None
 
-    # Fallback: letztes {...} im Text
     json_pattern = r"\{[^{}]*\"label\"[^{}]*\"triage_class\"[^{}]*\}"
     matches = list(re.finditer(json_pattern, content, re.DOTALL))
     if matches:
@@ -337,18 +387,11 @@ def _determine_pipeline_column(deadline_str: str | None) -> str | None:
         return PIPELINE_COLUMNS["this_week"]
     if delta <= 14:
         return PIPELINE_COLUMNS["next_week"]
-    if delta <= 31:
-        return PIPELINE_COLUMNS["this_month"]
     return PIPELINE_COLUMNS["this_month"]
 
 
 async def _post_process_triage(job_id, content: str, meta: dict) -> str:
-    """Deterministische Post-Processing-Logik nach LLM-Klassifikation.
-
-    Parst den JSON-Block, erstellt Tasks bei 'task', speichert draft_id
-    bei 'auto_reply', und aktualisiert den EmailTriage-Record.
-    Returns: finaler Status für den AgentJob.
-    """
+    """Deterministische Post-Processing-Logik nach LLM-Klassifikation."""
     parsed = _extract_json_block(content)
     if parsed is None:
         logger.warning("Job %s: Kein JSON-Block im Output gefunden", job_id)
@@ -364,7 +407,6 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     rationale = parsed.get("rationale")
     reply_expected = bool(parsed.get("reply_expected", False))
 
-    # Legacy-Werte migrieren
     if triage_class == "quick_response":
         triage_class = "auto_reply"
     elif triage_class == "board_task":
@@ -373,7 +415,6 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     elif triage_class == "bedenkzeit":
         triage_class = "task"
 
-    # Konsistenz-Checks zwischen triage_class, draft_id und task_title
     if draft_id and triage_class != "auto_reply":
         logger.warning("Job %s: draft_id vorhanden aber triage_class=%s, korrigiere zu auto_reply", job_id, triage_class)
         triage_class = "auto_reply"
@@ -498,120 +539,253 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     return final_status
 
 
-async def _init_bot() -> Nanobot | None:
-    """Initialisiert den Worker-Nanobot (für Agent-Jobs wie Triage)."""
-    global _bot
-    async with _get_init_lock():
-        if _bot is not None:
-            return _bot
-        return await _create_nanobot_instance("worker")
+# ── Runtime-Initialisierung ──────────────────────────────
+
+def _is_local_model(sel: str) -> bool:
+    """True, wenn das Modell lokal ueber Ollama laeuft (Default oder ``ollama/*``)."""
+    return not sel or sel in ("nanobot", "hermes") or sel.startswith("ollama/")
 
 
-async def _init_chat_bot() -> Nanobot | None:
-    """Initialisiert einen separaten Nanobot für den Chat-Agent-Endpoint.
+# Cloud-Provider (z. B. OpenAI) begrenzen die Anzahl Tools pro Request auf 128.
+# Lokales Ollama kennt dieses Limit nicht. Gilt als Sicherheitsnetz fuer den
+# Cloud-Pfad (aktuell 113 MCP-Tools insgesamt, also unkritisch).
+CLOUD_TOOL_LIMIT = 128
 
-    Eigene Instanz, damit Worker-Jobs und Chat-Anfragen sich nicht
-    gegenseitig blockieren oder Session-State korrumpieren.
+
+def get_configured_server_keys() -> list[str]:
+    """Liest die konfigurierten MCP-Server-Keys aus ``~/.hermes/config.yaml``.
+
+    Die Keys (z. B. ``graph``, ``bexio``) sind zugleich die Hermes-Toolset-Aliase
+    (``validate_toolset`` akzeptiert Aliase), die in ``enabled_toolsets`` genutzt
+    werden, um einzelne MCP-Server gezielt freizugeben.
     """
-    global _chat_bot
-    async with _get_init_lock():
-        if _chat_bot is not None:
-            return _chat_bot
-        return await _create_nanobot_instance("chat")
+    import yaml
 
-
-async def _create_nanobot_instance(label: str) -> Nanobot | None:
-    """Erstellt eine neue Nanobot-Instanz mit Lock-Schutz."""
-    global _bot, _chat_bot
-    if not NANOBOT_CONFIG.exists():
-        logger.error("[%s] Nanobot-Config nicht gefunden: %s", label, NANOBOT_CONFIG)
-        return None
-
-    await _populate_env_from_db()
-
+    config_path = HERMES_HOME / "config.yaml"
     try:
-        instance = Nanobot.from_config(config_path=str(NANOBOT_CONFIG))
-        logger.info("[%s] Nanobot SDK initialisiert (Config: %s)", label, NANOBOT_CONFIG)
-        if label == "worker":
-            _bot = instance
-        else:
-            _chat_bot = instance
-        return instance
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        return list((config.get("mcp_servers") or {}).keys())
     except Exception:
-        logger.exception("[%s] Nanobot SDK Initialisierung fehlgeschlagen", label)
-        return None
+        logger.exception("MCP-Server-Keys konnten nicht aus config.yaml gelesen werden")
+        return []
 
 
-def reset_chat_bot() -> None:
-    """Invalidiert den Chat-Bot, damit er beim nächsten Aufruf neu initialisiert wird."""
-    global _chat_bot
-    _chat_bot = None
-    logger.info("Chat-Bot invalidiert — wird beim nächsten Aufruf neu erstellt")
+def resolve_cloud_toolsets(enabled_servers: list[str] | None) -> list[str]:
+    """Validiert die gewuenschten MCP-Server gegen die Konfiguration.
 
-
-async def _populate_env_from_db() -> None:
-    """Liest API-Tokens aus den User-Settings (Owner) und setzt sie als Env-Vars.
-
-    Prüfreihenfolge pro Key:
-    1. Bereits gesetzte Env-Var (bleibt bestehen)
-    2. DB-Settings des Owner-Users
-    3. Pydantic Settings aus .env.dev (Fallback)
+    Gibt die Toolset-Namen (= Server-Aliase) zurueck, die fuer ein Cloud-Modell
+    freigegeben werden. Unbekannte/nicht konfigurierte Server werden verworfen.
+    Eine leere Liste bedeutet Default-Deny (keine MCP-Tools).
     """
-    from app.config import get_settings
+    configured = set(get_configured_server_keys())
+    return [s for s in (enabled_servers or []) if s in configured]
 
-    _ENV_KEYS: dict[str, str] = {
-        "pipedrive_api_token": "TP_PIPEDRIVE_API_TOKEN",
-        "pipedrive_domain": "TP_PIPEDRIVE_DOMAIN",
-        "toggl_api_token": "TP_TOGGL_API_TOKEN",
-        "toggl_workspace_id": "TP_TOGGL_WORKSPACE_ID",
-        "bexio_api_token": "TP_BEXIO_API_TOKEN",
-        "invoiceinsight_api_key": "TP_INVOICEINSIGHT_API_KEY",
-        "invoiceinsight_url": "TP_INVOICEINSIGHT_URL",
-        "tavily_api_key": "TP_TAVILY_API_KEY",
-    }
+
+def count_tools(enabled_toolsets: list[str] | None) -> int:
+    """Anzahl der Tool-Definitionen fuer eine gegebene Toolset-Auswahl.
+
+    Setzt eine erfolgte MCP-Discovery (``ensure_runtime_ready``) voraus.
+    """
+    try:
+        from model_tools import get_tool_definitions
+
+        return len(get_tool_definitions(enabled_toolsets=enabled_toolsets, quiet_mode=True))
+    except Exception:
+        logger.exception("Tool-Anzahl konnte nicht ermittelt werden")
+        return 0
+
+
+def _build_worker_agent():
+    """Konstruiert den persistenten Worker-AIAgent (laeuft im Thread)."""
+    from run_agent import AIAgent
 
     cfg = get_settings()
+    model = cfg.triage_model.removeprefix("ollama/")
+    # Worker nutzt per Default ein lokales Modell (voller Zugriff). Falls jemand
+    # ein Cloud-Triage-Modell konfiguriert, gilt Default-Deny wie im Chat:
+    # keine MCP-Tools, kein Memory/USER-Profil, keine Kontextdateien.
+    if _is_local_model(cfg.triage_model):
+        base_url = f"{cfg.ollama_base_url.rstrip('/')}/v1"
+        api_key = "ollama"
+        enabled_toolsets = None
+        skip_memory = False
+        skip_context_files = False
+    else:
+        base_url = f"{cfg.litellm_base_url.rstrip('/')}/v1"
+        api_key = "sk-litellm-local"
+        model = cfg.triage_model
+        enabled_toolsets = []
+        skip_memory = True
+        skip_context_files = True
 
+    return AIAgent(
+        base_url=base_url,
+        api_key=api_key,
+        provider="custom",
+        api_mode="chat_completions",
+        model=model,
+        enabled_toolsets=enabled_toolsets,
+        skip_memory=skip_memory,
+        skip_context_files=skip_context_files,
+        max_iterations=90,
+        tool_delay=0.0,
+        quiet_mode=True,
+        save_trajectories=False,
+        session_id="taskpilot-worker",
+        reasoning_callback=_on_reasoning,
+        tool_start_callback=_on_tool_start,
+        tool_complete_callback=_on_tool_complete,
+    )
+
+
+async def ensure_runtime_ready() -> bool:
+    """Stellt sicher, dass Config geschrieben, Env gesetzt und MCP-Tools registriert sind.
+
+    Idempotent — wird von Worker und Chat-Agent genutzt. Gibt True zurueck, wenn
+    die Runtime bereit ist.
+    """
+    global _runtime_ready
+    if _runtime_ready:
+        return True
+
+    async with _get_runtime_lock():
+        if _runtime_ready:
+            return True
+
+        os.environ["HERMES_HOME"] = str(HERMES_HOME)
+        try:
+            write_hermes_config()
+            await populate_hermes_env()
+        except Exception:
+            logger.exception("Hermes-Config/Env konnte nicht vorbereitet werden")
+            return False
+
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+
+            tool_names = await asyncio.to_thread(discover_mcp_tools)
+            logger.info("Hermes MCP-Discovery: %d Tools registriert", len(tool_names or []))
+        except Exception:
+            logger.exception("Hermes MCP-Discovery fehlgeschlagen")
+            return False
+
+        _runtime_ready = True
+        return True
+
+
+def build_chat_agent(
+    model: str | None,
+    *,
+    enabled_servers: list[str] | None = None,
+    include_memory: bool = False,
+    on_text=None,
+    on_reasoning=None,
+    on_tool_start=None,
+    on_tool_complete=None,
+    session_id: str | None = None,
+):
+    """Konstruiert einen AIAgent fuer den interaktiven Chat (InnoPilot).
+
+    Jede Chat-Anfrage bekommt eine eigene Instanz mit eigenen Callbacks
+    (Streaming + Thinking + Tools), damit parallele Anfragen sich nicht
+    gegenseitig stoeren. MCP-Tools stammen aus der globalen Registry
+    (``ensure_runtime_ready`` muss vorher gelaufen sein).
+
+    Modell-Routing: ``ollama/*`` (und Default) -> Ollama ``/v1`` lokal;
+    Cloud-Modelle (``openai/*``, ``anthropic/*``, ``gemini/*``) -> LiteLLM-Proxy.
+
+    Grounding-Politik (Datenschutz):
+    - Lokales Modell: voller Zugriff (alle MCP-Tools, Memory/USER-Profil,
+      Kontextdateien). Daten bleiben lokal.
+    - Cloud-Modell: Default-Deny. Nur explizit per ``enabled_servers``
+      freigegebene MCP-Server sind verfuegbar; Memory/USER-Profil nur bei
+      ``include_memory=True``; Kontextdateien (SOUL/AGENTS) bleiben aus.
+    """
+    from run_agent import AIAgent
+
+    cfg = get_settings()
+    sel = (model or "").strip()
+    if _is_local_model(sel):
+        base_url = f"{cfg.ollama_base_url.rstrip('/')}/v1"
+        api_key = "ollama"
+        resolved_model = sel.removeprefix("ollama/") or cfg.triage_model.removeprefix("ollama/")
+        # Lokal: kein Tool-Limit, voller Kontext.
+        enabled_toolsets = None
+        skip_memory = False
+        skip_context_files = False
+    else:
+        base_url = f"{cfg.litellm_base_url.rstrip('/')}/v1"
+        api_key = "sk-litellm-local"
+        resolved_model = sel
+        # Cloud: Default-Deny, nur explizit freigegebene MCP-Server.
+        enabled_toolsets = resolve_cloud_toolsets(enabled_servers)
+        skip_memory = not include_memory
+        skip_context_files = True
+
+    return AIAgent(
+        base_url=base_url,
+        api_key=api_key,
+        provider="custom",
+        api_mode="chat_completions",
+        model=resolved_model,
+        enabled_toolsets=enabled_toolsets,
+        skip_memory=skip_memory,
+        skip_context_files=skip_context_files,
+        max_iterations=90,
+        tool_delay=0.0,
+        quiet_mode=True,
+        save_trajectories=False,
+        session_id=session_id or "taskpilot-chat",
+        stream_delta_callback=on_text,
+        reasoning_callback=on_reasoning,
+        tool_start_callback=on_tool_start,
+        tool_complete_callback=on_tool_complete,
+    )
+
+
+async def _init_agent():
+    """Initialisiert den persistenten Worker-Agent (nach Runtime-Setup)."""
+    global _agent
+    if _agent is not None:
+        return _agent
+    if not await ensure_runtime_ready():
+        return None
     try:
-        async with async_session() as db:
-            from app.models import User
-            result = await db.execute(
-                select(User.settings).where(User.role == "owner").limit(1)
-            )
-            settings = result.scalar_one_or_none() or {}
-
-        for db_key, env_key in _ENV_KEYS.items():
-            if os.environ.get(env_key):
-                continue
-            value = settings.get(db_key, "") or getattr(cfg, db_key, "")
-            if value:
-                os.environ[env_key] = str(value)
-                logger.info("Env-Var %s gesetzt (Quelle: %s)",
-                            env_key, "DB" if settings.get(db_key) else ".env.dev")
-            else:
-                os.environ[env_key] = ""
-                logger.warning("Env-Var %s ist leer — weder in DB noch in .env.dev konfiguriert", env_key)
-
-        _SIGNA_MAP = {
-            "isi_host": "TP_ISI_HOST",
-            "isi_db": "TP_ISI_DB",
-            "isi_user": "TP_ISI_USER",
-            "isi_secret": "TP_ISI_SECRET",
-        }
-        for cfg_key, env_key in _SIGNA_MAP.items():
-            if not os.environ.get(env_key):
-                value = getattr(cfg, cfg_key, "")
-                os.environ[env_key] = str(value) if value else ""
-                if value:
-                    logger.info("Env-Var %s aus .env.dev gesetzt", env_key)
+        _agent = await asyncio.to_thread(_build_worker_agent)
+        logger.info("Hermes Worker-AIAgent initialisiert (Modell: %s)", _agent.model)
     except Exception:
-        logger.warning("DB-Settings konnten nicht gelesen werden — Env-Vars bleiben wie sie sind")
+        logger.exception("Hermes Worker-AIAgent-Initialisierung fehlgeschlagen")
+        _agent = None
+    return _agent
 
 
-async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: dict) -> None:
-    """Verarbeitet einen einzelnen AgentJob via Nanobot SDK."""
-    session_key = f"{job_type}:{job_id}:{int(time.time())}"
-    logger.info("Starte Job %s (type=%s, session=%s)", job_id, job_type, session_key)
+def _run_agent_sync(agent, prompt: str, disable_thinking: bool) -> str:
+    """Synchroner Agent-Lauf (im Thread). Gibt den finalen Antworttext zurueck.
+
+    ``disable_thinking`` setzt SOTA-korrekt ``extra_body.chat_template_kwargs``;
+    standardmaessig False (Thinking an).
+    """
+    prev_overrides = getattr(agent, "request_overrides", None)
+    if disable_thinking:
+        agent.request_overrides = {
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
+        }
+    try:
+        result = agent.run_conversation(prompt, system_message=WORKER_SYSTEM_PROMPT)
+    finally:
+        if disable_thinking:
+            agent.request_overrides = prev_overrides
+
+    if isinstance(result, dict):
+        return str(result.get("final_response") or "")
+    return str(result or "")
+
+
+async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) -> None:
+    """Verarbeitet einen einzelnen AgentJob via Hermes AIAgent."""
+    global _job_trace
+    logger.info("Starte Job %s (type=%s)", job_id, job_type)
 
     async with async_session() as db:
         await db.execute(
@@ -621,9 +795,12 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
         )
         await db.commit()
 
+    _job_trace = []
+    disable_thinking = _thinking_disabled(job_type, meta.get("skill"))
+
     try:
-        result = await bot.run(prompt, session_key=session_key)
-        content = result.content or ""
+        content = await asyncio.to_thread(_run_agent_sync, agent, prompt, disable_thinking)
+        trace = list(_job_trace)
         logger.info("Job %s abgeschlossen: %s", job_id, content[:200])
 
         if job_type == "email_triage":
@@ -638,30 +815,24 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
                 await notify_agent_awaiting_approval(notif_db, job_id=job_id)
                 await notif_db.commit()
 
+        tools_used = sorted({e["name"] for e in trace if e.get("type") == "tool_start"})
         async with async_session() as db:
+            job_result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
+            job = job_result.scalar_one_or_none()
+            new_meta = dict((job.metadata_json if job else None) or meta)
+            new_meta["trace"] = trace
+            new_meta["tools_used"] = tools_used
             await db.execute(
                 update(AgentJob)
                 .where(AgentJob.id == job_id)
                 .values(
                     status=status,
                     output=content[:4000],
+                    metadata_json=new_meta,
                     completed_at=datetime.now(timezone.utc),
                 )
             )
             await db.commit()
-
-        # Session-Ergebnis in history.jsonl archivieren fuer Dream
-        try:
-            store = bot._loop.context.memory
-            subject = meta.get("subject", "")
-            from_addr = meta.get("from_address", "")
-            summary = f"E-Mail-Triage: '{subject}' von {from_addr} → {status}"
-            if content:
-                summary += f"\n{content[:500]}"
-            store.append_history(summary)
-            logger.info("Session-Summary fuer Job %s in history.jsonl geschrieben", job_id)
-        except Exception:
-            logger.warning("Session-Archivierung fehlgeschlagen fuer Job %s", job_id)
 
     except Exception as e:
         logger.exception("Job %s fehlgeschlagen", job_id)
@@ -684,12 +855,13 @@ async def _process_job(bot: Nanobot, job_id, job_type: str, prompt: str, meta: d
             await db.commit()
 
 
+# ── Wartung (framework-agnostisch) ───────────────────────
+
 async def _cleanup_orphaned_drafts() -> int:
     """Schliesst awaiting_approval-Jobs ab, deren Draft in Outlook nicht mehr existiert."""
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
     from graph_client import GraphClient, GraphConfig
-    from app.config import get_settings
 
     s = get_settings()
     if not all([s.graph_tenant_id, s.graph_client_id, s.graph_client_secret, s.graph_user_email]):
@@ -767,27 +939,27 @@ async def _reap_stale_jobs() -> int:
         if reaped_ids:
             logger.warning(
                 "Reaper: %d stale running-Jobs auf failed gesetzt: %s",
-                len(reaped_ids),
-                [str(i) for i in reaped_ids],
+                len(reaped_ids), [str(i) for i in reaped_ids],
             )
         await db.commit()
     return len(reaped_ids)
 
 
+# ── Worker-Loop ──────────────────────────────────────────
+
 async def _worker_loop() -> None:
     """Pollt nach queued Jobs und verarbeitet sie sequentiell."""
     await asyncio.sleep(3)
 
-    bot = await _init_bot()
-    if bot is None:
-        logger.error("Nanobot-Worker kann nicht starten (SDK nicht verfügbar)")
+    agent = await _init_agent()
+    if agent is None:
+        logger.error("Hermes-Worker kann nicht starten (Runtime nicht verfügbar)")
         return
 
-    logger.info("Nanobot-Worker gestartet -- pollt alle %ds nach queued Jobs", POLL_INTERVAL)
+    logger.info("Hermes-Worker gestartet -- pollt alle %ds nach queued Jobs", POLL_INTERVAL)
 
     last_reap = time.monotonic()
     last_draft_cleanup = time.monotonic()
-    last_dream = time.monotonic()
 
     while True:
         try:
@@ -801,18 +973,6 @@ async def _worker_loop() -> None:
                 except Exception:
                     logger.exception("Draft-Cleanup fehlgeschlagen")
                 last_draft_cleanup = time.monotonic()
-
-            if time.monotonic() - last_dream >= DREAM_INTERVAL:
-                try:
-                    dream = bot._loop.dream
-                    ran = await dream.run()
-                    if ran:
-                        logger.info("Dream-Zyklus abgeschlossen -- MEMORY.md aktualisiert")
-                    else:
-                        logger.debug("Dream-Zyklus: keine neuen History-Eintraege zu verarbeiten")
-                except Exception:
-                    logger.exception("Dream-Zyklus fehlgeschlagen")
-                last_dream = time.monotonic()
 
             async with async_session() as db:
                 result = await db.execute(
@@ -832,27 +992,27 @@ async def _worker_loop() -> None:
                 else:
                     prompt = await _build_generic_prompt(job)
 
-                await _process_job(bot, job.id, job.job_type or "generic", prompt, meta)
+                await _process_job(agent, job.id, job.job_type or "generic", prompt, meta)
             else:
                 await asyncio.sleep(POLL_INTERVAL)
 
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Nanobot-Worker: unerwarteter Fehler")
+            logger.exception("Hermes-Worker: unerwarteter Fehler")
             await asyncio.sleep(POLL_INTERVAL)
 
 
-async def start_nanobot_worker() -> None:
-    """Startet den Nanobot-Worker als Hintergrund-Task."""
+async def start_hermes_worker() -> None:
+    """Startet den Hermes-Worker als Hintergrund-Task."""
     global _worker_task
     _worker_task = asyncio.create_task(_worker_loop())
-    logger.info("Nanobot-Worker: Hintergrund-Task gestartet")
+    logger.info("Hermes-Worker: Hintergrund-Task gestartet")
 
 
-async def stop_nanobot_worker() -> None:
-    """Stoppt den Nanobot-Worker und gibt alle Bot-Instanzen frei."""
-    global _worker_task, _bot, _chat_bot
+async def stop_hermes_worker() -> None:
+    """Stoppt den Hermes-Worker und gibt MCP-Verbindungen frei."""
+    global _worker_task, _agent
     if _worker_task and not _worker_task.done():
         _worker_task.cancel()
         try:
@@ -860,6 +1020,11 @@ async def stop_nanobot_worker() -> None:
         except asyncio.CancelledError:
             pass
     _worker_task = None
-    _bot = None
-    _chat_bot = None
-    logger.info("Nanobot-Worker gestoppt, alle Bot-Instanzen freigegeben")
+    _agent = None
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+
+        await asyncio.to_thread(shutdown_mcp_servers)
+    except Exception:
+        logger.warning("MCP-Server-Shutdown fehlgeschlagen (ignoriert)")
+    logger.info("Hermes-Worker gestoppt")

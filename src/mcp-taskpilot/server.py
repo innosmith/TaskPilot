@@ -1,4 +1,4 @@
-"""TaskPilot MCP-Server — nanobot kann Tasks und Agent-Jobs lesen/schreiben."""
+"""TaskPilot MCP-Server — der Hermes-Agent kann Tasks und Agent-Jobs lesen/schreiben."""
 
 import asyncio
 import json

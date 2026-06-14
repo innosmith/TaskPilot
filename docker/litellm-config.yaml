@@ -1,7 +1,7 @@
 # LiteLLM Proxy Configuration -- TaskPilot LLM Gateway
 # Docs: https://docs.litellm.ai/docs/proxy/configs
 #
-# Alle LLM-Aufrufe (nanobot + Backend) gehen ueber diesen Proxy.
+# Alle Cloud-LLM-Aufrufe (Hermes + Backend) gehen ueber diesen Proxy.
 # Modell-String im Request bestimmt das Routing:
 #   ollama/* → Ollama lokal
 #   anthropic/* → Anthropic Cloud

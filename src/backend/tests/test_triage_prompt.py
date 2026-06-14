@@ -141,7 +141,7 @@ class TestTriagePrompt:
 
     def test_style_canon_swiss_spelling(self):
         """Der echte Schreibstil-Kanon nutzt Schweizer Schreibweise (kein ß, keine ue/ae/oe-Ersatzformen)."""
-        from app.services.nanobot_worker import STYLE_PROFILE
+        from app.services.hermes_worker import STYLE_PROFILE
 
         if not STYLE_PROFILE.exists():
             pytest.skip(f"Schreibstil-Kanon nicht vorhanden: {STYLE_PROFILE}")
@@ -163,13 +163,13 @@ class TestTriagePrompt:
         """Importiert und ruft _build_triage_prompt auf, mit gemockten DB-Calls.
 
         Der Schreibstil-Kanon wird gemockt, damit der Test unabhängig vom
-        Dateisystem (~/.nanobot/workspace/schreibstil-anthony.md) ist.
+        Dateisystem (~/.hermes/schreibstil-anthony.md) ist.
         """
-        with patch("app.services.nanobot_worker._load_projects_context", new_callable=AsyncMock) as mock_projects, \
-             patch("app.services.nanobot_worker._load_style_profile", return_value=style_text):
+        with patch("app.services.hermes_worker._load_projects_context", new_callable=AsyncMock) as mock_projects, \
+             patch("app.services.hermes_worker._load_style_profile", return_value=style_text):
             mock_projects.return_value = "## VERFÜGBARE PROJEKTE\n- \"TestProjekt\" (id: 123)"
 
-            from app.services.nanobot_worker import _build_triage_prompt
+            from app.services.hermes_worker import _build_triage_prompt
             return await _build_triage_prompt(job)
 
 

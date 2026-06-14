@@ -278,6 +278,7 @@ class LlmConversation(Base):
     model: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[str] = mapped_column(Text, server_default="chat")
     temperature: Mapped[float] = mapped_column(Float, server_default="0.7")
+    grounding: Mapped[dict] = mapped_column(JSONB, server_default="{}")
     total_tokens: Mapped[int] = mapped_column(Integer, server_default="0")
     total_cost_usd: Mapped[float] = mapped_column(Numeric(10, 4), server_default="0")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())

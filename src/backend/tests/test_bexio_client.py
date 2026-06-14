@@ -7,6 +7,10 @@ Testet:
 - Kontaktsuche nach Name und E-Mail
 """
 
+import base64
+import json
+from datetime import datetime, timedelta, timezone
+
 import pytest
 import httpx
 import respx
@@ -14,7 +18,27 @@ import respx
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "bexio"))
 
-from bexio_client import BexioClient, BexioConfig, BASE_URL_V2, BASE_URL_V3
+from bexio_client import (
+    BexioClient,
+    BexioConfig,
+    BASE_URL_V2,
+    BASE_URL_V3,
+    decode_token_expiry,
+)
+
+
+def _make_jwt(exp_dt: datetime | None) -> str:
+    """Baut ein synthetisches JWT (nur Payload relevant) fuer Tests -- kein echtes Secret."""
+    def _b64(obj: dict) -> str:
+        raw = json.dumps(obj).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    header = _b64({"alg": "RS256", "typ": "JWT"})
+    payload_dict: dict = {"login_id": "abc"}
+    if exp_dt is not None:
+        payload_dict["exp"] = int(exp_dt.timestamp())
+    payload = _b64(payload_dict)
+    return f"{header}.{payload}.signature-irrelevant"
 
 
 @pytest.fixture
@@ -238,3 +262,52 @@ async def test_rate_limit_retry(bx_client):
 
     assert len(result) == 1
     assert route.call_count == 2
+
+
+# ── Token-Ablauf (PAT laeuft nach 6 Monaten ab) ──────────
+
+def test_token_expiry_valid_token():
+    """Gueltiger Token: days_remaining positiv, nicht abgelaufen."""
+    token = _make_jwt(datetime.now(timezone.utc) + timedelta(days=90))
+    info = decode_token_expiry(token)
+    assert info is not None
+    assert info["is_expired"] is False
+    assert 89 <= info["days_remaining"] <= 90
+
+
+def test_token_expiry_expired_token():
+    """Abgelaufener Token wird als is_expired=True erkannt."""
+    token = _make_jwt(datetime.now(timezone.utc) - timedelta(days=2))
+    info = decode_token_expiry(token)
+    assert info is not None
+    assert info["is_expired"] is True
+    assert info["days_remaining"] < 0
+
+
+def test_token_expiry_near_expiry():
+    """Token kurz vor Ablauf liefert kleinen, positiven days_remaining."""
+    token = _make_jwt(datetime.now(timezone.utc) + timedelta(days=5))
+    info = decode_token_expiry(token)
+    assert info is not None
+    assert info["is_expired"] is False
+    assert 4 <= info["days_remaining"] <= 5
+
+
+def test_token_expiry_no_exp_claim():
+    """JWT ohne exp-Claim -> None (kein Ablauf bestimmbar)."""
+    assert decode_token_expiry(_make_jwt(None)) is None
+
+
+@pytest.mark.parametrize("bad_token", ["", "not-a-jwt", "only.two", "a.b.c.d"])
+def test_token_expiry_non_jwt(bad_token):
+    """Nicht-JWT (z.B. alter statischer Token) -> None."""
+    assert decode_token_expiry(bad_token) is None
+
+
+def test_client_token_expiry_method():
+    """BexioClient.token_expiry() delegiert an decode_token_expiry."""
+    token = _make_jwt(datetime.now(timezone.utc) + timedelta(days=30))
+    client = BexioClient(BexioConfig(api_token=token))
+    info = client.token_expiry()
+    assert info is not None
+    assert info["is_expired"] is False

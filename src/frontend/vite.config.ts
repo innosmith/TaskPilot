@@ -47,6 +47,38 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    // mermaid/cytoscape/wardley werden bereits lazy geladen, sind als Drittlibs
+    // aber unvermeidbar gross (~440-560 KB). Limit knapp darueber, damit nur
+    // echte Ausreisser warnen.
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        // Grosse, eager geladene Vendor-Familien aus dem Entry-Bundle herausloesen.
+        // Bewusst NICHT mermaid/cytoscape/katex/wardley anfassen -- die bleiben
+        // ueber dynamische Imports lazy.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'react-vendor';
+          if (id.includes('react-router')) return 'react-router';
+          if (id.includes('@tiptap') || id.includes('prosemirror')) return 'editor';
+          if (id.includes('recharts')) return 'charts';
+          if (id.includes('@dnd-kit')) return 'dnd';
+          if (id.includes('lucide-react')) return 'icons';
+          if (
+            id.includes('react-markdown') ||
+            id.includes('/remark') ||
+            id.includes('/rehype') ||
+            id.includes('/micromark') ||
+            id.includes('/unified') ||
+            id.includes('/mdast') ||
+            id.includes('/hast') ||
+            id.includes('/unist')
+          ) return 'markdown';
+        },
+      },
+    },
+  },
   server: {
     allowedHosts: ['tp.innosmith.ai', 'tp-dev.innosmith.ai', 'tp-int.innosmith.ai'],
     proxy: {
