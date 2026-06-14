@@ -12,6 +12,7 @@ import { TracePanel } from '../components/TracePanel';
 import { AgentRationale } from '../components/agent/AgentRationale';
 import { ConfidenceBadge } from '../components/agent/ConfidenceBadge';
 import { useSSE } from '../hooks/useSSE';
+import { parseExcludeVendors, isExcludedVendor } from './creditors/creditors-helpers';
 import type { AgentJob, TaskCard, PipelineData } from '../types';
 
 interface SignaSignal {
@@ -88,6 +89,7 @@ interface CockpitSettings {
   cockpit_background_url: string | null;
   cockpit_calendar_exclude_categories: string | null;
   cockpit_calendar_hide_private: boolean | null;
+  creditors_overview_exclude_vendors: string | null;
 }
 
 interface PipedriveActivitySummary {
@@ -171,6 +173,7 @@ export function CockpitPage() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const [creditorsExcludeVendors, setCreditorsExcludeVendors] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -247,6 +250,7 @@ export function CockpitPage() {
 
       const settingsData = await api.get<CockpitSettings>('/api/settings');
       setBgUrl(settingsData.cockpit_background_url);
+      setCreditorsExcludeVendors(settingsData.creditors_overview_exclude_vendors ?? null);
 
       const excludeCats = settingsData.cockpit_calendar_exclude_categories ?? 'Transfer, Privat';
       const hidePrivate = settingsData.cockpit_calendar_hide_private ?? true;
@@ -1192,7 +1196,7 @@ export function CockpitPage() {
           )}
 
           {/* ── Fällige Kreditoren-Zahlungen ── */}
-          <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} />
+          <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} excludeVendors={creditorsExcludeVendors} />
 
           {/* ── SIGNA-Signale ── */}
           {signaSignals.length > 0 && (
@@ -1764,14 +1768,15 @@ function formatDateCH(iso: string | undefined): string {
   return `${dd}.${mm}.${d.getFullYear()}`;
 }
 
-function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted }: {
-  cardClass: string; textSecondary: string; textMuted: string;
+function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted, excludeVendors }: {
+  cardClass: string; textSecondary: string; textMuted: string; excludeVendors: string | null;
 }) {
   const navigate = useNavigate();
   const [payments, setPayments] = useState<UpcomingPayment[]>([]);
   const [pdfModalUrl, setPdfModalUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    const terms = parseExcludeVendors(excludeVendors);
     api.get<unknown>('/api/creditors/upcoming?n=20')
       .then(data => {
         const raw = Array.isArray(data) ? data : (data as Record<string, unknown>)?.payments as Record<string, unknown>[] || [];
@@ -1783,10 +1788,10 @@ function UpcomingPaymentsCard({ cardClass, textSecondary, textMuted }: {
           amount_chf: (p.amount_chf ?? p.Betrag_CHF) as number | undefined,
           cycle: (p.cycle ?? p.Abrechnungszyklus) as string | undefined,
           invoice_id: (p.invoice_id ?? p.index) as number | undefined,
-        })));
+        })).filter((p) => !isExcludedVendor(p.vendor, p.product, terms)));
       })
       .catch(() => {});
-  }, []);
+  }, [excludeVendors]);
 
   if (payments.length === 0) return null;
 

@@ -16,11 +16,13 @@ const STATUS_CONFIG: Record<
   AgentJob['status'],
   { label: string; color: string; bg: string }
 > = {
+  planned: { label: 'Geplant', color: 'text-indigo-700', bg: 'bg-indigo-100 dark:bg-indigo-900/40 dark:text-indigo-300' },
   queued: { label: 'Wartend', color: 'text-amber-700', bg: 'bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300' },
   running: { label: 'Läuft', color: 'text-blue-700', bg: 'bg-blue-100 dark:bg-blue-900/40 dark:text-blue-300' },
   awaiting_approval: { label: 'Prüfung', color: 'text-purple-700', bg: 'bg-purple-100 dark:bg-purple-900/40 dark:text-purple-300' },
   completed: { label: 'Erledigt', color: 'text-green-700', bg: 'bg-green-100 dark:bg-green-900/40 dark:text-green-300' },
   failed: { label: 'Fehler', color: 'text-red-700', bg: 'bg-red-100 dark:bg-red-900/40 dark:text-red-300' },
+  blocked: { label: 'Blockiert', color: 'text-gray-600', bg: 'bg-gray-200 dark:bg-gray-700 dark:text-gray-300' },
 };
 
 const TYPE_FILTERS: { id: FilterType; label: string }[] = [

@@ -23,6 +23,7 @@ interface UserSettingsData {
   cockpit_background_url?: string | null;
   cockpit_calendar_exclude_categories?: string | null;
   cockpit_calendar_hide_private?: boolean | null;
+  creditors_overview_exclude_vendors?: string | null;
 }
 
 interface ManagedUser {
@@ -1118,6 +1119,38 @@ export function SettingsPage() {
                               const cats = (settings.cockpit_calendar_exclude_categories ?? 'Transfer, Privat')
                                 .split(',').map(c => c.trim()).filter(c => c && c !== trimmed);
                               updateSetting('cockpit_calendar_exclude_categories', cats.join(', ') || null);
+                            }}
+                            className="ml-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                          >×</button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-900 dark:bg-indigo-950/30">
+                  <label className="mb-1 block text-sm font-semibold text-gray-900 dark:text-white">Kreditoren-Lieferanten ausblenden (Cockpit &amp; Finanzen)</label>
+                  <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                    Lieferanten mit diesen Namen werden in den Übersichten «Fällige Zahlungen» (Cockpit) und «InvoiceInsight» (Finanzen) ausgeblendet — die Kreditoren-Seite zeigt weiterhin alles. Mehrere mit Komma trennen (z.B. «Cursor, Anysphere»).
+                  </p>
+                  <input
+                    value={settings.creditors_overview_exclude_vendors ?? 'Cursor'}
+                    onChange={(e) => updateSetting('creditors_overview_exclude_vendors', e.target.value || null)}
+                    placeholder="z.B. Cursor, Anysphere"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                  />
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {(settings.creditors_overview_exclude_vendors ?? 'Cursor').split(',').map((vendor, i) => {
+                      const trimmed = vendor.trim();
+                      if (!trimmed) return null;
+                      return (
+                        <span key={i} className="inline-flex items-center gap-1 rounded-full bg-gray-200 px-2.5 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+                          {trimmed}
+                          <button
+                            onClick={() => {
+                              const vendors = (settings.creditors_overview_exclude_vendors ?? 'Cursor')
+                                .split(',').map(v => v.trim()).filter(v => v && v !== trimmed);
+                              updateSetting('creditors_overview_exclude_vendors', vendors.join(', ') || null);
                             }}
                             className="ml-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
                           >×</button>

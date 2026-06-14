@@ -51,6 +51,21 @@ export const TOOLTIP_STYLE: React.CSSProperties = {
 
 export const CURSOR_STYLE = { fill: 'rgba(99,102,241,0.06)' };
 
+/**
+ * Lieferanten-Ausschlussliste fuer die Uebersichten (Cockpit + Finanzen).
+ * Default 'Cursor', damit die vielen Cursor-Abos die Uebersicht nicht fluten.
+ */
+export function parseExcludeVendors(raw: string | null | undefined): string[] {
+  return (raw ?? 'Cursor').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+/** True, wenn Lieferant oder Produkt einen der Ausschluss-Begriffe enthaelt. */
+export function isExcludedVendor(vendor?: string, product?: string, terms: string[] = []): boolean {
+  if (!terms.length) return false;
+  const hay = `${vendor ?? ''} ${product ?? ''}`.toLowerCase();
+  return terms.some((t) => hay.includes(t));
+}
+
 export function normalizeRenewal(e: Record<string, unknown>): RenewalEntry {
   return {
     vendor: (e.vendor ?? e.Kreditor ?? '–') as string,

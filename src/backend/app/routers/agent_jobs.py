@@ -461,7 +461,7 @@ async def submit_job_feedback(
     return {"ok": True, "rating": body.rating}
 
 
-_DELETABLE_STATUSES = {"completed", "failed", "awaiting_approval"}
+_DELETABLE_STATUSES = {"completed", "failed", "awaiting_approval", "planned", "blocked"}
 
 
 class BulkDeleteResult(BaseModel):
@@ -573,6 +573,55 @@ async def delete_agent_job(
             status_code=409,
             detail=f"Job im Status '{job.status}' kann nicht gelöscht/abgebrochen werden",
         )
+
+
+@router.post("/{job_id}/run", response_model=AgentJobOut)
+async def run_agent_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_role("owner")),
+) -> AgentJobOut:
+    """Gibt einen geplanten Agent-Job frei: ``planned`` -> ``queued``.
+
+    Erst hierdurch greift der Worker den Job auf -- die Zuweisung allein startet
+    nichts. Die Steuerungs-Felder (Autonomie/LLM/Datenklasse) werden aus der
+    aktuellen Task neu übernommen, damit zwischenzeitliche Konfiguration greift.
+    L0 (Block) wird nicht ausgeführt.
+    """
+    result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Agent job not found")
+    if job.status not in ("planned", "blocked"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job im Status '{job.status}' kann nicht gestartet werden",
+        )
+
+    meta = dict(job.metadata_json or {})
+    if job.task_id:
+        task = (
+            await db.execute(select(Task).where(Task.id == job.task_id))
+        ).scalar_one_or_none()
+        if task is not None:
+            meta["autonomy_level"] = task.autonomy_level
+            meta["data_class"] = task.data_class
+            meta["llm_override"] = task.llm_override
+            job.llm_model = task.llm_override
+
+    if meta.get("autonomy_level") == "L0":
+        # L0 = Block: bleibt 'planned', wird nicht ausgeführt. Klare Rückmeldung.
+        raise HTTPException(
+            status_code=409,
+            detail="Autonomie L0 (Block): Ausführung ist gesperrt. Hebe die Autonomie an, um zu starten.",
+        )
+
+    job.metadata_json = meta
+    job.status = "queued"
+    job.error_message = None
+    await db.flush()
+    await db.refresh(job)
+    return AgentJobOut.model_validate(job)
 
 
 @router.get("/{job_id}/trace")

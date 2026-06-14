@@ -1,5 +1,5 @@
-import { useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
-import type { TaskDetail, Tag, TaskUpdatePayload, PipelineColumn, Project, BoardColumn } from '../../types';
+import { useRef, useState, useMemo, useCallback, useEffect, lazy, Suspense } from 'react';
+import type { TaskDetail, Tag, TaskUpdatePayload, PipelineColumn, Project, BoardColumn, AgentJob } from '../../types';
 import { api } from '../../api/client';
 import { EmailThreadPanel } from '../EmailThreadPanel';
 
@@ -30,6 +30,8 @@ interface TaskDetailSidebarProps {
   handleProjectChange: (newProjectId: string) => Promise<void>;
   toggleTag: (tag: Tag) => Promise<void>;
   onTagsChanged: () => Promise<void>;
+  agentJobs: AgentJob[];
+  onAgentJobsChanged: () => Promise<void>;
 }
 
 const DATA_CLASS_OPTIONS = [
@@ -47,6 +49,24 @@ const AUTONOMY_OPTIONS = [
 
 const CALENDAR_PRESETS = [15, 30, 60, 120] as const;
 
+const AGENT_TONE: Record<string, string> = {
+  planned: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
+  scheduled: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  running: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  approval: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+  done: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  blocked: 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+};
+
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M5.25 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.573 0 3.285L8.029 19.99c-1.25.687-2.779-.217-2.779-1.643V5.653Z" />
+    </svg>
+  );
+}
+
 
 function formatDateDE(iso: string): string {
   const d = new Date(iso + 'T00:00:00');
@@ -63,6 +83,7 @@ export default function TaskDetailSidebar({
   task, taskId, isOwner, authUser, allProjects, pipelineCols,
   boardColumns, boardMembers, allTags, models, defaultLocalModel,
   updateTask, handleProjectChange, toggleTag, onTagsChanged,
+  agentJobs, onAgentJobsChanged,
 }: TaskDetailSidebarProps) {
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [newTagName, setNewTagName] = useState('');
@@ -84,6 +105,70 @@ export default function TaskDetailSidebar({
   const showPipedrive = !!(task.pipedrive_deal_id || task.pipedrive_person_id);
   // Eiserne Regel: E-Mail-stämmige Tasks = externe Kommunikation -> immer L1.
   const isExternalComms = !!(task.email_message_id || task.email_conversation_id);
+
+  // Jüngster Agent-Job zu dieser Task (steuert Status + Aktion im Agent-Bereich).
+  const latestJob = useMemo<AgentJob | null>(() => {
+    if (!agentJobs.length) return null;
+    return [...agentJobs].sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+  }, [agentJobs]);
+
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
+
+  // Direkt nach der Agent-Zuweisung wurde serverseitig ein 'planned'-Job erzeugt,
+  // den die Sidebar noch nicht kennt -> einmalig nachladen, damit Status/Aktion
+  // erscheinen. Kein Loop: bleibt agentJobs leer, ändern sich die Deps nicht.
+  useEffect(() => {
+    if (task.assignee === 'agent' && agentJobs.length === 0) {
+      onAgentJobsChanged();
+    }
+  }, [task.assignee, agentJobs.length, onAgentJobsChanged]);
+
+  const handleRunAgent = useCallback(async () => {
+    if (!latestJob) return;
+    setAgentBusy(true);
+    setAgentError(null);
+    try {
+      await api.post(`/api/agent-jobs/${latestJob.id}/run`);
+      await onAgentJobsChanged();
+    } catch (e) {
+      let msg = 'Ausführung konnte nicht gestartet werden.';
+      const raw = e instanceof Error ? e.message : '';
+      try { msg = JSON.parse(raw).detail || msg; } catch { /* raw bleibt */ }
+      setAgentError(msg);
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [latestJob, onAgentJobsChanged]);
+
+  const handleCancelAgent = useCallback(async () => {
+    if (!latestJob) return;
+    setAgentBusy(true);
+    setAgentError(null);
+    try {
+      await api.delete(`/api/agent-jobs/${latestJob.id}`);
+      await onAgentJobsChanged();
+    } catch { /* ignore */ }
+    finally { setAgentBusy(false); }
+  }, [latestJob, onAgentJobsChanged]);
+
+  // Abgeleiteter Agent-Zustand: verbindet Job-Status mit den Planungsfeldern
+  // (Fälligkeit, Autonomie) zu einem einzigen, klaren Zustand + Aktion.
+  const agentState = useMemo(() => {
+    const st = latestJob?.status;
+    const isL0 = task.autonomy_level === 'L0';
+    const dueFuture = !!task.due_date && task.due_date > today;
+    if (st === 'running') return { label: 'Läuft …', tone: 'running' as const, canRun: false, canCancel: true, hint: '' };
+    if (st === 'queued') return { label: 'In Warteschlange', tone: 'running' as const, canRun: false, canCancel: true, hint: 'Wird vom Agenten als Nächstes aufgegriffen.' };
+    if (st === 'awaiting_approval') return { label: 'Wartet auf Freigabe', tone: 'approval' as const, canRun: false, canCancel: false, hint: 'Entwurf liegt zur Freigabe bereit (Cockpit / Aufträge).' };
+    if (st === 'completed') return { label: 'Erledigt', tone: 'done' as const, canRun: false, canCancel: false, hint: '' };
+    if (st === 'failed') return { label: 'Fehlgeschlagen', tone: 'failed' as const, canRun: false, canCancel: false, hint: '' };
+    if (st === 'blocked') return { label: 'Blockiert', tone: 'blocked' as const, canRun: !isL0, canCancel: true, hint: isL0 ? 'Autonomie L0 sperrt die Ausführung.' : '' };
+    // planned (oder noch kein Job): aus Fälligkeit/Autonomie ableiten
+    if (isL0) return { label: 'Blockiert (L0)', tone: 'blocked' as const, canRun: false, canCancel: true, hint: 'Autonomie L0 sperrt die Ausführung. Hebe sie an, um zu starten.' };
+    if (dueFuture) return { label: `Geplant für ${formatDateDE(task.due_date!)}`, tone: 'scheduled' as const, canRun: true, canCancel: true, hint: 'Läuft automatisch am Fälligkeitstag — oder jetzt starten.' };
+    return { label: 'Auf Abruf', tone: 'planned' as const, canRun: true, canCancel: true, hint: 'Startet erst, wenn du sie übergibst.' };
+  }, [latestJob, task.autonomy_level, task.due_date, today]);
 
   const handleRemoveCalendarEvent = useCallback(async () => {
     if (!task.calendar_event_id) return;
@@ -560,11 +645,55 @@ export default function TaskDetailSidebar({
         </Suspense>
       )}
 
-      {/* ── Agent-Konfiguration (Owner-only) ── */}
-      {showAgentConfig && <div className="my-2" />}
-
+      {/* ── Agent-Bereich (Owner-only): Status + Aktion + Steuerung ── */}
       {showAgentConfig && (
-        <>
+        <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/30 p-3 dark:border-indigo-900/40 dark:bg-indigo-950/10">
+          <div className="mb-2.5 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200">
+              <AgentSmallIcon className="h-3.5 w-3.5 text-indigo-500 dark:text-indigo-400" />
+              Agent
+            </div>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${AGENT_TONE[agentState.tone]}`}>
+              {agentState.label}
+            </span>
+          </div>
+
+          {latestJob && (agentState.canRun || agentState.canCancel) && (
+            <div className="flex items-center gap-2">
+              {agentState.canRun && (
+                <button
+                  type="button"
+                  onClick={handleRunAgent}
+                  disabled={agentBusy}
+                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  <PlayIcon className="h-3.5 w-3.5" />
+                  Jetzt ausführen
+                </button>
+              )}
+              {agentState.canCancel && (
+                <button
+                  type="button"
+                  onClick={handleCancelAgent}
+                  disabled={agentBusy}
+                  className={`inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                    agentState.canRun
+                      ? 'border-gray-200 text-gray-500 hover:border-red-300 hover:bg-red-50 hover:text-red-600 dark:border-gray-700 dark:text-gray-400 dark:hover:border-red-800 dark:hover:bg-red-950/30 dark:hover:text-red-400'
+                      : 'flex-1 border-gray-200 text-gray-500 hover:border-red-300 hover:bg-red-50 hover:text-red-600 dark:border-gray-700 dark:text-gray-400 dark:hover:border-red-800 dark:hover:bg-red-950/30 dark:hover:text-red-400'
+                  }`}
+                >
+                  Abbrechen
+                </button>
+              )}
+            </div>
+          )}
+          {agentError ? (
+            <p className="mt-2 text-[10px] leading-snug text-red-500 dark:text-red-400">{agentError}</p>
+          ) : agentState.hint ? (
+            <p className="mt-2 text-[10px] leading-snug text-gray-400 dark:text-gray-500">{agentState.hint}</p>
+          ) : null}
+
+          <div className="mt-3 space-y-1 border-t border-indigo-100/70 pt-2 dark:border-indigo-900/40">
           <AttrRow icon={AgentSmallIcon} label="LLM-Modell">
             <select
               value={task.llm_override ?? defaultLocalModel}
@@ -644,7 +773,8 @@ export default function TaskDetailSidebar({
               ))}
             </div>
           </AttrRow>
-        </>
+          </div>
+        </div>
       )}
 
       {/* ── Pipedrive CRM ── */}

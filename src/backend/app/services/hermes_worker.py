@@ -34,6 +34,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.database import async_session
@@ -44,7 +45,11 @@ from app.services.hermes_config import (
     write_hermes_config,
 )
 from app.services.learning import record_episode
-from app.services.notification import notify_agent_awaiting_approval, notify_task_suggested
+from app.services.notification import (
+    notify_agent_awaiting_approval,
+    notify_agent_completed,
+    notify_task_suggested,
+)
 
 logger = logging.getLogger("taskpilot.hermes_worker")
 
@@ -516,7 +521,8 @@ Führe jetzt den Triage-Ablauf durch:
 7. Erstelle Draft falls auto_reply. WICHTIG: Rufe VORHER search_my_replies("{from_addr}") auf und nutze die letzten von Anthony gesendeten Antworten an diesen Kontakt als VERBATIM Stil-Anker (imitiere Ton, Länge, Anrede und Schlussformel). PFLICHT: Übergib bei create_draft IMMER reply_to_id="{email_id}", damit die Antwort im selben Thread landet (NIEMALS einen neuen Thread starten). Empfänger NICHT manuell überschreiben — createReply setzt den korrekten Empfänger automatisch. (Bei task übernimmt das Backend die Task-Erstellung automatisch.)
 8. Gib den PFLICHT-JSON-Block aus (Schema im Skill bzw. references/triage-rules.md)
 9. Aktualisiere das Absender-Profil mit update_sender_profile (siehe Skill)
-10. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed"|"awaiting_approval", output="...")
+
+Status und Output werden automatisch aus deiner finalen Antwort gespeichert -- rufe update_agent_job NICHT selbst auf.
 """ + (f"\n\n## ZUSÄTZLICHE BENUTZER-REGELN (haben Vorrang!)\n{custom_triage_prompt}" if custom_triage_prompt else "")
 
 
@@ -548,8 +554,69 @@ Du hast eine neue Microsoft Teams Chat-Nachricht erhalten. Analysiere und klassi
 2. Klassifiziere: Ist die Nachricht eine Aufgabe (task), eine reine Information (fyi), oder eine Meeting-Transkript-Benachrichtigung?
 3. Bei task: Erstelle einen TaskPilot-Task mit Kontext-Briefing und passendem Projekt
 4. Bei fyi: Nur zur Kenntnis nehmen
-5. Melde das Ergebnis mit update_agent_job("{job.id}", status="completed", output="...")
+
+Status und Output werden automatisch aus deiner finalen Antwort gespeichert -- rufe update_agent_job NICHT selbst auf.
 """
+
+
+def _format_task_context(task: Task) -> str:
+    """Baut den vollständigen Auftragskontext einer Task für den Agenten.
+
+    Nutzt ausschliesslich bestehende Task-Relationen (Titel, Beschreibung,
+    Checkliste, Anhänge, Tags, externe Referenzen) -- keine neuen Attribute.
+    Leere Bereiche werden weggelassen, damit der Prompt nicht verrauscht.
+    """
+    parts: list[str] = [f"**{task.title}**"]
+    if task.description:
+        parts.append(task.description)
+
+    # Checkliste als konkrete Teilschritte (offen vs. erledigt, in Reihenfolge)
+    items = sorted(task.checklist_items or [], key=lambda c: c.position)
+    if items:
+        offen = sum(1 for c in items if not c.is_checked)
+        lines = [f"- [{'x' if c.is_checked else ' '}] {c.text}" for c in items]
+        parts.append(
+            f"### Checkliste ({offen} offen / {len(items)} total)\n" + "\n".join(lines)
+        )
+
+    # Anhänge: Dateinamen + Hinweis, sie bei Bedarf zu lesen
+    attachments = task.attachments or []
+    if attachments:
+        lines = [
+            f"- {a.filename} ({a.mime_type or 'unbekannt'}) → {a.filepath}"
+            for a in attachments
+        ]
+        parts.append(
+            "### Anhänge\n"
+            "Lies relevante Anhänge bei Bedarf per read_file (Pfad rechts) bzw. "
+            "vision_analyze (Bilder):\n" + "\n".join(lines)
+        )
+
+    # Tags als Themen-/Kategorie-Hinweis
+    tags = task.tags or []
+    if tags:
+        parts.append("**Tags:** " + ", ".join(t.name for t in tags))
+
+    # Externe Referenzen: gezielt per MCP nachladbar
+    refs: list[str] = []
+    if task.email_message_id:
+        refs.append(f"E-Mail message_id={task.email_message_id} (Graph-MCP)")
+    if task.email_conversation_id:
+        refs.append(f"E-Mail conversation_id={task.email_conversation_id} (Graph-MCP)")
+    if task.calendar_event_id:
+        refs.append(f"Kalender event_id={task.calendar_event_id} (Graph-MCP)")
+    if task.pipedrive_deal_id:
+        refs.append(f"Pipedrive deal_id={task.pipedrive_deal_id} (Pipedrive-MCP)")
+    if task.pipedrive_person_id:
+        refs.append(f"Pipedrive person_id={task.pipedrive_person_id} (Pipedrive-MCP)")
+    if refs:
+        parts.append(
+            "### Verknüpfte Referenzen\n"
+            "Lade den Kontext bei Bedarf gezielt per MCP nach:\n"
+            + "\n".join(f"- {r}" for r in refs)
+        )
+
+    return "\n\n".join(parts)
 
 
 async def _build_generic_prompt(job: AgentJob) -> str:
@@ -593,17 +660,23 @@ async def _build_generic_prompt(job: AgentJob) -> str:
     description = meta.get("description") or meta.get("prompt")
     # Tasks, die im Cockpit/Board dem Agenten zugewiesen werden, tragen den Auftrag
     # in Titel + Beschreibung der verknüpften Task (nicht in metadata_json). Ohne das
-    # Nachladen bekäme der Agent einen leeren Auftrag ("nichts zu tun").
+    # Nachladen bekäme der Agent einen leeren Auftrag ("nichts zu tun"). Wir laden den
+    # gesamten vorhandenen Task-Kontext (Checkliste, Anhänge, Tags, Referenzen) nach.
     if not description and job.task_id:
         async with async_session() as db:
             task = (
-                await db.execute(select(Task).where(Task.id == job.task_id))
+                await db.execute(
+                    select(Task)
+                    .options(
+                        selectinload(Task.checklist_items),
+                        selectinload(Task.attachments),
+                        selectinload(Task.tags),
+                    )
+                    .where(Task.id == job.task_id)
+                )
             ).scalar_one_or_none()
         if task:
-            parts = [f"**{task.title}**"]
-            if task.description:
-                parts.append(task.description)
-            description = "\n\n".join(parts)
+            description = _format_task_context(task)
     if not description:
         description = str(meta)
 
@@ -616,7 +689,7 @@ async def _build_generic_prompt(job: AgentJob) -> str:
 **Job-Typ:** {job.job_type or 'generic'}
 **Auftrag:** {description}
 
-Führe den Auftrag aus und melde das Ergebnis mit update_agent_job("{job.id}", status="completed", output="...").
+Führe den Auftrag aus und gib dein **vollständiges** Ergebnis direkt als finale Antwort aus -- formatiert als Markdown (Überschriften, Listen, Fettungen, wo sinnvoll). Deine Antwort selbst ist das gespeicherte Resultat; es gibt keinen separaten Speicherort und keine "Kurzfassung". Rufe update_agent_job NICHT selbst auf -- Status und Output werden automatisch aus deiner finalen Antwort gespeichert.
 """
 
 
@@ -1232,6 +1305,28 @@ def _run_agent_sync(agent, prompt: str, disable_thinking: bool) -> str:
     return str(result or "")
 
 
+def _enforce_autonomy_status(meta: dict, content: str) -> str:
+    """Bestimmt den End-Status nach Autonomie-Stufe statt per Text-Heuristik.
+
+    - **L0 Block**: nicht ausführen -> ``blocked`` (Defensive; L0 sollte den
+      Worker gar nicht erreichen, da Trigger/Scheduler L0 sperren).
+    - **L1 Freigabe**: immer ``awaiting_approval`` (Entwurf, nie Auto-Versand).
+    - **L2 Melden**: ``completed`` + post-hoc Benachrichtigung.
+    - **L3 Auto**: autonom ``completed``.
+
+    Ohne Autonomie-Kontext (Alt-Jobs/sonstige Typen) gilt die bisherige
+    Heuristik (``awaiting_approval``, wenn das Modell es signalisiert).
+    """
+    autonomy = (meta or {}).get("autonomy_level")
+    if autonomy == "L0":
+        return "blocked"
+    if autonomy == "L1":
+        return "awaiting_approval"
+    if autonomy in ("L2", "L3"):
+        return "completed"
+    return "awaiting_approval" if "awaiting_approval" in content.lower() else "completed"
+
+
 async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) -> None:
     """Verarbeitet einen einzelnen AgentJob via Hermes AIAgent."""
     global _job_trace
@@ -1256,14 +1351,18 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
         if job_type == "email_triage":
             status = await _post_process_triage(job_id, content, meta)
         else:
-            status = "completed"
-            if "awaiting_approval" in content.lower():
-                status = "awaiting_approval"
+            status = _enforce_autonomy_status(meta, content)
 
-        if status == "awaiting_approval" and job_type != "email_triage":
-            async with async_session() as notif_db:
-                await notify_agent_awaiting_approval(notif_db, job_id=job_id)
-                await notif_db.commit()
+        if job_type != "email_triage":
+            if status == "awaiting_approval":
+                async with async_session() as notif_db:
+                    await notify_agent_awaiting_approval(notif_db, job_id=job_id)
+                    await notif_db.commit()
+            elif status == "completed" and (meta or {}).get("autonomy_level") == "L2":
+                # L2 'Melden': autonom ausgeführt, Mensch post-hoc informieren.
+                async with async_session() as notif_db:
+                    await notify_agent_completed(notif_db, job_id=job_id)
+                    await notif_db.commit()
 
         tools_used = sorted({e["name"] for e in trace if e.get("type") == "tool_start"})
         async with async_session() as db:
@@ -1285,7 +1384,7 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
                 .where(AgentJob.id == job_id)
                 .values(
                     status=status,
-                    output=content[:4000],
+                    output=content[:16000],
                     metadata_json=new_meta,
                     completed_at=datetime.now(timezone.utc),
                 )

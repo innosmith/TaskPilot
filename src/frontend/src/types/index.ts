@@ -180,7 +180,7 @@ export interface AgentJob {
   id: string;
   task_id: string | null;
   job_type: string | null;
-  status: 'queued' | 'running' | 'awaiting_approval' | 'completed' | 'failed';
+  status: 'planned' | 'queued' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'blocked';
   llm_model: string | null;
   tokens_used: number | null;
   cost_usd: number | null;

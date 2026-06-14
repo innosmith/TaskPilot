@@ -7,6 +7,7 @@ import {
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { useMediaQuery } from '../hooks/useMediaQuery';
+import { parseExcludeVendors, isExcludedVendor } from './creditors/creditors-helpers';
 
 // ── Types ────────────────────────────────────────────
 
@@ -192,6 +193,7 @@ export function FinancePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const [creditorsExcludeVendors, setCreditorsExcludeVendors] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const isFinanceMobile = useMediaQuery('(max-width: 1023px)');
 
@@ -226,8 +228,11 @@ export function FinancePage() {
 
   useEffect(() => {
     loadData();
-    api.get<{ finance_background_url: string | null }>('/api/settings')
-      .then(s => setBgUrl(s.finance_background_url))
+    api.get<{ finance_background_url: string | null; creditors_overview_exclude_vendors: string | null }>('/api/settings')
+      .then(s => {
+        setBgUrl(s.finance_background_url);
+        setCreditorsExcludeVendors(s.creditors_overview_exclude_vendors ?? null);
+      })
       .catch(() => {});
   }, [loadData]);
 
@@ -1000,7 +1005,7 @@ export function FinancePage() {
             )}
           </SourceCard>
 
-          <InvoiceInsightPreview />
+          <InvoiceInsightPreview excludeVendors={creditorsExcludeVendors} />
         </div>
 
         {/* Detailtabelle */}
@@ -1266,16 +1271,22 @@ function formatDateCH(iso: string | undefined): string {
   return `${dd}.${mm}.${d.getFullYear()}`;
 }
 
-function InvoiceInsightPreview() {
+function InvoiceInsightPreview({ excludeVendors }: { excludeVendors: string | null }) {
   const [upcoming, setUpcoming] = useState<UpcomingPaymentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [pdfModalUrl, setPdfModalUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    const terms = parseExcludeVendors(excludeVendors);
     api.get<unknown>('/api/creditors/upcoming?n=20')
       .then(data => {
         const raw = Array.isArray(data) ? data : (data as Record<string, unknown>)?.payments as Record<string, unknown>[] || [];
-        setUpcoming(raw.map((p: Record<string, unknown>) => ({
+        const filtered = raw.filter((p) => !isExcludedVendor(
+          (p.vendor ?? p.Kreditor) as string | undefined,
+          (p.product ?? p.Produkt) as string | undefined,
+          terms,
+        ));
+        setUpcoming(filtered.map((p: Record<string, unknown>) => ({
           vendor: (p.vendor ?? p.Kreditor ?? '–') as string,
           next_date: (p.next_date ?? p.Renewal_Date_Parsed ?? p.Renewal_Date) as string | undefined,
           amount_chf: (p.amount_chf ?? p.Betrag_CHF) as number | undefined,
@@ -1285,7 +1296,7 @@ function InvoiceInsightPreview() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [excludeVendors]);
 
   const handleRowClick = (p: UpcomingPaymentRow) => {
     if (p.invoice_id != null) {

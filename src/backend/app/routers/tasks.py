@@ -438,7 +438,23 @@ async def update_task(
             logger.warning("task_moved-Signal konnte nicht erfasst werden")
 
     if body.assignee == "agent" and old_assignee != "agent" and user.role == "owner":
-        job = AgentJob(task_id=task.id, llm_model=task.llm_override)
+        # Zuweisung entkoppelt Ausführung: der Job wird 'planned' (wartet), nicht
+        # 'queued'. So rennt der Agent nicht sofort los -- die Task kann fertig
+        # konfiguriert und dann via "Jetzt ausführen" freigegeben werden (oder der
+        # Scheduler löst am Fälligkeitstag aus). Autonomie/LLM/Datenklasse als
+        # Snapshot fürs spätere Enforcement; die Beschreibung lädt der Worker zur
+        # Laufzeit frisch aus der Task (voller Kontext inkl. Checkliste/Anhänge).
+        job = AgentJob(
+            task_id=task.id,
+            job_type="task",
+            status="planned",
+            llm_model=task.llm_override,
+            metadata_json={
+                "autonomy_level": task.autonomy_level,
+                "data_class": task.data_class,
+                "llm_override": task.llm_override,
+            },
+        )
         db.add(job)
 
     new_assignee = task.assignee

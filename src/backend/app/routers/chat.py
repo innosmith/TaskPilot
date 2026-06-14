@@ -1036,6 +1036,7 @@ async def _run_agent_background(
         output: str | None = None,
         error_message: str | None = None,
         tools_used: list[str] | None = None,
+        trace: list[dict] | None = None,
     ):
         async with async_session() as sdb:
             res = await sdb.execute(
@@ -1051,9 +1052,14 @@ async def _run_agent_background(
                 job.error_message = error_message
             if status in ("completed", "failed"):
                 job.completed_at = datetime.now(tz.utc)
-            if tools_used:
+            if tools_used or trace:
                 meta = dict(job.metadata_json or {})
-                meta["tools_used"] = tools_used
+                if tools_used:
+                    meta["tools_used"] = tools_used
+                # Trace im selben Format wie der Worker, damit der bestehende
+                # Trace-Endpoint (metadata_json['trace']) auch Chat-Jobs zeigt.
+                if trace:
+                    meta["trace"] = trace
                 job.metadata_json = meta
             await sdb.commit()
 
@@ -1074,9 +1080,19 @@ async def _run_agent_background(
         if text:
             _emit("chunk", text)
 
+    # Trace-Akkumulator: gleiches Format wie der Worker (thinking/tool_start/
+    # tool_complete), damit der bestehende Trace-Endpoint Chat-Jobs anzeigt.
+    _trace: list[dict] = []
+    _MAX_TRACE = 200
+
+    def _trace_append(event: dict):
+        if len(_trace) < _MAX_TRACE:
+            _trace.append(event)
+
     def on_reasoning(text: str):
         _check_cancel()
         if text:
+            _trace_append({"type": "thinking", "text": str(text)[:2000]})
             _emit("thinking", text)
 
     _tools_used: list[str] = []
@@ -1085,9 +1101,11 @@ async def _run_agent_background(
         _check_cancel()
         if name and name not in _tools_used:
             _tools_used.append(str(name))
+        _trace_append({"type": "tool_start", "name": str(name)})
         _emit("tool_start", str(name))
 
     def on_tool_complete(tc_id, name, args, result):
+        _trace_append({"type": "tool_complete", "name": str(name), "result": str(result)[:500]})
         _emit("tool_event", json.dumps(
             {"tool": str(name), "result": str(result)[:500]}, ensure_ascii=False
         ))
@@ -1186,7 +1204,7 @@ async def _run_agent_background(
             # kooperativ aus (Callback-Abbruch an nächster Grenze).
             if job_id in _agent_cancel:
                 logger.info("[agent-bg] Stopp durch Nutzer, job=%s", job_id)
-                await _update_agent_job("failed", error_message="Vom Benutzer gestoppt")
+                await _update_agent_job("failed", error_message="Vom Benutzer gestoppt", tools_used=list(_tools_used), trace=list(_trace))
                 await _push_agent_event(job_id, {"event": "stopped", "data": json.dumps({"content": "Vom Benutzer gestoppt"})})
                 _agent_running[job_id] = False
                 _agent_cancel.discard(job_id)
@@ -1205,7 +1223,7 @@ async def _run_agent_background(
                 if elapsed > MAX_AGENT_TIMEOUT:
                     bot_task.cancel()
                     logger.warning("[agent-bg] Timeout nach %.0fs, job=%s", elapsed, job_id)
-                    await _update_agent_job("failed", error_message=f"Timeout nach {MAX_AGENT_TIMEOUT}s")
+                    await _update_agent_job("failed", error_message=f"Timeout nach {MAX_AGENT_TIMEOUT}s", tools_used=list(_tools_used), trace=list(_trace))
                     await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": f"InnoPilot hat das Zeitlimit überschritten ({MAX_AGENT_TIMEOUT}s)"})})
                     _agent_running[job_id] = False
                     asyncio.create_task(_cleanup_agent_events(job_id))
@@ -1223,7 +1241,7 @@ async def _run_agent_background(
 
     except Exception:
         logger.exception("[agent-bg] Fehler in job=%s", job_id)
-        await _update_agent_job("failed", error_message="Agent-Ausführung fehlgeschlagen")
+        await _update_agent_job("failed", error_message="Agent-Ausführung fehlgeschlagen", tools_used=list(_tools_used), trace=list(_trace))
         await _push_agent_event(job_id, {"event": "error", "data": json.dumps({"error": "InnoPilot-Ausführung fehlgeschlagen"})})
         _agent_running[job_id] = False
         asyncio.create_task(_cleanup_agent_events(job_id))
@@ -1238,7 +1256,7 @@ async def _run_agent_background(
         save_db.add(assistant_msg)
         await save_db.commit()
 
-    await _update_agent_job("completed", output=content, tools_used=tools_used)
+    await _update_agent_job("completed", output=content, tools_used=tools_used, trace=list(_trace))
 
     await _push_agent_event(job_id, {"event": "done", "data": json.dumps({
         "message_id": str(assistant_msg.id),

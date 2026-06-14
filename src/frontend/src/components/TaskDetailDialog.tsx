@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { TaskDetailContent, TaskDetailAttachments, TaskDetailActivity, TaskDetailSidebar } from './task-detail';
+import { TracePanel } from './TracePanel';
+import { FormattedOutput } from './FormattedOutput';
 import type { ActivityLogEntry, AttachmentEntry, ModelsData } from './task-detail';
 import {
   CloseIcon, ModalIcon, PanelIcon, FullscreenIcon, AgentSmallIcon,
@@ -94,6 +96,14 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask, revie
     api.get<AgentJob[]>(`/api/agent-jobs?task_id=${taskId}`)
       .then(setAgentJobs).catch(() => setAgentJobs([]));
   }, [taskId, loadProject]);
+
+  const refreshAgentJobs = useCallback(async () => {
+    if (!taskId) return;
+    try {
+      const jobs = await api.get<AgentJob[]>(`/api/agent-jobs?task_id=${taskId}`);
+      setAgentJobs(jobs);
+    } catch { /* ignore */ }
+  }, [taskId]);
 
   const refreshTask = useCallback(async () => {
     if (!taskId) return;
@@ -387,8 +397,15 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask, revie
                             }`}>{job.status}</span>
                             <span className="text-[10px] text-gray-400">{new Date(job.created_at).toLocaleString('de-CH')}</span>
                           </div>
-                          {job.output && <div className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white p-2 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">{job.output}</div>}
+                          {job.output && (
+                            <div className="mt-2 max-h-72 overflow-y-auto rounded-lg bg-white p-2.5 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                              <FormattedOutput output={job.output} />
+                            </div>
+                          )}
                           {job.error_message && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{job.error_message}</p>}
+                          {(job.status === 'completed' || job.status === 'failed' || job.status === 'awaiting_approval') && (
+                            <div className="mt-1.5"><TracePanel jobId={job.id} compact /></div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -423,6 +440,8 @@ export function TaskDetailDialog({ taskId, onClose, onUpdated, onOpenTask, revie
                 handleProjectChange={handleProjectChange}
                 toggleTag={toggleTag}
                 onTagsChanged={refreshTags}
+                agentJobs={agentJobs}
+                onAgentJobsChanged={refreshAgentJobs}
               />
             </div>
           </div>

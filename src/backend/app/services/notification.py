@@ -144,6 +144,29 @@ async def notify_agent_awaiting_approval(
     )
 
 
+async def notify_agent_completed(
+    db: AsyncSession,
+    job_id: UUID,
+    subject: str | None = None,
+) -> None:
+    """Post-hoc-Benachrichtigung für autonom (L2 'Melden') erledigte Aufträge."""
+    owner = await _get_owner(db)
+    if not owner:
+        return
+    title = "Agent hat einen Auftrag erledigt"
+    if subject:
+        title = f"Erledigt: {subject}"
+    await create_notification(
+        db,
+        user_id=owner.id,
+        type="agent_completed",
+        title=title,
+        link="/agenten",
+        source_type="agent_job",
+        source_id=job_id,
+    )
+
+
 async def notify_task_suggested(
     db: AsyncSession,
     task_id: UUID,
