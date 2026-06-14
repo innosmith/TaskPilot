@@ -30,6 +30,7 @@ export interface TaskCard {
   checklist_done: number;
   pipeline_column_name: string | null;
   pipeline_column_color: string | null;
+  needs_review?: boolean;
 }
 
 export interface ChecklistItem {

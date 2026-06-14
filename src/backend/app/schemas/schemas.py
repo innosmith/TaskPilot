@@ -207,6 +207,9 @@ class TaskCard(BaseModel):
     checklist_done: int = 0
     pipeline_column_name: str | None = None
     pipeline_column_color: str | None = None
+    # Agent-Präsenz: vom Agenten erzeugte/berührte Task, die eine menschliche
+    # Prüfung erwartet -- in Board/Pipeline/Agenda als Hinweis sichtbar.
+    needs_review: bool = False
 
 
 # --- Board ---

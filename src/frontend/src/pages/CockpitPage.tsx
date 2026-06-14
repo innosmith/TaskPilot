@@ -9,6 +9,8 @@ import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { EmailThreadPanel } from '../components/EmailThreadPanel';
 import { EmailBody } from '../components/EmailBody';
 import { TracePanel } from '../components/TracePanel';
+import { AgentRationale } from '../components/agent/AgentRationale';
+import { ConfidenceBadge } from '../components/agent/ConfidenceBadge';
 import { useSSE } from '../hooks/useSSE';
 import type { AgentJob, TaskCard, PipelineData } from '../types';
 
@@ -259,6 +261,14 @@ export function CockpitPage() {
       ]);
 
       const awaitingApproval = jobsData.filter(j => j.status === 'awaiting_approval');
+      // Responsive Salience: unsichere Entwürfe zuerst (niedrigste Confidence oben),
+      // damit der Mensch die riskanten Fälle zuerst prüft.
+      const confOf = (j: AgentJob) => {
+        const c = (j.metadata_json as Record<string, unknown> | null)?.confidence;
+        const n = typeof c === 'number' ? c : (c != null ? Number(c) : NaN);
+        return Number.isNaN(n) ? 1.1 : n; // ohne Angabe ans Ende
+      };
+      awaitingApproval.sort((a, b) => confOf(a) - confOf(b));
       setApprovalJobs(awaitingApproval);
       setPendingReview(reviewData);
       setTriageStats(triageData);
@@ -850,8 +860,20 @@ export function CockpitPage() {
                     });
                   };
 
+                  // Responsive Salience: unsichere Entwürfe ziehen den Blick stärker
+                  // auf sich (rot/amber), sichere bleiben dezent — der Mensch prüft
+                  // gezielt dort genauer, wo das Risiko höher ist.
+                  const conf = meta.confidence != null ? Number(meta.confidence) : null;
+                  const salience = conf == null
+                    ? ''
+                    : conf < 0.5
+                      ? 'border-l-[3px] border-l-red-500'
+                      : conf < 0.8
+                        ? 'border-l-[3px] border-l-amber-400'
+                        : 'border-l-[3px] border-l-emerald-400';
+
                   return (
-                    <div key={job.id} className={`rounded-xl border ${cardClass} ${isExpanded ? 'p-5' : 'p-3'}`}>
+                    <div key={job.id} className={`rounded-xl border ${cardClass} ${salience} ${isExpanded ? 'p-5' : 'p-3'}`}>
                       {/* Kompakte Kopfzeile */}
                       <div
                         className={`flex items-center gap-3 ${!isExpanded ? 'cursor-pointer' : ''}`}
@@ -886,6 +908,9 @@ export function CockpitPage() {
                             <span className={`text-sm font-semibold truncate ${textPrimary}`}>
                               {preview?.subject || meta.subject || 'E-Mail-Entwurf'}
                             </span>
+                            {meta.confidence != null && (
+                              <ConfidenceBadge confidence={Number(meta.confidence)} glassBg={hasBg} className="shrink-0" />
+                            )}
                           </div>
                           <div className={`text-xs ${textMuted}`}>
                             An: {preview?.to_recipients?.join(', ') || meta.from_address || 'Unbekannt'}
@@ -913,16 +938,16 @@ export function CockpitPage() {
                         </div>
                         {!isExpanded && (
                           <div className="flex shrink-0 items-center gap-1.5">
+                            {/* Kein Blind-Senden: erst pruefen (aufklappen), dann freigeben */}
                             <button
-                              onClick={(e) => { e.stopPropagation(); handleApprove(job.id); }}
-                              disabled={isProcessing}
-                              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                              onClick={(e) => { e.stopPropagation(); toggleExpand(); }}
+                              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                                 hasBg
                                   ? 'bg-emerald-600/90 text-white hover:bg-emerald-600'
                                   : 'bg-emerald-600 text-white hover:bg-emerald-700'
                               }`}
                             >
-                              {isProcessing ? '…' : 'Senden'}
+                              Prüfen
                             </button>
                             <button
                               onClick={(e) => { e.stopPropagation(); handleReject(job.id); }}
@@ -948,6 +973,19 @@ export function CockpitPage() {
                       {/* Aufgeklappter Inhalt */}
                       {isExpanded && (
                         <div className="mt-4">
+                          {/* Lesbares Warum + Sicherheit */}
+                          {(meta.rationale || meta.summary || meta.confidence != null) && (
+                            <div className="mb-3 flex items-start justify-between gap-2">
+                              <AgentRationale
+                                summary={(meta.rationale as string) || (meta.summary as string) || null}
+                                jobId={job.id}
+                                glassBg={hasBg}
+                              />
+                              {meta.confidence != null && (
+                                <ConfidenceBadge confidence={Number(meta.confidence)} glassBg={hasBg} className="mt-0.5 shrink-0" />
+                              )}
+                            </div>
+                          )}
                           {meta.subject && (
                             <div className={`mb-3 rounded-lg px-3 py-2 text-xs ${hasBg ? 'bg-white/10' : 'bg-gray-50 dark:bg-gray-800/50'} ${textMuted}`}>
                               <span className="font-medium">Antwort auf:</span> {meta.subject}

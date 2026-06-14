@@ -640,6 +640,15 @@ _agent_conditions: dict[str, asyncio.Condition] = {}
 _agent_running: dict[str, bool] = {}
 _AGENT_EVENT_TTL = 600  # Events 10min nach Abschluss aufbewahren
 
+# Job-IDs, fuer die der Nutzer einen Stopp angefordert hat. Der Agent-Thread
+# prueft dies kooperativ in seinen Callbacks (naechste Tool-/Text-Grenze) und
+# bricht dann ab -- ein echter Stopp, nicht nur ein abgeklemmter Client-Stream.
+_agent_cancel: set[str] = set()
+
+
+class _AgentCancelled(Exception):
+    """Wird in den Hermes-Callbacks ausgelöst, wenn der Nutzer gestoppt hat."""
+
 # Offene clarify-Rückfragen (HITL): clarify_id -> {event, answer, job_id}.
 # Der Agent-Thread blockiert auf ``event`` bis der Nutzer via Endpoint antwortet.
 _clarify_pending: dict[str, dict] = {}
@@ -793,13 +802,21 @@ def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
     from datetime import timedelta as _td
     _days_to_mon = (7 - now_zurich.weekday()) % 7 or 7  # nächster Montag (heute zählt nicht)
     next_monday = (now_zurich + _td(days=_days_to_mon)).date()
-    next_friday = next_monday + _td(days=4)
     this_monday = (now_zurich - _td(days=now_zurich.weekday())).date()
+
+    # Jeden Wochentag mit effektivem Datum vorrechnen (dynamisch), damit das Modell
+    # nicht selbst addieren muss und sich nicht verzählt.
+    _wd = ["Mo", "Di", "Mi", "Do", "Fr"]
+
+    def _week_line(monday):
+        return ", ".join(
+            f"{_wd[i]} {(monday + _td(days=i)).strftime('%d.%m.')}" for i in range(5)
+        )
+
     date_anchors = (
         f"Heute ist {now_zurich.strftime('%A')}, {now_zurich.date().isoformat()}. "
-        f"'Diese Woche' = Mo {this_monday.isoformat()} bis Fr {(this_monday + _td(days=4)).isoformat()}. "
-        f"'Nächste Woche' = Mo {next_monday.isoformat()} bis Fr {next_friday.isoformat()} "
-        f"(die Kalenderwoche, die am nächsten Montag beginnt)."
+        f"'Diese Woche' (Mo–Fr): {_week_line(this_monday)}. "
+        f"'Nächste Woche' (Mo–Fr, beginnt am nächsten Montag): {_week_line(next_monday)}."
     )
 
     history_lines = []
@@ -1046,18 +1063,26 @@ async def _run_agent_background(
         """Threadsicher ein Event in die Queue legen (aus dem Agent-Thread)."""
         loop.call_soon_threadsafe(queue.put_nowait, (evt_type, payload))
 
+    def _check_cancel():
+        """Kooperativer Abbruch: an Tool-/Text-Grenzen den Stopp-Wunsch prüfen."""
+        if job_id in _agent_cancel:
+            raise _AgentCancelled()
+
     # Synchrone Hermes-Callbacks -> Queue-Brücke
     def on_text(text: str):
+        _check_cancel()
         if text:
             _emit("chunk", text)
 
     def on_reasoning(text: str):
+        _check_cancel()
         if text:
             _emit("thinking", text)
 
     _tools_used: list[str] = []
 
     def on_tool_start(tc_id, name, args):
+        _check_cancel()
         if name and name not in _tools_used:
             _tools_used.append(str(name))
         _emit("tool_start", str(name))
@@ -1066,6 +1091,7 @@ async def _run_agent_background(
         _emit("tool_event", json.dumps(
             {"tool": str(name), "result": str(result)[:500]}, ensure_ascii=False
         ))
+        _check_cancel()
 
     def clarify_callback(question: str, choices) -> str:
         """HITL-Rückfrage: blockiert den Agent-Thread bis der Nutzer antwortet.
@@ -1136,6 +1162,9 @@ async def _run_agent_background(
         return str(result or "")
 
     bot_task = asyncio.create_task(asyncio.to_thread(_run_sync))
+    # Bei vorzeitigem Return (Stopp/Timeout) eine evtl. Thread-Exception abgreifen,
+    # damit kein "Task exception was never retrieved" geloggt wird.
+    bot_task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
 
     async def _drain(evt_type: str, evt_data):
         if evt_type == "chunk":
@@ -1153,6 +1182,21 @@ async def _run_agent_background(
 
     try:
         while not bot_task.done():
+            # Stopp-Wunsch des Nutzers: Client sofort entkoppeln, Thread läuft
+            # kooperativ aus (Callback-Abbruch an nächster Grenze).
+            if job_id in _agent_cancel:
+                logger.info("[agent-bg] Stopp durch Nutzer, job=%s", job_id)
+                await _update_agent_job("failed", error_message="Vom Benutzer gestoppt")
+                await _push_agent_event(job_id, {"event": "stopped", "data": json.dumps({"content": "Vom Benutzer gestoppt"})})
+                _agent_running[job_id] = False
+                _agent_cancel.discard(job_id)
+                # clarify ggf. entsperren, damit der Thread nicht hängen bleibt
+                for cid, p in list(_clarify_pending.items()):
+                    if p.get("job_id") == job_id:
+                        p["answer"] = "Abgebrochen."
+                        p["event"].set()
+                asyncio.create_task(_cleanup_agent_events(job_id))
+                return
             try:
                 evt_type, evt_data = await asyncio.wait_for(queue.get(), timeout=2.0)
                 await _drain(evt_type, evt_data)
@@ -1226,6 +1270,30 @@ async def answer_agent_clarify(
         raise HTTPException(status_code=404, detail="Rückfrage nicht gefunden oder bereits abgelaufen")
     pending["answer"] = str(answer)
     pending["event"].set()
+    return {"ok": True}
+
+
+@router.post("/conversations/{conversation_id}/agent/cancel")
+async def cancel_agent_run(
+    conversation_id: uuid.UUID,
+    body: dict,
+    user: User = Depends(require_role("owner")),
+):
+    """Laufenden Chat-Agent-Job stoppen (echter, kooperativer Abbruch).
+
+    Setzt den Stopp-Wunsch; der Background-Run entkoppelt den Client sofort und
+    der Hermes-Thread bricht an der nächsten Tool-/Text-Grenze ab. Im Gegensatz
+    zum reinen Schliessen des Streams läuft der Job danach nicht unbemerkt weiter.
+    """
+    job_id = body.get("job_id")
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id fehlt")
+    _agent_cancel.add(str(job_id))
+    # Falls der Agent gerade auf eine clarify-Antwort wartet: entsperren.
+    for cid, p in list(_clarify_pending.items()):
+        if p.get("job_id") == str(job_id):
+            p["answer"] = "Abgebrochen."
+            p["event"].set()
     return {"ok": True}
 
 

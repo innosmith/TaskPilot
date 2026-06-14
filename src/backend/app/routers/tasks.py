@@ -400,6 +400,17 @@ async def update_task(
         update_data["title"] = _sanitize_text(update_data["title"]) or update_data["title"]
     if "description" in update_data:
         update_data["description"] = _sanitize_text(update_data["description"])
+
+    # Eiserne Regel: E-Mail-stämmige Tasks sind externe Kommunikation und bleiben
+    # serverseitig immer auf Freigabe (L1) -- höhere Autonomie wird hart gekappt.
+    if update_data.get("autonomy_level") in ("L2", "L3"):
+        is_external = bool(
+            update_data.get("email_message_id", task.email_message_id)
+            or update_data.get("email_conversation_id", task.email_conversation_id)
+        )
+        if is_external:
+            update_data["autonomy_level"] = "L1"
+
     for field, value in update_data.items():
         setattr(task, field, value)
 

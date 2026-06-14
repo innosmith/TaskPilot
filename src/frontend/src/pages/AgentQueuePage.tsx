@@ -2,12 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
-import { CrmBadge } from '../components/CrmBadge';
-import { EmailBody } from '../components/EmailBody';
-import { DraftEditor } from '../components/DraftEditor';
 import { FormattedOutput } from '../components/FormattedOutput';
 import { ReplayPanel } from '../components/ReplayPanel';
 import { TracePanel } from '../components/TracePanel';
+import { ApprovalCard } from '../components/agent/ApprovalCard';
 import { useSSE } from '../hooks/useSSE';
 import type { AgentJob } from '../types';
 
@@ -67,11 +65,6 @@ export function AgentQueuePage() {
     if (event === 'agent_jobs_changed') fetchJobs();
   });
 
-  const handleApprove = async (jobId: string) => {
-    await api.patch(`/api/agent-jobs/${jobId}`, { status: 'completed' });
-    fetchJobs();
-  };
-
   const handleJobFeedback = async (jobId: string, rating: 'up' | 'down') => {
     setJobFeedback(prev => ({ ...prev, [jobId]: rating }));
     try {
@@ -79,11 +72,6 @@ export function AgentQueuePage() {
     } catch {
       setJobFeedback(prev => { const n = { ...prev }; delete n[jobId]; return n; });
     }
-  };
-
-  const handleReject = async (jobId: string) => {
-    await api.patch(`/api/agent-jobs/${jobId}`, { status: 'failed', error_message: 'Vom Benutzer abgelehnt' });
-    fetchJobs();
   };
 
   const handleDelete = async (jobId: string) => {
@@ -480,22 +468,26 @@ export function AgentQueuePage() {
                   </div>
 
                   {job.status === 'awaiting_approval' && (
-                    <DraftPreviewInline
-                      jobId={job.id}
-                      meta={meta}
-                      onApprove={() => handleApprove(job.id)}
-                      onReject={() => handleReject(job.id)}
-                    />
+                    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
+                      <ApprovalCard
+                        jobId={job.id}
+                        meta={job.metadata_json ?? {}}
+                        confidence={typeof meta.confidence === 'number' ? meta.confidence : (meta.confidence ? Number(meta.confidence) : null)}
+                        rationale={(meta.rationale as string) || (meta.summary as string) || null}
+                        output={job.output}
+                        onResolved={fetchJobs}
+                      />
+                    </div>
                   )}
 
                   {/* Kompakter Trace-Button + Nochmals triagieren */}
-                  {['completed', 'failed', 'awaiting_approval'].includes(job.status) && (
+                  {['completed', 'failed'].includes(job.status) && (
                     <div className="mt-1 flex items-center gap-2">
                       <TracePanel jobId={job.id} compact />
                       {job.job_type === 'email_triage' && meta.message_id && (
                         <ReplayButton messageId={meta.message_id} onDone={fetchJobs} />
                       )}
-                      {(job.status === 'completed' || job.status === 'awaiting_approval') && (
+                      {job.status === 'completed' && (
                         <div className="ml-auto flex items-center gap-1">
                           <button
                             onClick={(e) => { e.stopPropagation(); handleJobFeedback(job.id, 'up'); }}
@@ -694,151 +686,3 @@ function ChatIcon({ className }: { className?: string }) {
 }
 
 
-interface DraftPreviewData {
-  draft_id: string;
-  subject: string | null;
-  body_html: string | null;
-  body_preview: string | null;
-  to_recipients: string[];
-  cc_recipients: string[];
-  source_subject: string | null;
-  source_from: string | null;
-}
-
-function DraftPreviewInline({
-  jobId,
-  meta,
-  onApprove,
-  onReject,
-}: {
-  jobId: string;
-  meta: Record<string, string>;
-  onApprove: () => void;
-  onReject: () => void;
-}) {
-  const [preview, setPreview] = useState<DraftPreviewData | null>(null);
-  const [loadingPreview, setLoadingPreview] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const hasDraft = !!meta.draft_id;
-
-  const loadPreview = useCallback(() => {
-    if (!hasDraft) return;
-    setLoadingPreview(true);
-    api.get<DraftPreviewData>(`/api/agent-jobs/${jobId}/draft-preview`)
-      .then(setPreview)
-      .catch(() => {})
-      .finally(() => setLoadingPreview(false));
-  }, [jobId, hasDraft]);
-
-  useEffect(() => { loadPreview(); }, [loadPreview]);
-
-  const doApprove = async () => {
-    setProcessing(true);
-    try { await onApprove(); } finally { setProcessing(false); }
-  };
-  const doReject = async () => {
-    setProcessing(true);
-    try { await onReject(); } finally { setProcessing(false); }
-  };
-
-  if (editing && preview) {
-    return (
-      <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
-        <DraftEditor
-          jobId={jobId}
-          subject={preview.subject || ''}
-          bodyHtml={preview.body_html || ''}
-          toRecipients={preview.to_recipients || []}
-          ccRecipients={preview.cc_recipients || []}
-          onSaved={() => {
-            setEditing(false);
-            setPreview(null);
-            loadPreview();
-          }}
-          onSentAfterEdit={onApprove}
-          onCancel={() => setEditing(false)}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
-      {loadingPreview && (
-        <div className="flex items-center gap-2 text-xs text-gray-400">
-          <div className="h-3 w-3 animate-spin rounded-full border border-gray-400 border-t-transparent" />
-          Entwurf wird geladen...
-        </div>
-      )}
-
-      {preview && (
-        <div className="space-y-1.5">
-          <div className="text-xs">
-            <span className="font-medium text-gray-500 dark:text-gray-400">An: </span>
-            <span className="text-gray-700 dark:text-gray-300">{preview.to_recipients.join(', ') || 'Unbekannt'}</span>
-          </div>
-          <div className="text-xs">
-            <span className="font-medium text-gray-500 dark:text-gray-400">Betreff: </span>
-            <span className="text-gray-700 dark:text-gray-300">{preview.subject || '(kein Betreff)'}</span>
-          </div>
-          {meta.from_address && (
-            <CrmBadge
-              emailAddress={meta.from_address}
-              senderName={meta.from_name}
-              compact
-              onCreateContact={() => {}}
-            />
-          )}
-          {preview.body_html ? (
-            <div className="mt-1 max-h-40 overflow-auto rounded border border-gray-200 bg-white p-2 dark:border-gray-600 dark:bg-gray-900">
-              <EmailBody html={preview.body_html} className="[&_*]:max-w-full [&_img]:h-auto" />
-            </div>
-          ) : preview.body_preview ? (
-            <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{preview.body_preview}</p>
-          ) : null}
-        </div>
-      )}
-
-      {!preview && !loadingPreview && !hasDraft && (
-        <p className="text-xs text-gray-400 italic">Kein Entwurf verfügbar</p>
-      )}
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        <button
-          onClick={doApprove}
-          disabled={processing}
-          className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-50 sm:py-1.5"
-        >
-          {processing ? 'Wird gesendet...' : 'Freigeben & Senden'}
-        </button>
-        {preview && (
-          <button
-            onClick={() => setEditing(true)}
-            className="rounded-lg bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-100 sm:py-1.5 dark:bg-indigo-900/20 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
-          >
-            <span className="flex items-center gap-1">
-              <PencilSmallIcon className="h-3 w-3" />
-              Bearbeiten
-            </span>
-          </button>
-        )}
-        <button
-          onClick={doReject}
-          disabled={processing}
-          className="rounded-lg border border-red-300 px-3 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 sm:py-1.5 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
-        >
-          Ablehnen & Löschen
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PencilSmallIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
-    </svg>
-  );
-}

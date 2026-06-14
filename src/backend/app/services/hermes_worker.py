@@ -590,7 +590,22 @@ async def _build_generic_prompt(job: AgentJob) -> str:
                     f"{style_text}\n"
                 )
 
-    description = meta.get("description", meta.get("prompt", str(meta)))
+    description = meta.get("description") or meta.get("prompt")
+    # Tasks, die im Cockpit/Board dem Agenten zugewiesen werden, tragen den Auftrag
+    # in Titel + Beschreibung der verknüpften Task (nicht in metadata_json). Ohne das
+    # Nachladen bekäme der Agent einen leeren Auftrag ("nichts zu tun").
+    if not description and job.task_id:
+        async with async_session() as db:
+            task = (
+                await db.execute(select(Task).where(Task.id == job.task_id))
+            ).scalar_one_or_none()
+        if task:
+            parts = [f"**{task.title}**"]
+            if task.description:
+                parts.append(task.description)
+            description = "\n\n".join(parts)
+    if not description:
+        description = str(meta)
 
     return f"""## AGENT-JOB
 
@@ -723,6 +738,19 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
     rationale = parsed.get("rationale")
     reply_expected = bool(parsed.get("reply_expected", False))
 
+    # Sicherheitsgrad der Einschaetzung (0..1). Optional vom LLM geliefert; auf
+    # gueltigen Bereich begrenzen, damit das Frontend ein verlaessliches Signal
+    # (ConfidenceBadge) anzeigen kann.
+    confidence = parsed.get("confidence")
+    try:
+        confidence = float(confidence) if confidence is not None else None
+        if confidence is not None:
+            if confidence > 1:  # toleriere Prozentangaben (z. B. 85)
+                confidence = confidence / 100.0
+            confidence = max(0.0, min(1.0, confidence))
+    except (TypeError, ValueError):
+        confidence = None
+
     if triage_class == "quick_response":
         triage_class = "auto_reply"
     elif triage_class == "board_task":
@@ -769,6 +797,7 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
             .values(
                 triage_class=triage_class,
                 reply_expected=reply_expected,
+                confidence=confidence,
                 suggested_action={
                     "label": label,
                     "triage_class": triage_class,
@@ -778,6 +807,7 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
                     "suggested_project": suggested_project,
                     "draft_id": draft_id,
                     "rationale": rationale,
+                    "confidence": confidence,
                 },
                 status="acted" if triage_class != "auto_reply" else "processing",
             )
@@ -856,6 +886,16 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
             if job:
                 existing_meta = dict(job.metadata_json or {})
                 existing_meta["draft_id"] = draft_id
+                # Lesbares "Warum" + Sicherheit fuer die Freigabe-Karte mitgeben,
+                # damit das Frontend nicht den rohen Trace interpretieren muss.
+                if rationale:
+                    existing_meta["rationale"] = rationale
+                if confidence is not None:
+                    existing_meta["confidence"] = confidence
+                existing_meta["summary"] = (
+                    rationale
+                    or f"Antwort-Entwurf für '{meta.get('subject') or '(kein Betreff)'}' vorbereitet."
+                )
                 # Original-Entwurf als Referenz fuer den spaeteren Stil-Diff snapshotten.
                 snapshot = await _snapshot_agent_draft(draft_id)
                 if snapshot:

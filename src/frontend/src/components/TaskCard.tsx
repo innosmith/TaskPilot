@@ -168,6 +168,15 @@ export function TaskCard({
             <RepeatIcon className="h-3.5 w-3.5" />
           </span>
         )}
+        {task.needs_review && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+            title="Vom Agenten vorbereitet — bitte prüfen"
+          >
+            <AgentBadgeIcon className="h-2.5 w-2.5" />
+            Prüfen
+          </span>
+        )}
         {task.pipeline_column_name && !showProjectIndicator && (
           <span
             className="ml-auto inline-flex max-w-[6rem] items-center truncate rounded-full px-2 py-0.5 text-xs font-medium"

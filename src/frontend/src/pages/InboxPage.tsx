@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { EmailBody } from '../components/EmailBody';
-import { FormattedOutput } from '../components/FormattedOutput';
 import { RichTextEditor } from '../components/RichTextEditor';
+import { ConfidenceBadge } from '../components/agent/ConfidenceBadge';
 
 /* ---------- Typen ---------- */
 
@@ -89,45 +89,6 @@ interface TriageStats {
   total_pending: number;
 }
 
-interface ActivityItem {
-  id: string;
-  job_type: string;
-  status: string;
-  subject: string;
-  from_address: string;
-  output: string | null;
-  created_at: string | null;
-  completed_at: string | null;
-}
-
-interface ApprovalJob {
-  id: string;
-  job_type: string;
-  status: string;
-  output: string | null;
-  metadata_json: Record<string, unknown> | null;
-  created_at: string;
-}
-
-interface PendingReviewTask {
-  id: string;
-  title: string;
-  description: string | null;
-  project_id: string;
-  project_name: string;
-  board_column_id: string;
-  pipeline_column_id: string | null;
-  due_date: string | null;
-  email_message_id: string | null;
-  created_at: string;
-}
-
-interface ProjectOption {
-  id: string;
-  name: string;
-  board_columns?: { id: string; name: string; position: number }[];
-}
-
 /* ---------- Triage-Farben & Labels ---------- */
 
 const TRIAGE_CONFIG: Record<string, { label: string; bg: string; text: string; dot: string }> = {
@@ -193,9 +154,6 @@ export function InboxPage() {
 
   const [triageMap, setTriageMap] = useState<Record<string, TriageItem>>({});
   const [triageStats, setTriageStats] = useState<TriageStats | null>(null);
-  const [_activityFeed, setActivityFeed] = useState<{activities: ActivityItem[]; summary: {drafts_pending: number; classified_today: number}} | null>(null);
-  const [_approvalJobs, setApprovalJobs] = useState<ApprovalJob[]>([]);
-  const [_pendingReviewTasks, setPendingReviewTasks] = useState<PendingReviewTask[]>([]);
   const sseRef = useRef<EventSource | null>(null);
   const [senderAvatars, setSenderAvatars] = useState<Record<string, string | null>>({});
   const [bgUrl, setBgUrl] = useState<string | null>(null);
@@ -245,36 +203,6 @@ export function InboxPage() {
     }
   }, []);
 
-  /* -- Activity-Feed laden -- */
-  const fetchActivity = useCallback(async () => {
-    try {
-      const data = await api.get<{activities: ActivityItem[]; summary: {drafts_pending: number; classified_today: number}}>('/api/triage/activity/feed?limit=30');
-      setActivityFeed(data);
-    } catch {
-      /* optional */
-    }
-  }, []);
-
-  /* -- Approval-Jobs laden -- */
-  const fetchApprovals = useCallback(async () => {
-    try {
-      const jobs = await api.get<ApprovalJob[]>('/api/agent-jobs?status=awaiting_approval');
-      setApprovalJobs(jobs);
-    } catch {
-      /* optional */
-    }
-  }, []);
-
-  /* -- Pending Review Tasks laden -- */
-  const fetchPendingReview = useCallback(async () => {
-    try {
-      const tasks = await api.get<PendingReviewTask[]>('/api/tasks/pending-review');
-      setPendingReviewTasks(tasks);
-    } catch {
-      /* optional */
-    }
-  }, []);
-
   /* -- Initiales Laden -- */
   useEffect(() => {
     fetchEmails();
@@ -285,14 +213,11 @@ export function InboxPage() {
 
   useEffect(() => {
     fetchTriage();
-    fetchActivity();
-    fetchApprovals();
-    fetchPendingReview();
     api.get<FolderInfo[]>('/api/emails/folders').then(setFolders).catch(() => {});
     api.get<{ inbox_hidden_folders: string[] | null }>('/api/settings/triage')
       .then(s => { if (s.inbox_hidden_folders) setHiddenFolders(s.inbox_hidden_folders); })
       .catch(err => { console.warn('Triage-Einstellungen konnten nicht geladen werden:', err); });
-  }, [fetchTriage, fetchActivity, fetchApprovals, fetchPendingReview]);
+  }, [fetchTriage]);
 
   /* -- SSE für Live-Updates -- */
   useEffect(() => {
@@ -352,7 +277,6 @@ export function InboxPage() {
           : `InnoPilot lernt aus der Korrektur und erzeugt jetzt ${label === 'Entwurf' ? 'einen' : 'eine'} ${label}.`,
       );
       await fetchTriage();
-      await fetchActivity();
       setTimeout(() => setReclassDone(null), 6000);
     } catch {
       setReclassDone('Korrektur fehlgeschlagen.');
@@ -658,7 +582,10 @@ export function InboxPage() {
                           {email.subject || '(Kein Betreff)'}
                         </p>
                         {triage && triage.status === 'pending' && (
-                          <TriageBadge triageClass={triage.triage_class} />
+                          <>
+                            <TriageBadge triageClass={triage.triage_class} />
+                            <ConfidenceBadge confidence={triage.confidence ?? triage.suggested_action?.confidence} dotOnly glassBg={hasBg} />
+                          </>
                         )}
                       </div>
                       <p className={`mt-0.5 truncate text-xs ${hasBg ? 'text-white/60 drop-shadow-sm' : 'text-gray-400 dark:text-gray-500'}`}>
@@ -696,6 +623,9 @@ export function InboxPage() {
               <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-gray-200/80 bg-white/80 p-3 shadow-sm backdrop-blur-sm dark:border-gray-700/60 dark:bg-gray-900/80">
                 {selectedTriage && selectedTriage.status === 'pending' && (
                   <TriageBadge triageClass={selectedTriage.triage_class} />
+                )}
+                {selectedTriage && selectedTriage.status === 'pending' && (
+                  <ConfidenceBadge confidence={selectedTriage.confidence ?? selectedTriage.suggested_action?.confidence} />
                 )}
                 {selectedTriage?.suggested_action?.rationale && (
                   <span className="text-xs text-gray-500 dark:text-gray-400 italic">
@@ -1257,299 +1187,6 @@ function CreateTaskFromEmailListener({ onTaskCreated }: { onTaskCreated: () => v
             {creating ? 'Erstellt...' : 'Task erstellen'}
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- Approvals Tab ---------- */
-
-interface DraftPreview {
-  draft_id: string;
-  subject: string | null;
-  body_html: string | null;
-  body_preview: string | null;
-  to_recipients: string[];
-  cc_recipients: string[];
-  source_subject: string | null;
-  source_from: string | null;
-}
-
-export function ApprovalsTab({
-  approvalJobs,
-  onAction,
-}: {
-  approvalJobs: ApprovalJob[];
-  onAction: () => void;
-}) {
-  const [previews, setPreviews] = useState<Record<string, DraftPreview>>({});
-  const [loadingPreviews, setLoadingPreviews] = useState<Set<string>>(new Set());
-  const [processing, setProcessing] = useState<Set<string>>(new Set());
-  const [failedPreviews, setFailedPreviews] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    for (const job of approvalJobs) {
-      if (!previews[job.id] && !loadingPreviews.has(job.id) && !failedPreviews.has(job.id)) {
-        setLoadingPreviews(prev => new Set(prev).add(job.id));
-        api.get<DraftPreview>(`/api/agent-jobs/${job.id}/draft-preview`)
-          .then(preview => {
-            setPreviews(prev => ({ ...prev, [job.id]: preview }));
-          })
-          .catch(() => {
-            setFailedPreviews(prev => new Set(prev).add(job.id));
-          })
-          .finally(() => {
-            setLoadingPreviews(prev => {
-              const next = new Set(prev);
-              next.delete(job.id);
-              return next;
-            });
-          });
-      }
-    }
-  }, [approvalJobs, previews, loadingPreviews, failedPreviews]);
-
-  const handleApprove = async (jobId: string) => {
-    setProcessing(prev => new Set(prev).add(jobId));
-    try {
-      await api.patch(`/api/agent-jobs/${jobId}`, { status: 'completed' });
-      onAction();
-    } catch { /* ignore */ }
-    finally { setProcessing(prev => { const n = new Set(prev); n.delete(jobId); return n; }); }
-  };
-
-  const handleReject = async (jobId: string) => {
-    setProcessing(prev => new Set(prev).add(jobId));
-    try {
-      await api.patch(`/api/agent-jobs/${jobId}`, { status: 'failed', error_message: 'Vom Benutzer abgelehnt' });
-      onAction();
-    } catch { /* ignore */ }
-    finally { setProcessing(prev => { const n = new Set(prev); n.delete(jobId); return n; }); }
-  };
-
-  return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-        <h3 className="border-b border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 dark:border-gray-700 dark:text-gray-300">
-          Entwürfe zur Freigabe
-        </h3>
-        {approvalJobs.length > 0 ? (
-          <div className="divide-y divide-gray-100 dark:divide-gray-800">
-            {approvalJobs.map(job => {
-              const meta = (job.metadata_json || {}) as Record<string, string>;
-              const preview = previews[job.id];
-              const isLoading = loadingPreviews.has(job.id);
-              const isProcessing = processing.has(job.id);
-              const hasFailed = failedPreviews.has(job.id);
-
-              return (
-                <div key={job.id} className="px-5 py-5">
-                  {/* Header: Betreff + Badge */}
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="h-9 w-9 shrink-0 rounded-full bg-amber-100 flex items-center justify-center text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                      </svg>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-base font-semibold text-gray-900 dark:text-white truncate">
-                          {preview?.subject || meta.subject || 'E-Mail-Entwurf'}
-                        </span>
-                        <span className="shrink-0 rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
-                          Freigabe nötig
-                        </span>
-                      </div>
-                      <div className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-                        An: {preview?.to_recipients?.join(', ') || meta.from_address || 'Unbekannt'}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Quell-E-Mail-Info */}
-                  {meta.subject && (
-                    <div className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-gray-800/50 dark:text-gray-400">
-                      <span className="font-medium">Antwort auf:</span> {meta.subject}
-                      {(meta.from_address || meta.from_name) && (
-                        <span> — von {meta.from_name || meta.from_address}</span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Lade-Indikator */}
-                  {isLoading && (
-                    <div className="mb-3 flex items-center gap-2 text-sm text-gray-400">
-                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-transparent" />
-                      Entwurf wird aus Outlook geladen…
-                    </div>
-                  )}
-
-                  {/* Draft-Vorschau: der eigentliche E-Mail-Entwurf */}
-                  {preview?.body_html && (
-                    <div className="mb-3 rounded-lg border border-gray-200 bg-white dark:border-gray-600 dark:bg-gray-800">
-                      <div className="border-b border-gray-100 px-4 py-2 dark:border-gray-700">
-                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">E-Mail-Entwurf</span>
-                      </div>
-                      <div className="max-h-72 overflow-y-auto px-4 py-3">
-                        <EmailBody html={preview.body_html} />
-                      </div>
-                    </div>
-                  )}
-
-                  {!preview?.body_html && preview?.body_preview && (
-                    <div className="mb-3 rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                      <div className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">E-Mail-Entwurf</div>
-                      {preview.body_preview}
-                    </div>
-                  )}
-
-                  {/* Fallback: LLM-Output wenn kein Draft geladen werden konnte */}
-                  {!preview && hasFailed && job.output && (
-                    <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
-                      <div className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">Agent-Output (Entwurf konnte nicht geladen werden)</div>
-                      <div className="text-sm text-gray-600 dark:text-gray-400 max-h-40 overflow-y-auto">
-                        <FormattedOutput output={job.output} />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Aktions-Buttons */}
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleApprove(job.id)}
-                      disabled={isProcessing}
-                      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                    >
-                      {isProcessing ? 'Wird gesendet…' : 'Freigeben & Senden'}
-                    </button>
-                    <button
-                      onClick={() => handleReject(job.id)}
-                      disabled={isProcessing}
-                      className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
-                    >
-                      Ablehnen & Löschen
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="p-8 text-center text-sm text-gray-400 dark:text-gray-600">
-            Keine Entwürfe zur Freigabe. Der Agent hat noch keine Antwort-Entwürfe erstellt.
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ---------- Task Suggestions Section ---------- */
-
-export function TaskSuggestionsSection({
-  tasks,
-  onAction,
-}: {
-  tasks: PendingReviewTask[];
-  onAction: () => void;
-}) {
-  const [projects, setProjects] = useState<ProjectOption[]>([]);
-  const [editingProject, setEditingProject] = useState<Record<string, string>>({});
-  const [processing, setProcessing] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    api.get<ProjectOption[]>('/api/projects').then(setProjects).catch(() => {});
-  }, []);
-
-  const handleConfirm = async (task: PendingReviewTask) => {
-    setProcessing(prev => new Set(prev).add(task.id));
-    try {
-      const newProjectId = editingProject[task.id];
-      const body: Record<string, string> = {};
-      if (newProjectId && newProjectId !== task.project_id) {
-        body.project_id = newProjectId;
-      }
-      await api.post(`/api/tasks/${task.id}/confirm`, body);
-      onAction();
-    } catch { /* ignore */ }
-    finally { setProcessing(prev => { const n = new Set(prev); n.delete(task.id); return n; }); }
-  };
-
-  const handleDismiss = async (taskId: string) => {
-    setProcessing(prev => new Set(prev).add(taskId));
-    try {
-      await api.post(`/api/tasks/${taskId}/dismiss-review`);
-      onAction();
-    } catch { /* ignore */ }
-    finally { setProcessing(prev => { const n = new Set(prev); n.delete(taskId); return n; }); }
-  };
-
-  return (
-    <div className="mb-6 rounded-xl border border-blue-200 bg-white dark:border-blue-800 dark:bg-gray-900">
-      <h3 className="flex items-center gap-2 border-b border-blue-200 px-4 py-3 text-sm font-semibold text-blue-700 dark:border-blue-800 dark:text-blue-300">
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-        </svg>
-        Aufgaben-Vorschläge ({tasks.length})
-      </h3>
-      <div className="divide-y divide-gray-100 dark:divide-gray-800">
-        {tasks.map(task => {
-          const isProcessing = processing.has(task.id);
-          const selectedProject = editingProject[task.id] || task.project_id;
-
-          return (
-            <div key={task.id} className="px-4 py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-gray-900 dark:text-white">
-                    {task.title}
-                  </div>
-                  {task.description && (
-                    <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">
-                      {task.description}
-                    </p>
-                  )}
-                  <div className="mt-1.5 flex items-center gap-3 text-xs text-gray-400 dark:text-gray-500">
-                    {task.due_date && (
-                      <span className="flex items-center gap-1">
-                        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5" />
-                        </svg>
-                        {new Date(task.due_date).toLocaleDateString('de-DE')}
-                      </span>
-                    )}
-                    <span>{new Date(task.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <select
-                    value={selectedProject}
-                    onChange={(e) => setEditingProject(prev => ({ ...prev, [task.id]: e.target.value }))}
-                    className="rounded-lg border border-gray-200 px-2 py-1 text-xs outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-white"
-                  >
-                    {projects.map(p => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => handleConfirm(task)}
-                    disabled={isProcessing}
-                    className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                  >
-                    Bestätigen
-                  </button>
-                  <button
-                    onClick={() => handleDismiss(task.id)}
-                    disabled={isProcessing}
-                    className="rounded-lg border border-red-300 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
-                  >
-                    Verwerfen
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
       </div>
     </div>
   );

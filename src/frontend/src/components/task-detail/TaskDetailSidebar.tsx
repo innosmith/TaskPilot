@@ -39,10 +39,10 @@ const DATA_CLASS_OPTIONS = [
 ] as const;
 
 const AUTONOMY_OPTIONS = [
-  { value: 'L0', label: 'L0 – Block' },
-  { value: 'L1', label: 'L1 – Approve' },
-  { value: 'L2', label: 'L2 – Notify' },
-  { value: 'L3', label: 'L3 – Auto' },
+  { value: 'L0', short: 'L0', label: 'L0 – Block', desc: 'Verboten — Agent darf nichts ausführen.' },
+  { value: 'L1', short: 'L1', label: 'L1 – Freigabe', desc: 'Agent bereitet vor, du gibst frei (Pflicht für externe Kommunikation).' },
+  { value: 'L2', short: 'L2', label: 'L2 – Melden', desc: 'Agent führt aus und informiert dich danach.' },
+  { value: 'L3', short: 'L3', label: 'L3 – Auto', desc: 'Agent handelt autonom, nur Audit-Log.' },
 ] as const;
 
 const CALENDAR_PRESETS = [15, 30, 60, 120] as const;
@@ -82,6 +82,8 @@ export default function TaskDetailSidebar({
   const showCalendarSection = isOwner && isTemplate;
   const showAgentConfig = isOwner && task.assignee === 'agent';
   const showPipedrive = !!(task.pipedrive_deal_id || task.pipedrive_person_id);
+  // Eiserne Regel: E-Mail-stämmige Tasks = externe Kommunikation -> immer L1.
+  const isExternalComms = !!(task.email_message_id || task.email_conversation_id);
 
   const handleRemoveCalendarEvent = useCallback(async () => {
     if (!task.calendar_event_id) return;
@@ -586,16 +588,43 @@ export default function TaskDetailSidebar({
             </select>
           </AttrRow>
 
-          <AttrRow icon={ShieldIcon} label="Autonomie">
-            <select
-              value={task.autonomy_level}
-              onChange={(e) => updateTask({ autonomy_level: e.target.value })}
-              className={ATTR_SELECT}
-            >
-              {AUTONOMY_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
+          <AttrRow icon={ShieldIcon} label="Autonomie" align="start">
+            <div className="w-full space-y-1.5">
+              <div className="flex gap-1">
+                {AUTONOMY_OPTIONS.map((o) => {
+                  // Externe Kommunikation: L2/L3 hart gesperrt (immer Freigabe).
+                  const locked = isExternalComms && (o.value === 'L2' || o.value === 'L3');
+                  const active = task.autonomy_level === o.value;
+                  return (
+                    <button
+                      key={o.value}
+                      type="button"
+                      disabled={locked}
+                      title={locked ? 'Externe Kommunikation erfordert immer eine Freigabe (L1).' : o.desc}
+                      onClick={() => !locked && updateTask({ autonomy_level: o.value })}
+                      className={`flex-1 rounded-lg border px-2 py-1 text-[10px] font-semibold transition-colors ${
+                        active
+                          ? 'border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                          : locked
+                            ? 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-600'
+                            : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-gray-600'
+                      }`}
+                    >
+                      {o.short}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] leading-snug text-gray-400 dark:text-gray-500">
+                {AUTONOMY_OPTIONS.find((o) => o.value === task.autonomy_level)?.desc}
+              </p>
+              {isExternalComms && (
+                <p className="flex items-start gap-1 text-[10px] leading-snug text-amber-600 dark:text-amber-400">
+                  <span>🔒</span>
+                  <span>Externe Kommunikation: Versand immer mit Freigabe (L1).</span>
+                </p>
+              )}
+            </div>
           </AttrRow>
 
           <AttrRow icon={LockIcon} label="Datenklasse" align="start">
