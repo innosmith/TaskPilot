@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.database import async_session
 from app.routers import (
     agent_jobs,
+    analysis,
     auth,
     bexio,
     calendar,
@@ -229,6 +230,7 @@ app.include_router(bexio.router)
 app.include_router(finance.router)
 app.include_router(debtors.router)
 app.include_router(creditors.router)
+app.include_router(analysis.router)
 app.include_router(intelligence.router)
 app.include_router(signa.router)
 app.include_router(chat.router)

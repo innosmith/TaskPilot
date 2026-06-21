@@ -214,8 +214,6 @@ export function CockpitPage() {
   const [learning, setLearning] = useState<LearningOverview | null>(null);
   const [proposedRules, setProposedRules] = useState<LearnedRule[]>([]);
   const [ruleBusyId, setRuleBusyId] = useState<string | null>(null);
-  const [jobFeedback, setJobFeedback] = useState<Record<string, 'up' | 'down'>>({});
-
   const loadSignaSignals = useCallback(async (reset = false) => {
     if (signaLoading) return;
     setSignaLoading(true);
@@ -335,15 +333,6 @@ export function CockpitPage() {
         .catch(() => {});
     } catch { /* */ }
     finally { setRuleBusyId(null); }
-  };
-
-  const handleJobFeedback = async (jobId: string, rating: 'up' | 'down') => {
-    setJobFeedback(prev => ({ ...prev, [jobId]: rating }));
-    try {
-      await api.post(`/api/agent-jobs/${jobId}/feedback`, { rating });
-    } catch {
-      setJobFeedback(prev => { const n = { ...prev }; delete n[jobId]; return n; });
-    }
   };
 
   useEffect(() => { fetchAppData(); fetchPipedriveData(); }, [fetchAppData, fetchPipedriveData]);
@@ -588,19 +577,6 @@ export function CockpitPage() {
             <CapacityCard weekCapacity={weekCapacity} monthCapacity={monthCapacity} hasBg={hasBg} />
           </div>
 
-          {/* ── Diese Woche gelernt (Self-Learning, nur wenn Daten vorhanden) ── */}
-          <LearningFeedCard
-            learning={learning}
-            rules={proposedRules}
-            ruleBusyId={ruleBusyId}
-            onRuleDecision={handleRuleDecision}
-            cardClass={cardClass}
-            textPrimary={textPrimary}
-            textSecondary={textSecondary}
-            textMuted={textMuted}
-            hasBg={hasBg}
-          />
-
           {/* ── Zone 2: Aufgaben (Fokus | Überfällig | Diese Woche) | Kalender | E-Mails & Aufgaben ── */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
@@ -838,6 +814,19 @@ export function CockpitPage() {
               </div>
             </section>
           </div>
+
+          {/* ── Diese Woche gelernt (Self-Learning, nur wenn Daten vorhanden) ── */}
+          <LearningFeedCard
+            learning={learning}
+            rules={proposedRules}
+            ruleBusyId={ruleBusyId}
+            onRuleDecision={handleRuleDecision}
+            cardClass={cardClass}
+            textPrimary={textPrimary}
+            textSecondary={textSecondary}
+            textMuted={textMuted}
+            hasBg={hasBg}
+          />
 
           {/* ── Zone 3: Freigaben (kompakt, aufklappbar) ── */}
           {approvalJobs.length > 0 && (
@@ -1098,31 +1087,6 @@ export function CockpitPage() {
                                 >
                                   Ablehnen
                                 </button>
-                                <div className="ml-auto flex items-center gap-1">
-                                  <span className={`text-[11px] ${textMuted}`}>War das gut?</span>
-                                  <button
-                                    onClick={() => handleJobFeedback(job.id, 'up')}
-                                    title="Guter Entwurf — InnoPilot lernt daraus"
-                                    className={`rounded-lg px-2 py-1 text-sm transition-colors ${
-                                      jobFeedback[job.id] === 'up'
-                                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-                                        : `${textMuted} hover:bg-emerald-50 dark:hover:bg-emerald-900/20`
-                                    }`}
-                                  >
-                                    👍
-                                  </button>
-                                  <button
-                                    onClick={() => handleJobFeedback(job.id, 'down')}
-                                    title="Daneben — InnoPilot lernt daraus"
-                                    className={`rounded-lg px-2 py-1 text-sm transition-colors ${
-                                      jobFeedback[job.id] === 'down'
-                                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                                        : `${textMuted} hover:bg-red-50 dark:hover:bg-red-900/20`
-                                    }`}
-                                  >
-                                    👎
-                                  </button>
-                                </div>
                               </div>
                             </>
                           )}
@@ -1159,7 +1123,7 @@ export function CockpitPage() {
                         <TaskIcon className="h-4 w-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className={`font-medium truncate ${textPrimary}`}>{task.title}</div>
+                        <div className={`text-sm font-semibold truncate ${textPrimary}`}>{task.title}</div>
                         {task.source_email_subject && (
                           <div className={`text-xs truncate ${textMuted}`}>
                             Aus E-Mail: {task.source_email_subject}
@@ -1511,8 +1475,6 @@ const FEEDBACK_LABELS: Record<string, string> = {
   approved_clean: 'Entwurf unverändert gesendet',
   triage_reclass: 'Einschätzung korrigiert',
   rejected: 'Vorschlag abgelehnt',
-  thumbs_up: 'Positiv bewertet',
-  thumbs_down: 'Negativ bewertet',
   task_deleted: 'Aufgaben-Vorschlag verworfen',
   task_moved: 'Aufgabe verschoben',
   chat_teach: 'Im Chat beigebracht',
@@ -1539,8 +1501,10 @@ function LearningFeedCard({
   const s = learning?.stats;
   const hasSignals =
     !!s &&
-    (s.drafts_sent + s.triage_reclass + s.rejected + s.thumbs_up + s.thumbs_down +
+    (s.drafts_sent + s.triage_reclass + s.rejected +
       s.episodes_corrected + s.rules_active + s.rules_proposed) > 0;
+  // Standardmässig eingeklappt -- die Karte soll Tasks/Wochenplanung nicht verdrängen.
+  const [expanded, setExpanded] = useState(false);
   // Zeigt sich erst, wenn es etwas zu zeigen gibt (Lern-Aktivität ODER offene Regeln).
   if (!hasSignals && rules.length === 0) return null;
 
@@ -1553,13 +1517,29 @@ function LearningFeedCard({
 
   return (
     <section className={`rounded-xl border p-4 ${cardClass}`}>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className={`flex w-full items-center justify-between ${expanded ? 'mb-3' : ''}`}
+      >
+        <h2 className={`flex items-center gap-2 text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
           Diese Woche gelernt
+          {rules.length > 0 && (
+            <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-indigo-100 px-1.5 text-[11px] font-bold text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+              {rules.length}
+            </span>
+          )}
         </h2>
-        <span className={`text-[11px] ${textMuted}`}>Letzte 7 Tage</span>
-      </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-[11px] ${textMuted}`}>Letzte 7 Tage</span>
+          {expanded
+            ? <ChevronUpIcon className={`h-4 w-4 ${textMuted}`} />
+            : <ChevronDownIcon className={`h-4 w-4 ${textMuted}`} />}
+        </div>
+      </button>
 
+      {expanded && (
+        <>
       {s && (
         <div className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-6">
           {chip(`${Math.round(s.edit_rate * 100)}%`, 'Entwurf-Edits')}
@@ -1611,13 +1591,13 @@ function LearningFeedCard({
 
       {/* Jüngste Lernsignale */}
       {learning && learning.recent.length > 0 && (
-        <div className="space-y-1">
-          {learning.recent.slice(0, 6).map((sig, i) => (
+        <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+          {learning.recent.slice(0, 20).map((sig, i) => (
             <div key={i} className="flex items-center gap-2 text-xs">
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                sig.feedback_type === 'thumbs_down' || sig.feedback_type === 'rejected' || sig.feedback_type === 'task_deleted'
+                sig.feedback_type === 'rejected' || sig.feedback_type === 'task_deleted'
                   ? 'bg-red-400'
-                  : sig.feedback_type === 'thumbs_up' || sig.feedback_type === 'approved_clean'
+                  : sig.feedback_type === 'approved_clean'
                     ? 'bg-emerald-400'
                     : 'bg-indigo-400'
               }`} />
@@ -1627,6 +1607,8 @@ function LearningFeedCard({
             </div>
           ))}
         </div>
+      )}
+        </>
       )}
     </section>
   );

@@ -108,6 +108,9 @@ class DraftCreateRequest(BaseModel):
     to_recipients: list[str]
     cc_recipients: list[str] | None = None
     reply_to_id: str | None = None
+    # Bei reply_to_id: True (Default) = "Allen antworten" (To + CC der Diskussion
+    # bleiben erhalten), False = nur an den Absender.
+    reply_all: bool = True
 
 
 class DraftResponse(BaseModel):
@@ -343,6 +346,7 @@ async def create_draft(
         to_recipients=body.to_recipients,
         cc_recipients=body.cc_recipients,
         reply_to_id=body.reply_to_id,
+        reply_all=body.reply_all,
     )
     return DraftResponse(
         id=draft.get("id", ""),

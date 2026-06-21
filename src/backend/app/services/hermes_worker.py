@@ -30,6 +30,8 @@ import logging
 import os
 import re
 import time
+
+import httpx
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -108,6 +110,13 @@ _trajectory_shim_installed = False
 # Trace-Sink fuer den aktuellen Job (Worker verarbeitet sequentiell).
 _job_trace: list[dict] = []
 _MAX_TRACE_EVENTS = 200
+
+# Echte Outlook-Draft-ID des aktuellen Jobs, deterministisch aus dem
+# create_draft-Tool-Ergebnis erfasst. NIEMALS die vom LLM in den JSON-Block
+# abgetippte ID verwenden -- lange Graph-IDs (~152 Zeichen) werden vom Modell
+# verstuemmelt, was den spaeteren get_email-Abruf (Snapshot/Cleanup/Preview)
+# scheitern laesst und die Freigabe-Karte aus dem Cockpit verschwinden laesst.
+_job_created_draft_id: str | None = None
 
 
 def _get_runtime_lock() -> asyncio.Lock:
@@ -194,7 +203,81 @@ def _on_tool_start(tc_id, name, args) -> None:
     _trace_append(event)
 
 
+def _extract_draft_id_from_tool_result(result) -> str | None:
+    """Liest die echte Draft-ID aus dem (vollstaendigen) create_draft-Tool-Ergebnis.
+
+    Das Tool-Ergebnis ist mehrfach verschachtelt: Hermes wrappt das MCP-Ergebnis als
+    ``{"result": "<innerer JSON-String>"}``, und der innere String enthaelt erst das
+    eigentliche ``{"id": "<echte Graph-ID>", ...}`` des MCP-Graph-Servers. Wir suchen
+    deshalb rekursiv durch Dicts/Listen und JSON-Strings nach dem ersten ``id``-Feld.
+    Das Callback erhaelt das ungekuerzte Ergebnis -- so bleibt die lange ID
+    (~152 Zeichen) vollstaendig erhalten. Regex auf (auch escaptem) Text als Fallback.
+    Gibt ``None`` zurueck, wenn keine ID gefunden wird.
+    """
+
+    def _search(obj, depth: int = 0):
+        if depth > 6:
+            return None
+        if isinstance(obj, dict):
+            if obj.get("id"):
+                return str(obj["id"])
+            # Wrapper-Schluessel zuerst (Hermes: "result", MCP-TextContent: "text").
+            for key in ("result", "text", "data", "content"):
+                if key in obj:
+                    found = _search(obj[key], depth + 1)
+                    if found:
+                        return found
+            for value in obj.values():
+                found = _search(value, depth + 1)
+                if found:
+                    return found
+            return None
+        if isinstance(obj, list):
+            for item in obj:
+                found = _search(item, depth + 1)
+                if found:
+                    return found
+            return None
+        if isinstance(obj, str):
+            s = obj.strip()
+            if s[:1] in ("{", "["):
+                try:
+                    return _search(json.loads(s), depth + 1)
+                except (json.JSONDecodeError, ValueError):
+                    return None
+        return None
+
+    if not isinstance(result, str):
+        found = _search(result)
+        if found:
+            return found
+        text = str(result)
+    else:
+        found = _search(result)
+        if found:
+            return found
+        text = result
+
+    # Fallback: toleriere Backslash-escaptes "id":"..." aus doppelt kodiertem JSON.
+    m = re.search(r'\\?"id\\?"\s*:\s*\\?"([^"\\]+)', text)
+    return m.group(1) if m else None
+
+
 def _on_tool_complete(tc_id, name, args, result) -> None:
+    global _job_created_draft_id
+    # Echte Draft-ID deterministisch aus dem Tool-Ergebnis erfassen (statt aus dem
+    # vom LLM abgetippten JSON). Unabhaengig vom 200-Event-Trace-Limit -- so geht
+    # die ID auch bei langlaufenden, tool-intensiven Jobs nicht verloren.
+    if str(name) == "mcp_graph_create_draft":
+        real_id = _extract_draft_id_from_tool_result(result)
+        if real_id:
+            _job_created_draft_id = real_id  # last-wins: der zuletzt erzeugte Entwurf zaehlt
+            logger.info("Echte Draft-ID aus create_draft erfasst (len=%d)", len(real_id))
+        else:
+            logger.warning(
+                "create_draft lief, aber keine ID aus Tool-Ergebnis extrahierbar: %s",
+                str(result)[:300],
+            )
     _trace_append({"type": "tool_complete", "name": str(name), "result": str(result)[:500]})
 
 
@@ -518,7 +601,7 @@ Führe jetzt den Triage-Ablauf durch:
 4. Klassifiziere gemäss der Prioritätsreihenfolge
 5. Setze die Outlook-Kategorie
 6. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
-7. Erstelle Draft falls auto_reply. WICHTIG: Rufe VORHER search_my_replies("{from_addr}") auf und nutze die letzten von Anthony gesendeten Antworten an diesen Kontakt als VERBATIM Stil-Anker (imitiere Ton, Länge, Anrede und Schlussformel). PFLICHT: Übergib bei create_draft IMMER reply_to_id="{email_id}", damit die Antwort im selben Thread landet (NIEMALS einen neuen Thread starten). Empfänger NICHT manuell überschreiben — createReply setzt den korrekten Empfänger automatisch. (Bei task übernimmt das Backend die Task-Erstellung automatisch.)
+7. Erstelle Draft falls auto_reply. WICHTIG: Rufe VORHER search_my_replies("{from_addr}") auf und nutze die letzten von Anthony gesendeten Antworten an diesen Kontakt als VERBATIM Stil-Anker (imitiere Ton, Länge, Anrede und Schlussformel). PFLICHT: Übergib bei create_draft IMMER reply_to_id="{email_id}", damit die Antwort als "Allen antworten" im selben Thread landet (NIEMALS einen neuen Thread starten). Empfänger NICHT manuell überschreiben — die Antwort übernimmt die korrekten Empfänger (To + CC der Diskussion) automatisch. (Hinweis: Das Backend erzwingt die Thread-Zugehörigkeit ohnehin deterministisch; ein neuer Thread wird automatisch korrigiert. Bei task übernimmt das Backend die Task-Erstellung automatisch.)
 8. Gib den PFLICHT-JSON-Block aus (Schema im Skill bzw. references/triage-rules.md)
 9. Aktualisiere das Absender-Profil mit update_sender_profile (siehe Skill)
 
@@ -794,8 +877,115 @@ async def _snapshot_agent_draft(draft_id: str) -> dict | None:
             pass
 
 
-async def _post_process_triage(job_id, content: str, meta: dict) -> str:
-    """Deterministische Post-Processing-Logik nach LLM-Klassifikation."""
+def _normalize_conversation_id(value: str | None) -> str:
+    """conversationId fuer den Vergleich normalisieren (None/Leerstring -> '')."""
+    return (value or "").strip()
+
+
+async def _ensure_draft_in_thread(
+    draft_id: str,
+    email_message_id: str,
+    snapshot: dict | None,
+) -> tuple[str, dict | None]:
+    """Garantiert deterministisch, dass der Entwurf im Original-Thread liegt.
+
+    Der Agent SOLL bei ``create_draft`` ``reply_to_id`` setzen, damit die Antwort
+    via ``createReplyAll`` im selben Thread (gleiche ``conversationId``) landet und
+    die korrekten Empfaenger uebernimmt. Verlaesst sich aber das LLM nicht darauf,
+    entsteht ein NEUER Thread (``POST /messages``) -- Anthony und die Empfaenger
+    sehen die urspruengliche Diskussion dann nicht.
+
+    Diese Funktion prueft die ``conversationId`` des Entwurfs gegen den Original-
+    Thread (ground truth via ``get_email``) und repariert bei Abweichung: Der
+    Agent-Body wird in einen korrekten Reply-All-Entwurf uebernommen, der falsche
+    Entwurf geloescht. Gibt ``(draft_id, snapshot)`` zurueck -- bei Reparatur die
+    neuen Werte. Best-effort: Fehler duerfen den Job nicht stoppen.
+    """
+    if not (draft_id and email_message_id and snapshot):
+        return draft_id, snapshot
+
+    client = await _build_graph_client()
+    if client is None:
+        return draft_id, snapshot
+    try:
+        original = await client.get_email(email_message_id)
+        original_conv = _normalize_conversation_id(original.get("conversationId"))
+        draft_conv = _normalize_conversation_id(snapshot.get("conversation_id"))
+
+        # Original-conversationId unbekannt -> keine verlaessliche Aussage moeglich.
+        if not original_conv:
+            logger.warning(
+                "Thread-Check: Original-conversationId fehlt (email_message_id=%s), "
+                "ueberspringe Reparatur",
+                str(email_message_id)[:40],
+            )
+            return draft_id, snapshot
+
+        if draft_conv == original_conv:
+            return draft_id, snapshot
+
+        # Abweichung -> Agent hat einen neuen/falschen Thread erzeugt. Reparieren.
+        logger.warning(
+            "Thread-Check: Entwurf liegt im falschen Thread (draft_conv=%s != "
+            "original_conv=%s), erstelle Reply-All im Original-Thread neu",
+            draft_conv or "<leer>", original_conv,
+        )
+        body_html = snapshot.get("body_html") or ""
+        subject = original.get("subject") or ""
+        from_addr = (
+            original.get("from", {}).get("emailAddress", {}).get("address")
+            or original.get("sender", {}).get("emailAddress", {}).get("address")
+            or ""
+        )
+        fixed = await client.create_draft(
+            subject=subject,
+            body_html=body_html,
+            to_recipients=[from_addr] if from_addr else [],
+            reply_to_id=email_message_id,
+            reply_all=True,
+        )
+        new_draft_id = fixed.get("id")
+        if not new_draft_id:
+            logger.warning("Thread-Reparatur fehlgeschlagen: kein neue draft_id erhalten")
+            return draft_id, snapshot
+
+        # Falschen Entwurf entfernen (best-effort).
+        try:
+            await client.delete_message(draft_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Thread-Reparatur: falschen Entwurf konnte nicht geloescht werden "
+                "(draft_id=%s)", str(draft_id)[:40],
+            )
+
+        new_snapshot = await _snapshot_agent_draft(new_draft_id)
+        logger.info(
+            "Thread-Reparatur erfolgreich: neue draft_id=%s im Original-Thread",
+            str(new_draft_id)[:40],
+        )
+        return new_draft_id, (new_snapshot or snapshot)
+    except Exception:  # noqa: BLE001 - darf den Job nie stoppen
+        logger.warning(
+            "Thread-Check fehlgeschlagen (draft_id=%s)", str(draft_id)[:40]
+        )
+        return draft_id, snapshot
+    finally:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _post_process_triage(
+    job_id, content: str, meta: dict, captured_draft_id: str | None = None
+) -> str:
+    """Deterministische Post-Processing-Logik nach LLM-Klassifikation.
+
+    ``captured_draft_id`` ist die echte Outlook-Draft-ID, die der Worker direkt aus
+    dem ``create_draft``-Tool-Ergebnis erfasst hat (ground truth). Sie hat IMMER
+    Vorrang vor einer im JSON-Block gemeldeten ID -- letztere wird vom LLM bei
+    langen Graph-IDs regelmaessig verstuemmelt und ist deshalb nicht vertrauenswuerdig.
+    """
     parsed = _extract_json_block(content)
     if parsed is None:
         logger.warning("Job %s: Kein JSON-Block im Output gefunden", job_id)
@@ -803,7 +993,16 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
 
     triage_class = parsed.get("triage_class")
     label = parsed.get("label")
-    draft_id = parsed.get("draft_id")
+    # Echte Draft-ID aus dem Tool-Ergebnis ist die einzige verlaessliche Quelle.
+    # Die vom Modell im JSON gemeldete ID wird NICHT als ID-Quelle genutzt.
+    draft_id = captured_draft_id
+    llm_claimed_draft = bool(parsed.get("draft_id"))
+    if llm_claimed_draft and not captured_draft_id:
+        logger.warning(
+            "Job %s: LLM meldet draft_id, aber kein echtes create_draft-Tool-Ergebnis "
+            "erfasst -- ID wird verworfen (kein verlaesslicher Entwurf).",
+            job_id,
+        )
     deadline = parsed.get("deadline")
     task_title = parsed.get("task_title")
     task_description = parsed.get("task_description")
@@ -971,6 +1170,13 @@ async def _post_process_triage(job_id, content: str, meta: dict) -> str:
                 )
                 # Original-Entwurf als Referenz fuer den spaeteren Stil-Diff snapshotten.
                 snapshot = await _snapshot_agent_draft(draft_id)
+                # Deterministisch erzwingen, dass der Entwurf im Original-Thread
+                # liegt (Reply-All) -- unabhaengig davon, ob das LLM reply_to_id
+                # gesetzt hat. Repariert ggf. die draft_id + Snapshot.
+                draft_id, snapshot = await _ensure_draft_in_thread(
+                    draft_id, meta.get("email_message_id", ""), snapshot
+                )
+                existing_meta["draft_id"] = draft_id
                 if snapshot:
                     existing_meta["original_draft_html"] = snapshot.get("body_html")
                     existing_meta["draft_conversation_id"] = snapshot.get("conversation_id")
@@ -1329,7 +1535,7 @@ def _enforce_autonomy_status(meta: dict, content: str) -> str:
 
 async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) -> None:
     """Verarbeitet einen einzelnen AgentJob via Hermes AIAgent."""
-    global _job_trace
+    global _job_trace, _job_created_draft_id
     logger.info("Starte Job %s (type=%s)", job_id, job_type)
 
     async with async_session() as db:
@@ -1341,15 +1547,19 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
         await db.commit()
 
     _job_trace = []
+    _job_created_draft_id = None
     disable_thinking = _thinking_disabled(job_type, meta.get("skill"))
 
     try:
         content = await asyncio.to_thread(_run_agent_sync, agent, prompt, disable_thinking)
         trace = list(_job_trace)
+        # Echte Draft-ID aus dem Tool-Ergebnis (ground truth) an das Post-Processing
+        # weiterreichen -- die vom LLM gemeldete ID wird bewusst ignoriert.
+        captured_draft_id = _job_created_draft_id
         logger.info("Job %s abgeschlossen: %s", job_id, content[:200])
 
         if job_type == "email_triage":
-            status = await _post_process_triage(job_id, content, meta)
+            status = await _post_process_triage(job_id, content, meta, captured_draft_id)
         else:
             status = _enforce_autonomy_status(meta, content)
 
@@ -1453,7 +1663,16 @@ async def _cleanup_orphaned_drafts() -> int:
                 continue
             try:
                 await client.get_email(draft_id)
-            except Exception:
+            except httpx.HTTPStatusError as exc:
+                # NUR ein echtes 404 bedeutet "Entwurf wirklich weg" (gesendet/
+                # geloescht). Alles andere (5xx, Drosselung, Netz) ist transient und
+                # darf eine gueltige Freigabe NICHT zerstoeren.
+                if exc.response.status_code != 404:
+                    logger.warning(
+                        "Draft-Cleanup: transienter Fehler (%s) fuer Job %s -- bleibt awaiting_approval",
+                        exc.response.status_code, job.id,
+                    )
+                    continue
                 async with async_session() as db:
                     await db.execute(
                         update(AgentJob)
@@ -1466,7 +1685,15 @@ async def _cleanup_orphaned_drafts() -> int:
                     )
                     await db.commit()
                 resolved += 1
-                logger.info("Draft-Cleanup: Job %s automatisch abgeschlossen (Draft nicht mehr in Outlook)", job.id)
+                logger.info("Draft-Cleanup: Job %s automatisch abgeschlossen (Draft 404 -- nicht mehr in Outlook)", job.id)
+            except Exception:
+                # Unklarer Fehler (Timeout, Verbindungsabbruch, ...) -> Job bewusst
+                # NICHT abschliessen; im naechsten Zyklus erneut pruefen.
+                logger.warning(
+                    "Draft-Cleanup: get_email fehlgeschlagen (kein 404) fuer Job %s -- bleibt awaiting_approval",
+                    job.id,
+                )
+                continue
     finally:
         await client.close()
 

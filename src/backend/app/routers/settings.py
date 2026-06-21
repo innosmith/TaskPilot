@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import cast, func, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.attributes import flag_modified
 
 from app.auth.deps import get_current_user, require_role
 from app.config import get_settings
@@ -13,6 +14,38 @@ from app.database import get_db
 from app.models import User
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+async def _merge_settings(db: AsyncSession, user: User, patch: dict) -> dict:
+    """Mergt die übergebenen Keys atomar ins ``settings``-JSONB des Users.
+
+    Statt das gesamte ``settings``-Objekt zu lesen, in Python zu verändern und
+    komplett zurückzuschreiben (Read-Modify-Write), führt diese Funktion den Merge
+    direkt in der Datenbank aus (``settings || patch``). Damit serialisiert
+    PostgreSQL gleichzeitige Writes auf Zeilenebene und es gehen keine Felder mehr
+    verloren, wenn mehrere Settings-PATCH-Requests kurz hintereinander/überlappend
+    eintreffen (z.B. Zivilstand per ``onChange`` und Kanton per ``onBlur``).
+
+    Keys mit Wert ``None`` werden aus dem JSONB entfernt, alle anderen gesetzt.
+    """
+    to_set = {k: v for k, v in patch.items() if v is not None}
+    to_remove = [k for k, v in patch.items() if v is None]
+
+    expr = func.coalesce(User.settings, cast({}, JSONB))
+    if to_set:
+        expr = expr.op("||")(cast(to_set, JSONB))
+    for key in to_remove:
+        expr = expr.op("-")(key)
+
+    await db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(settings=expr)
+        .execution_options(synchronize_session=False)
+    )
+    # ORM-Instanz mit dem frisch gemergten Wert synchronisieren (innerhalb der Transaktion).
+    await db.refresh(user, attribute_names=["settings"])
+    return dict(user.settings or {})
 
 
 class UserSettings(BaseModel):
@@ -39,6 +72,18 @@ class UserSettings(BaseModel):
     capacity_background_url: str | None = None
     project_sidebar_order: list[str] | None = None
     debtor_budgets: dict | None = None
+    # Finanz-/Cashflow-Prognose
+    default_hourly_rate: float | None = None
+    forecast_pipeline_weight: float | None = None
+    forecast_fill_horizon_months: int | None = None
+    forecast_vat_rate: float | None = None
+    annual_revenue_goal: float | None = None
+    min_liquidity: float | None = None
+    # Finanzanalysen: MWST-Methode + Steuer-Kontext
+    vat_method: str | None = None        # "saldo" | "effektiv" | "none"
+    vat_saldo_rate: float | None = None  # Saldosteuersatz (Dezimal, z.B. 0.062)
+    tax_canton: str | None = None        # Sitz-/Wohnkanton (z.B. "Bern")
+    civil_status: str | None = None      # Zivilstand (z.B. "verheiratet")
 
 
 SETTINGS_FIELDS = [
@@ -51,6 +96,10 @@ SETTINGS_FIELDS = [
     "finance_background_url", "debtors_background_url", "creditors_background_url",
     "chat_background_url", "projects_background_url", "capacity_background_url",
     "project_sidebar_order", "debtor_budgets",
+    "default_hourly_rate", "forecast_pipeline_weight",
+    "forecast_fill_horizon_months", "forecast_vat_rate",
+    "annual_revenue_goal", "min_liquidity",
+    "vat_method", "vat_saldo_rate", "tax_canton", "civil_status",
 ]
 
 
@@ -65,7 +114,6 @@ async def get_branding(
     db: AsyncSession = Depends(get_db),
 ) -> BrandingSettings:
     """Öffentliche Branding-Settings (Logo, Sidebar-Farbe) für alle Rollen."""
-    from sqlalchemy import select
     owner = (await db.execute(select(User).where(User.role == "owner").limit(1))).scalar_one_or_none()
     if not owner or not owner.settings:
         return BrandingSettings()
@@ -87,16 +135,8 @@ async def update_settings(
     user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ) -> UserSettings:
-    current = dict(user.settings or {})
-    for field, value in body.model_dump(exclude_unset=True).items():
-        if value is None:
-            current.pop(field, None)
-        else:
-            current[field] = value
-    user.settings = current
-    flag_modified(user, "settings")
-    await db.flush()
-    return UserSettings(**{f: current.get(f) for f in SETTINGS_FIELDS})
+    merged = await _merge_settings(db, user, body.model_dump(exclude_unset=True))
+    return UserSettings(**{f: merged.get(f) for f in SETTINGS_FIELDS})
 
 
 # --- Triage-Einstellungen ---
@@ -139,16 +179,8 @@ async def update_triage_settings(
 ) -> TriageSettings:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
-    current = dict(user.settings or {})
-    for field, value in body.model_dump(exclude_unset=True).items():
-        if value is None:
-            current.pop(field, None)
-        else:
-            current[field] = value
-    user.settings = current
-    flag_modified(user, "settings")
-    await db.flush()
-    return TriageSettings(**{f: current.get(f) for f in TRIAGE_FIELDS})
+    merged = await _merge_settings(db, user, body.model_dump(exclude_unset=True))
+    return TriageSettings(**{f: merged.get(f) for f in TRIAGE_FIELDS})
 
 
 # --- Integrations-Einstellungen (Pipedrive etc.) ---
@@ -204,25 +236,19 @@ async def update_integration_settings(
 ) -> IntegrationSettings:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
-    current = dict(user.settings or {})
+    patch: dict = {}
     for field, value in body.model_dump(exclude_unset=True).items():
-        if value is None:
-            current.pop(field, None)
-        elif isinstance(value, str) and value.startswith("****"):
-            pass
-        elif isinstance(value, int):
-            current[field] = value
-        else:
-            current[field] = value
-    user.settings = current
-    flag_modified(user, "settings")
-    await db.flush()
+        # Maskierte Tokens (unverändert aus dem GET zurückgesendet) nicht überschreiben.
+        if isinstance(value, str) and value.startswith("****"):
+            continue
+        patch[field] = value
+    merged = await _merge_settings(db, user, patch)
     return IntegrationSettings(
-        pipedrive_api_token=_mask_token(current.get("pipedrive_api_token") or ""),
-        pipedrive_domain=current.get("pipedrive_domain") or "innosmith",
-        toggl_api_token=_mask_token(current.get("toggl_api_token") or ""),
-        toggl_workspace_id=current.get("toggl_workspace_id"),
-        bexio_api_token=_mask_token(current.get("bexio_api_token") or ""),
+        pipedrive_api_token=_mask_token(merged.get("pipedrive_api_token") or ""),
+        pipedrive_domain=merged.get("pipedrive_domain") or "innosmith",
+        toggl_api_token=_mask_token(merged.get("toggl_api_token") or ""),
+        toggl_workspace_id=merged.get("toggl_workspace_id"),
+        bexio_api_token=_mask_token(merged.get("bexio_api_token") or ""),
     )
 
 
@@ -239,11 +265,7 @@ async def toggle_triage(
     """Schaltet triage_enabled im Owner-Settings-JSONB um (Runtime-Toggle)."""
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
-    current = dict(user.settings or {})
-    current["triage_enabled"] = body.triage_enabled
-    user.settings = current
-    flag_modified(user, "settings")
-    await db.flush()
+    await _merge_settings(db, user, {"triage_enabled": body.triage_enabled})
     return {"triage_enabled": body.triage_enabled}
 
 
@@ -290,23 +312,19 @@ async def update_llm_settings(
     user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ) -> LlmSettingsPayload:
-    current = dict(user.settings or {})
+    patch: dict = {}
     for field, value in body.model_dump(exclude_unset=True).items():
-        if value is None:
-            current.pop(field, None)
-        elif field == "llm_providers" and isinstance(value, dict):
+        if field == "llm_providers" and isinstance(value, dict):
             serialized = {}
             for k, v in value.items():
                 if isinstance(v, dict):
                     serialized[k] = v
                 else:
                     serialized[k] = v.model_dump() if hasattr(v, "model_dump") else v
-            current[field] = serialized
+            patch[field] = serialized
         else:
-            current[field] = value
-    user.settings = current
-    flag_modified(user, "settings")
-    await db.flush()
+            patch[field] = value
+    current = await _merge_settings(db, user, patch)
 
     raw_providers = current.get("llm_providers")
     providers = None
@@ -368,12 +386,10 @@ async def generate_api_key(
     key_hash = bcrypt.hashpw(api_key.encode(), bcrypt.gensalt()).decode()
     now = datetime.now(timezone.utc).isoformat()
 
-    current = dict(user.settings or {})
-    current["extension_api_key_hash"] = key_hash
-    current["extension_api_key_created_at"] = now
-    user.settings = current
-    flag_modified(user, "settings")
-    await db.flush()
+    await _merge_settings(db, user, {
+        "extension_api_key_hash": key_hash,
+        "extension_api_key_created_at": now,
+    })
 
     return ApiKeyResponse(api_key=api_key, created_at=now)
 
@@ -387,11 +403,9 @@ async def revoke_api_key(
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
 
-    current = dict(user.settings or {})
-    current.pop("extension_api_key_hash", None)
-    current.pop("extension_api_key_created_at", None)
-    user.settings = current
-    flag_modified(user, "settings")
-    await db.flush()
+    await _merge_settings(db, user, {
+        "extension_api_key_hash": None,
+        "extension_api_key_created_at": None,
+    })
 
     return {"ok": True, "message": "API-Key widerrufen"}

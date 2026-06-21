@@ -46,8 +46,6 @@ export function AgentQueuePage() {
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [jobFeedback, setJobFeedback] = useState<Record<string, 'up' | 'down'>>({});
-
   const fetchJobs = useCallback(async () => {
     try {
       const data = await api.get<AgentJob[]>('/api/agent-jobs');
@@ -66,15 +64,6 @@ export function AgentQueuePage() {
   useSSE((event) => {
     if (event === 'agent_jobs_changed') fetchJobs();
   });
-
-  const handleJobFeedback = async (jobId: string, rating: 'up' | 'down') => {
-    setJobFeedback(prev => ({ ...prev, [jobId]: rating }));
-    try {
-      await api.post(`/api/agent-jobs/${jobId}/feedback`, { rating });
-    } catch {
-      setJobFeedback(prev => { const n = { ...prev }; delete n[jobId]; return n; });
-    }
-  };
 
   const handleDelete = async (jobId: string) => {
     setActionError(null);
@@ -488,32 +477,6 @@ export function AgentQueuePage() {
                       <TracePanel jobId={job.id} compact />
                       {job.job_type === 'email_triage' && meta.message_id && (
                         <ReplayButton messageId={meta.message_id} onDone={fetchJobs} />
-                      )}
-                      {job.status === 'completed' && (
-                        <div className="ml-auto flex items-center gap-1">
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleJobFeedback(job.id, 'up'); }}
-                            title="Gut gemacht — InnoPilot lernt daraus"
-                            className={`rounded-lg px-1.5 py-1 text-sm transition-colors ${
-                              jobFeedback[job.id] === 'up'
-                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-                                : 'text-gray-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20'
-                            }`}
-                          >
-                            👍
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleJobFeedback(job.id, 'down'); }}
-                            title="Daneben — InnoPilot lernt daraus"
-                            className={`rounded-lg px-1.5 py-1 text-sm transition-colors ${
-                              jobFeedback[job.id] === 'down'
-                                ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                                : 'text-gray-400 hover:bg-red-50 dark:hover:bg-red-900/20'
-                            }`}
-                          >
-                            👎
-                          </button>
-                        </div>
                       )}
                     </div>
                   )}

@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import { Sparkles } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine, Cell, ComposedChart,
@@ -19,26 +21,39 @@ interface KpiOverview {
   current_month_revenue: number;
   current_month_hours: number;
   forecast_year_revenue: number;
+  forecast_year_revenue_runrate: number;
   forecast_year_end_cashflow: number;
+  forecast_year_end_runrate: number;
+  revenue_gap_to_goal: number;
+  annual_revenue_goal: number;
+  min_liquidity: number;
   burn_rate: number;
   runway_months: number | null;
   runway_months_incl_debtors: number | null;
   profit_margin_ytd: number | null;
   revenue_ytd: number;
+  revenue_ytd_live: number;
+  revenue_ytd_closed: number;
   revenue_ytd_net: number;
+  revenue_ytd_net_closed: number;
   expenses_ytd: number;
+  expenses_ytd_closed: number;
   ebitda_ytd: number | null;
   personalquote_ytd: number | null;
   dso_days: number | null;
   liquiditaet_2: number | null;
   ek_quote: number | null;
   revenue_ytd_prior: number;
+  prior_year_revenue: number;
   expenses_ytd_prior: number;
   ebitda_ytd_prior: number | null;
   personalquote_ytd_prior: number | null;
   profit_margin_ytd_prior: number | null;
+  closed_until_month: number;
+  closed_until_label: string;
   journal_data_from: string | null;
   journal_data_to: string | null;
+  as_of_date: string;
   currency: string;
 }
 
@@ -51,12 +66,20 @@ interface CashflowMonth {
   month: string;
   revenue: number;
   expenses: number;
+  personnel_outflow?: number;
+  social_outflow?: number;
+  pension_outflow?: number;
+  tax_outflow?: number;
   fin_outflow: number;
   invest_outflow: number;
   delta: number;
   cumulative: number;
+  cumulative_expected?: number;
   is_forecast: boolean;
   special_items: CashflowSpecialItem[];
+  forecast_committed?: number;
+  forecast_pipeline?: number;
+  forecast_fill?: number;
 }
 
 interface CashflowResponse {
@@ -64,6 +87,9 @@ interface CashflowResponse {
   forecast_revenue_monthly: number;
   forecast_expenses_monthly: number;
   start_balance: number;
+  annual_revenue_goal: number;
+  monthly_revenue_goal: number;
+  min_liquidity: number;
 }
 
 interface TogglProject {
@@ -148,11 +174,45 @@ function formatK(value: number): string {
   return value.toFixed(0);
 }
 
-function formatYoyDelta(current: number, prior: number): string {
-  if (!prior || prior === 0) return '';
+// Differenz in Prozentpunkten (fuer Quoten: Marge, Personalquote). null = kein Vergleich.
+function ppDelta(current: number | null | undefined, prior: number | null | undefined): number | null {
+  if (current == null || prior == null) return null;
+  return current - prior;
+}
+
+// Relativer %-Trend mit Schutz gegen Mini-Basis-Artefakte (z. B. Vorjahres-EBITDA nahe 0,
+// das sonst absurde Werte wie "+1268 %" erzeugt). Liefert null, wenn die Vorjahresbasis
+// unwesentlich klein oder das Resultat irrefuehrend gross waere -- dann zeigt die Karte
+// stattdessen den absoluten Vorjahreswert im Sublabel.
+function relTrend(current: number | null | undefined, prior: number | null | undefined): number | null {
+  if (current == null || prior == null || prior === 0) return null;
+  if (Math.abs(prior) < 0.15 * Math.abs(current)) return null;  // Basis zu klein -> % irrefuehrend
   const pct = ((current - prior) / Math.abs(prior)) * 100;
-  const sign = pct >= 0 ? '+' : '';
-  return `${sign}${pct.toFixed(0)}% vs. VJ`;
+  if (Math.abs(pct) > 200) return null;                         // unplausibel gross -> VJ-Wert genuegt
+  return pct;
+}
+
+// Baut ein KpiTrend: bevorzugt %-Trend, faellt bei Mini-Basis/Extremwert auf das
+// absolute CHF-Delta zurueck -- statt gar nichts anzuzeigen. Liefert null nur,
+// wenn kein Vergleich moeglich ist (ein Wert fehlt).
+function buildRelTrend(
+  current: number | null | undefined,
+  prior: number | null | undefined,
+  goodWhen: 'up' | 'down',
+  title: string,
+): KpiTrend | null {
+  if (current == null || prior == null) return null;
+  const pct = relTrend(current, prior);
+  if (pct != null) return { value: pct, unit: '%', goodWhen, title };
+  return { value: current - prior, unit: 'chf', goodWhen, title };
+}
+
+// Leitet eine Kartenfarbe aus der Trendrichtung ab (positiv->gruen, negativ->rot).
+function trendStatus(trend: KpiTrend | null): 'green' | 'red' | 'neutral' {
+  if (!trend || Math.round(trend.value) === 0) return 'neutral';
+  const isUp = trend.value > 0;
+  const isGood = (trend.goodWhen ?? 'up') === 'up' ? isUp : !isUp;
+  return isGood ? 'green' : 'red';
 }
 
 function formatMonthLabel(month: string): string {
@@ -188,7 +248,6 @@ export function FinancePage() {
   const [waterfall, setWaterfall] = useState<WaterfallResponse | null>(null);
   const [expenseBreakdown, setExpenseBreakdown] = useState<ExpenseMonthlyBreakdown | null>(null);
   const [marginTrend, setMarginTrend] = useState<MarginTrendResponse | null>(null);
-  const [capacityForecast, setCapacityForecast] = useState<{ month: string; revenue: number; hours: number }[]>([]);
   const [pnlPeriod, setPnlPeriod] = useState('ytd');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -201,7 +260,7 @@ export function FinancePage() {
     setLoading(true);
     setError(null);
     try {
-      const [ov, cf, tp, yoyR, wf, eb, mt, capFc] = await Promise.allSettled([
+      const [ov, cf, tp, yoyR, wf, eb, mt] = await Promise.allSettled([
         api.get<KpiOverview>('/api/finance/overview'),
         api.get<CashflowResponse>('/api/finance/cashflow?months_back=6&months_forward=12'),
         api.get<TogglProject[]>('/api/finance/toggl-summary'),
@@ -209,7 +268,6 @@ export function FinancePage() {
         api.get<WaterfallResponse>(`/api/finance/pnl-waterfall?period=${wfPeriod}`),
         api.get<ExpenseMonthlyBreakdown>('/api/finance/expense-monthly-breakdown'),
         api.get<MarginTrendResponse>('/api/finance/margin-trend'),
-        api.get<{ month: string; revenue: number; hours: number }[]>('/api/capacity/forecast-revenue?from=' + new Date().toISOString().slice(0, 10) + '&to=' + new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10)),
       ]);
       if (ov.status === 'fulfilled') setOverview(ov.value);
       if (cf.status === 'fulfilled') setCashflow(cf.value);
@@ -218,7 +276,6 @@ export function FinancePage() {
       if (wf.status === 'fulfilled') setWaterfall(wf.value);
       if (eb.status === 'fulfilled') setExpenseBreakdown(eb.value);
       if (mt.status === 'fulfilled') setMarginTrend(mt.value);
-      if (capFc.status === 'fulfilled') setCapacityForecast(capFc.value);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Laden fehlgeschlagen');
     } finally {
@@ -259,22 +316,138 @@ export function FinancePage() {
       : undefined;
 
   const currentMonth = new Date().toISOString().slice(0, 7);
+  const nextYearJan = `${new Date().getFullYear() + 1}-01`;
   const cardClass = hasBg
     ? 'bg-black/30 backdrop-blur-xl ring-1 ring-white/10'
     : 'border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800/50';
   const sectionClass = `rounded-2xl p-4 sm:p-6 ${cardClass}`;
 
-  // Durchschnittswerte für Referenzlinien
-  const avgRevenue = cashflow?.forecast_revenue_monthly ?? 0;
-  const avgExpenses = cashflow?.forecast_expenses_monthly ?? 0;
+  // Cashflow-Chart-Daten: Ist-Einnahmen + gesicherte Prognose-Balken
+  // (Gebucht / gewichtete Pipeline). Run-Rate, Monatsziel, kumulierter Saldo und
+  // Mindest-Liquiditaet werden als Referenzlinien gezeigt, nicht als Balken.
+  const cashflowChartData = useMemo(() => {
+    if (!cashflow) return [];
+    const runRate = cashflow.forecast_revenue_monthly || 0;
+    const monthlyGoal = cashflow.monthly_revenue_goal || 0;
+    const minLiq = cashflow.min_liquidity || 0;
+    return cashflow.months.map(m => {
+      const isCurrent = m.month === currentMonth;
+      // Laufender Monat: bereits erfasst (revActual) + erwarteter Rest (fcFill)
+      return {
+        ...m,
+        label: formatMonthLabel(m.month),
+        revActual: m.is_forecast ? 0 : (isCurrent ? (m.forecast_committed ?? m.revenue) : m.revenue),
+        committed: m.is_forecast ? (m.forecast_committed || 0) : 0,
+        pipeline: m.is_forecast ? (m.forecast_pipeline || 0) : 0,
+        fcFill: m.is_forecast ? 0 : (isCurrent ? (m.forecast_fill || 0) : 0),
+        // Run-Rate-Referenz nur ueber laufenden Monat + Prognosehorizont
+        runRate: (m.is_forecast || isCurrent) ? runRate : null,
+        goalLine: monthlyGoal > 0 ? monthlyGoal : null,
+        cumulative: m.cumulative,
+        // Erwarteter Saldo (Run-Rate): primaere Liquiditaetslinie; faellt nicht
+        // kuenstlich ab, weil Prognosemonate auf die Run-Rate aufgefuellt werden.
+        cumulativeExpected: m.cumulative_expected ?? m.cumulative,
+        minLiq: minLiq > 0 ? minLiq : null,
+        // Auszahlungs-Buckets (negativ gestapelt): Liquiditaets-Timing.
+        personnelNeg: -(m.personnel_outflow || 0),
+        socialNeg: -(m.social_outflow || 0),
+        pensionNeg: -(m.pension_outflow || 0),
+        taxNeg: -(m.tax_outflow || 0),
+        opNeg: -m.expenses,
+        finNeg: -(m.fin_outflow || 0),
+        invNeg: -(m.invest_outflow || 0),
+        hasSpecial: (m.special_items?.length ?? 0) > 0,
+        // Unsichtbarer Anker, damit das reine Linien-Panel (Banksaldo) dieselbe
+        // Band-Skala wie das Balken-Panel oben nutzt -> X-Achse deckungsgleich.
+        __axisAnchor: 0,
+      };
+    });
+  }, [cashflow, currentMonth]);
 
-  // VJ-Durchschnittsumsatz für Referenzlinie
-  const avgRevenuePrior = useMemo(() => {
-    if (!yoy) return 0;
-    const priorMonths = yoy.months.filter(m => m.revenue_prior > 0);
-    if (priorMonths.length === 0) return 0;
-    return priorMonths.reduce((s, m) => s + m.revenue_prior, 0) / priorMonths.length;
-  }, [yoy]);
+  // Auszahlungs-Buckets (Liquiditaets-Timing): Ist solide, Prognose transparent + gestrichelt.
+  const renderCostCells = (
+    dataKey: 'personnelNeg' | 'socialNeg' | 'pensionNeg' | 'taxNeg' | 'opNeg' | 'finNeg' | 'invNeg',
+    color: string,
+  ) =>
+    cashflowChartData.map((row, i) => {
+      const val = (row as unknown as Record<string, number>)[dataKey] ?? 0;
+      const visible = val !== 0;
+      return (
+        <Cell
+          key={i}
+          fill={visible ? color : 'transparent'}
+          fillOpacity={row.is_forecast ? 0.42 : 1}
+          stroke={visible && row.is_forecast ? color : undefined}
+          strokeDasharray={row.is_forecast ? '3 2' : undefined}
+        />
+      );
+    });
+
+  // Stapel-Segmente in Zeichenreihenfolge: Einnahmen unten -> oben, Kosten 0 -> abwaerts.
+  // Das Total-Label haengt jeweils am letzten nicht-leeren Segment (= oberste bzw.
+  // unterste sichtbare Kante), damit es fuer Vergangenheit, laufenden Monat und
+  // Prognose zuverlaessig an der richtigen Position rendert (0-Hoehe-Segmente liefern
+  // in recharts keine brauchbaren Koordinaten).
+  const REVENUE_STACK_KEYS = ['revActual', 'committed', 'pipeline', 'fcFill'] as const;
+  const COST_STACK_KEYS = ['personnelNeg', 'socialNeg', 'pensionNeg', 'taxNeg', 'opNeg', 'finNeg', 'invNeg'] as const;
+
+  const lastNonZeroKey = (row: Record<string, number>, keys: readonly string[]): string | null => {
+    let found: string | null = null;
+    for (const k of keys) {
+      if ((row[k] ?? 0) !== 0) found = k;
+    }
+    return found;
+  };
+
+  // Gesamt-Umsatz-Label oberhalb des obersten sichtbaren Einnahmen-Segments.
+  // recharts liefert bei positiven Balken y = obere Kante; zur Sicherheit nehmen wir
+  // die kleinste y-Koordinate (oberste Kante) unabhaengig vom Vorzeichen der height.
+  const renderRevenueTotalLabel = (dataKey: typeof REVENUE_STACK_KEYS[number]) => (
+    <LabelList
+      content={(props: { x?: string | number; y?: string | number; width?: string | number; height?: string | number; index?: number }) => {
+        const index = props.index ?? 0;
+        const row = cashflowChartData[index] as unknown as Record<string, number>;
+        if (!row || !row.revenue || row.revenue <= 0) return null;
+        if (lastNonZeroKey(row, REVENUE_STACK_KEYS) !== dataKey) return null;
+        const x = Number(props.x ?? 0);
+        const y = Number(props.y ?? 0);
+        const width = Number(props.width ?? 0);
+        const height = Number(props.height ?? 0);
+        const topY = Math.min(y, y + height);
+        return (
+          <text x={x + width / 2} y={topY - 4} textAnchor="middle" fontSize={9} fill="#16a34a">
+            {formatK(row.revenue)}
+          </text>
+        );
+      }}
+    />
+  );
+
+  // Gesamt-Kosten-Label unterhalb des untersten sichtbaren Auszahlungs-Segments.
+  // Wichtig: bei negativen Balken ist y bereits die UNTERE Kante und height negativ,
+  // darum die groesste y-Koordinate verwenden (sonst landet das Label im Balken).
+  const renderCostTotalLabel = (dataKey: typeof COST_STACK_KEYS[number]) => (
+    <LabelList
+      content={(props: { x?: string | number; y?: string | number; width?: string | number; height?: string | number; index?: number }) => {
+        const index = props.index ?? 0;
+        const row = cashflowChartData[index] as unknown as Record<string, number>;
+        if (!row || lastNonZeroKey(row, COST_STACK_KEYS) !== dataKey) return null;
+        const total = (row.personnel_outflow ?? 0) + (row.social_outflow ?? 0) + (row.pension_outflow ?? 0)
+          + (row.tax_outflow ?? 0) + (row.expenses ?? 0) + (row.fin_outflow ?? 0) + (row.invest_outflow ?? 0);
+        if (total <= 0) return null;
+        const x = Number(props.x ?? 0);
+        const y = Number(props.y ?? 0);
+        const width = Number(props.width ?? 0);
+        const height = Number(props.height ?? 0);
+        const bottomY = Math.max(y, y + height);
+        return (
+          <text x={x + width / 2} y={bottomY + 12} textAnchor="middle" fontSize={9} fill="#dc2626">
+            -{formatK(total)}
+          </text>
+        );
+      }}
+    />
+  );
 
   // marginTrend kommt direkt vom Backend
 
@@ -358,6 +531,24 @@ export function FinancePage() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <Link
+              to="/finanzen/analysen"
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${hasBg ? 'bg-indigo-500/80 text-white hover:bg-indigo-500 backdrop-blur-sm' : 'border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/40'}`}
+              title="KI-gestützte Finanz- und Treuhandanalysen"
+            >
+              <Sparkles className="h-4 w-4" />
+              KI-Analysen
+            </Link>
+            <a
+              href="https://office.bexio.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${hasBg ? 'bg-white/10 text-white/90 hover:bg-white/20 backdrop-blur-sm' : 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'}`}
+              title="Bexio Buchhaltung öffnen"
+            >
+              Bexio öffnen
+              <ExternalLinkIcon className="h-3.5 w-3.5" />
+            </a>
             <button
               onClick={() => setBgPickerOpen(true)}
               className={`rounded-lg p-2 transition-colors ${hasBg ? 'text-white/70 hover:bg-white/10 hover:text-white' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300'}`}
@@ -382,121 +573,192 @@ export function FinancePage() {
           </div>
         )}
 
-        {/* KPI-Leiste: 9 Karten */}
-        <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-3">
-          <KpiCard
-            label="Banksaldo"
-            value={formatCHF(overview?.bank_balance)}
-            sublabel={overview?.bank_account_name || ''}
-            icon={<BankIcon />}
-            status={overview?.runway_months != null
-              ? (overview.runway_months > 6 ? 'green' : overview.runway_months > 2 ? 'yellow' : 'red')
-              : 'neutral'}
-          />
-          <KpiCard
-            label="Offene Debitoren"
-            value={formatCHF(overview?.open_invoices_total)}
-            sublabel={overview?.dso_days != null ? `DSO: ${overview.dso_days} Tage` : `${overview?.open_invoices_count ?? 0} Rechnungen`}
-            icon={<InvoiceIcon />}
-            status={overview?.dso_days != null
-              ? (overview.dso_days <= 30 ? 'green' : overview.dso_days <= 60 ? 'yellow' : 'red')
-              : 'neutral'}
-          />
-          <KpiCard
-            label="Lfd. Monat (Toggl)"
-            value={formatCHF(overview?.current_month_revenue)}
-            sublabel={`${overview?.current_month_hours ?? 0}h erfasst`}
-            icon={<ClockIcon />}
-            status="neutral"
-          />
-          <KpiCard
-            label="Prog. Jahresumsatz (brutto)"
-            value={formatCHF(overview?.forecast_year_revenue)}
-            sublabel={overview?.revenue_ytd_prior
-              ? `YTD: ${formatCHF(overview?.revenue_ytd_net)} · ${formatYoyDelta(overview?.revenue_ytd ?? 0, overview.revenue_ytd_prior)}`
-              : `YTD netto: ${formatCHF(overview?.revenue_ytd_net)}`}
-            icon={<TrendIcon />}
-            status={overview?.forecast_year_revenue && overview.forecast_year_revenue > 0 ? 'green' : 'neutral'}
-          />
-          <KpiCard
-            label="EBITDA YTD"
-            value={formatCHF(overview?.ebitda_ytd)}
-            sublabel={overview?.ebitda_ytd_prior != null
-              ? `VJ: ${formatCHF(overview.ebitda_ytd_prior)} · ${formatYoyDelta(overview?.ebitda_ytd ?? 0, overview.ebitda_ytd_prior)}`
-              : overview?.revenue_ytd_net
-                ? `${((overview.ebitda_ytd ?? 0) / overview.revenue_ytd_net * 100).toFixed(1)}% Marge`
-                : '–'}
-            icon={<CashflowIcon />}
-            status={overview?.ebitda_ytd != null
-              ? (overview.ebitda_ytd > 0 ? 'green' : 'red')
-              : 'neutral'}
-          />
-          <KpiCard
-            label="Personalquote"
-            value={overview?.personalquote_ytd != null ? `${overview.personalquote_ytd}%` : '–'}
-            sublabel={overview?.personalquote_ytd_prior != null
-              ? `VJ: ${overview.personalquote_ytd_prior}%`
-              : 'Personalaufwand / Netto-Ertrag'}
-            icon={<ClockIcon />}
-            status={overview?.personalquote_ytd != null
-              ? (overview.personalquote_ytd <= 70 ? 'green' : overview.personalquote_ytd <= 85 ? 'yellow' : 'red')
-              : 'neutral'}
-          />
-          <KpiCard
-            label="Cashflow Ende Jahr"
-            value={formatCHF(overview?.forecast_year_end_cashflow)}
-            sublabel="Prognose Dezember"
-            icon={<TrendIcon />}
-            status={overview?.forecast_year_end_cashflow != null
-              ? (overview.forecast_year_end_cashflow > 0 ? 'green' : 'red')
-              : 'neutral'}
-          />
-          <KpiCard
-            label="Runway"
-            value={overview?.runway_months != null ? `${overview.runway_months} Mt.` : '–'}
-            sublabel={overview?.runway_months_incl_debtors != null
-              ? `inkl. Debitoren: ${overview.runway_months_incl_debtors} Mt.`
-              : `Burn Rate: ${formatCHF(overview?.burn_rate)}/Mt.`}
-            icon={<RunwayIcon />}
-            status={overview?.runway_months != null
-              ? (overview.runway_months > 6 ? 'green' : overview.runway_months > 2 ? 'yellow' : 'red')
-              : 'neutral'}
-          />
-          <KpiCard
-            label="Gewinnmarge YTD"
-            value={overview?.profit_margin_ytd != null ? `${overview.profit_margin_ytd}%` : '–'}
-            sublabel={overview?.profit_margin_ytd_prior != null
-              ? `VJ: ${overview.profit_margin_ytd_prior}%`
-              : `Aufwand YTD: ${formatCHF(overview?.expenses_ytd)}`}
-            icon={<CashflowIcon />}
-            status={overview?.profit_margin_ytd != null
-              ? (overview.profit_margin_ytd >= 10 ? 'green' : overview.profit_margin_ytd >= 0 ? 'yellow' : 'red')
-              : 'neutral'}
-          />
+        {/* KPI-Leiste: 12 Karten in 3 beschrifteten Gruppen (je 4 Kacheln)
+            Gruppe 1: Heute / Bestand
+            Gruppe 2: Prognose Jahresende (Umsatz- und Cashflow-Paar, je gesichert → erwartet)
+            Gruppe 3: Ergebnis YTD */}
+        <div className="mb-6 space-y-4">
+          {/* Gruppe 1 — Heute / Bestand */}
+          <div>
+            <p className={`mb-2 text-[11px] font-semibold uppercase tracking-wider ${hasBg ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'}`}>Heute / Bestand</p>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+              <KpiCard
+                label="Banksaldo"
+                value={formatCHF(overview?.bank_balance)}
+                sublabel={overview?.bank_account_name || ''}
+                icon={<BankIcon />}
+                status={overview?.runway_months != null
+                  ? (overview.runway_months > 6 ? 'green' : overview.runway_months > 2 ? 'yellow' : 'red')
+                  : 'neutral'}
+              />
+              <KpiCard
+                label="Offene Debitoren"
+                value={formatCHF(overview?.open_invoices_total)}
+                sublabel={overview?.dso_days != null ? `DSO: ${overview.dso_days} Tage` : `${overview?.open_invoices_count ?? 0} Rechnungen`}
+                icon={<InvoiceIcon />}
+                info="Summe der noch nicht bezahlten Kundenrechnungen. DSO (Days Sales Outstanding) ist die durchschnittliche Zahlungsdauer in Tagen – je tiefer, desto schneller fliesst das Geld."
+                status={overview?.dso_days != null
+                  ? (overview.dso_days <= 30 ? 'green' : overview.dso_days <= 60 ? 'yellow' : 'red')
+                  : 'neutral'}
+              />
+              <KpiCard
+                label="Runway"
+                value={overview?.runway_months != null ? `${overview.runway_months} Mt.` : '–'}
+                sublabel={overview?.runway_months_incl_debtors != null
+                  ? `inkl. Debitoren: ${overview.runway_months_incl_debtors} Mt.`
+                  : `Burn Rate: ${formatCHF(overview?.burn_rate)}/Mt.`}
+                icon={<RunwayIcon />}
+                info="Wie viele Monate die liquiden Mittel beim aktuellen monatlichen Mittelabfluss (Burn Rate) noch reichen, falls kein neuer Umsatz dazukommt."
+                status={overview?.runway_months != null
+                  ? (overview.runway_months > 6 ? 'green' : overview.runway_months > 2 ? 'yellow' : 'red')
+                  : 'neutral'}
+              />
+              <KpiCard
+                label="Lfd. Monat (Toggl)"
+                value={formatCHF(overview?.current_month_revenue)}
+                sublabel={`${overview?.current_month_hours ?? 0}h erfasst`}
+                icon={<ClockIcon />}
+                status="neutral"
+              />
+            </div>
+          </div>
+
+          {/* Gruppe 2 — Prognose Jahresende (erwartet/Run-Rate als Hauptwert → Worst Case als Floor) */}
+          <div>
+            <p className={`mb-2 text-[11px] font-semibold uppercase tracking-wider ${hasBg ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'}`}>Prognose Jahresende</p>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+              <KpiCard
+                label="Prog. Jahresumsatz (erwartet)"
+                value={formatCHF(overview?.forecast_year_revenue_runrate)}
+                trend={buildRelTrend(overview?.forecast_year_revenue_runrate, overview?.prior_year_revenue, 'up', `Prognose vs. Vorjahres-Gesamtumsatz (${formatCHF(overview?.prior_year_revenue)})`)}
+                sublabel={(overview?.annual_revenue_goal ?? 0) > 0
+                  ? (((overview!.annual_revenue_goal) - (overview!.forecast_year_revenue_runrate)) > 0
+                    ? `Ziel ${formatK(overview!.annual_revenue_goal)} · Lücke ${formatCHF((overview!.annual_revenue_goal) - (overview!.forecast_year_revenue_runrate))}`
+                    : `Ziel ${formatK(overview!.annual_revenue_goal)} · erreicht ✓`)
+                  : ((overview?.prior_year_revenue ?? 0) > 0
+                    ? `realistisch · VJ-Total ${formatCHF(overview!.prior_year_revenue)}`
+                    : 'realistisch · inkl. erwarteter Auffüllung (Ø 3/12 Mt.)')}
+                icon={<TrendIcon />}
+                info="Realistisches Szenario: bereits verbuchter Umsatz, gebuchte Kapazität plus erwartete Auffüllung noch freier Kapazität auf Basis der Run-Rate (gewichteter Ø der letzten 3 und 12 Monate). Bei einem Geschäftsverlauf wie in den Vorjahren der massgebliche Erwartungswert. Trend: Prognose vs. Vorjahres-Gesamtumsatz."
+                status={(overview?.annual_revenue_goal ?? 0) > 0
+                  ? (((overview!.annual_revenue_goal) - (overview!.forecast_year_revenue_runrate)) <= 0 ? 'green' : ((overview!.annual_revenue_goal) - (overview!.forecast_year_revenue_runrate)) < overview!.annual_revenue_goal * 0.25 ? 'yellow' : 'red')
+                  : (overview?.forecast_year_revenue_runrate && overview.forecast_year_revenue_runrate > 0 ? 'green' : 'neutral')}
+              />
+              <KpiCard
+                label="Prog. Jahresumsatz (Worst Case)"
+                value={formatCHF(overview?.forecast_year_revenue)}
+                sublabel="Floor: nur gebuchte Kapazität + Pipeline, keine neue Akquisition"
+                icon={<TrendIcon />}
+                info="Unterer Grenzwert (Worst Case): nur bereits verbuchter Umsatz plus bestätigte und gewichtete Kapazitäts-Buchungen. Unterstellt KEINE weitere Akquisition bis Jahresende – seit 5 Jahren nie eingetreten, dient als konservativer Floor."
+                status="neutral"
+              />
+              <KpiCard
+                label="Cashflow Ende Jahr (erwartet)"
+                value={formatCHF(overview?.forecast_year_end_runrate)}
+                sublabel="realistisch · Banksaldo per 31.12. bei gehaltener Run-Rate"
+                icon={<TrendIcon />}
+                info="Voraussichtlicher Banksaldo per 31.12. im realistischen Szenario: heutiger Saldo plus erwartete Einnahmen (Run-Rate, Ø 3/12 Mt.) abzüglich der erwarteten Ausgaben. Massgeblicher Erwartungswert bei normalem Geschäftsverlauf."
+                status={overview?.forecast_year_end_runrate != null
+                  ? ((overview.min_liquidity > 0 && overview.forecast_year_end_runrate < overview.min_liquidity)
+                    ? 'red'
+                    : (overview.forecast_year_end_runrate > 0 ? 'green' : 'red'))
+                  : 'neutral'}
+              />
+              <KpiCard
+                label="Cashflow Ende Jahr (Worst Case)"
+                value={formatCHF(overview?.forecast_year_end_cashflow)}
+                sublabel="Floor: keine neue Akquisition, voller Aufwand inkl. Inhaberlohn"
+                icon={<TrendIcon />}
+                info="Unterer Grenzwert (Worst Case): heutiger Saldo plus NUR gesicherte Einnahmen, abzüglich voller Ausgaben – ohne jede weitere Akquisition. Der grösste Aufwandsblock ist der frei steuerbare Inhaberlohn, der bei Auftragseinbruch sofort reduzierbar wäre. Daher kein Insolvenz-, sondern ein Steuerungssignal."
+                status={overview?.forecast_year_end_cashflow != null
+                  ? (overview.forecast_year_end_cashflow < 0 ? 'yellow' : 'neutral')
+                  : 'neutral'}
+              />
+            </div>
+          </div>
+
+          {/* Gruppe 3 — Ergebnis YTD */}
+          <div>
+            <p className={`mb-2 text-[11px] font-semibold uppercase tracking-wider ${hasBg ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'}`}>Ergebnis YTD</p>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+              <KpiCard
+                label="Umsatz YTD"
+                value={formatCHF(overview?.revenue_ytd_live)}
+                trend={buildRelTrend(overview?.revenue_ytd_closed, overview?.revenue_ytd_prior, 'up', `vs. Vorjahr, stichtagsgleich${overview?.closed_until_label ? ` (per Ende ${overview.closed_until_label})` : ''}`)}
+                sublabel={`netto ${formatCHF(overview?.revenue_ytd_net)}${overview?.closed_until_label ? ` · VJ per Ende ${overview.closed_until_label}` : ''}`}
+                icon={<InvoiceIcon />}
+                info={`Live-Sicht: abgeschlossene Monate plus geschätzter laufender Monat (früh aus Kapazitätsplanung, im Verlauf aus Toggl). Der Vorjahresvergleich (Trend) wird stichtagsgleich nur über abgeschlossene Monate gerechnet${overview?.closed_until_label ? ` (per Ende ${overview.closed_until_label})` : ''}, da der laufende Monat wegen Monatsend-Fakturierung unvollständig ist. Brutto inkl., netto exkl. MWST.`}
+                status={(overview?.revenue_ytd_live ?? 0) > 0
+                  ? (trendStatus(buildRelTrend(overview?.revenue_ytd_closed, overview?.revenue_ytd_prior, 'up', '')) === 'red' ? 'yellow' : 'green')
+                  : 'neutral'}
+              />
+              <KpiCard
+                label="EBITDA YTD"
+                value={formatCHF(overview?.ebitda_ytd)}
+                trend={buildRelTrend(overview?.ebitda_ytd, overview?.ebitda_ytd_prior, 'up', 'vs. Vorjahr, stichtagsgleich')}
+                sublabel={overview?.ebitda_ytd_prior != null
+                  ? `VJ: ${formatCHF(overview.ebitda_ytd_prior)}`
+                  : overview?.revenue_ytd_net_closed
+                    ? `${((overview.ebitda_ytd ?? 0) / overview.revenue_ytd_net_closed * 100).toFixed(1)}% Marge`
+                    : '–'}
+                icon={<CashflowIcon />}
+                info={`Betriebsergebnis vor Zinsen, Steuern und Abschreibungen – zeigt die operative Ertragskraft ohne Finanzierungs- und Buchungseffekte. Basis: abgeschlossene Monate${overview?.closed_until_label ? ` (per Ende ${overview.closed_until_label})` : ''}.`}
+                status={overview?.ebitda_ytd != null
+                  ? (overview.ebitda_ytd > 0 ? 'green' : 'red')
+                  : 'neutral'}
+              />
+              <KpiCard
+                label="Gewinnmarge YTD"
+                value={overview?.profit_margin_ytd != null ? `${overview.profit_margin_ytd}%` : '–'}
+                trend={overview?.profit_margin_ytd_prior != null
+                  ? { value: ppDelta(overview?.profit_margin_ytd, overview.profit_margin_ytd_prior) ?? 0, unit: 'pp', goodWhen: 'up', title: 'vs. Vorjahr (Prozentpunkte), stichtagsgleich' }
+                  : null}
+                sublabel={overview?.profit_margin_ytd_prior != null
+                  ? `VJ: ${overview.profit_margin_ytd_prior}%`
+                  : `Aufwand YTD: ${formatCHF(overview?.expenses_ytd_closed)}`}
+                icon={<CashflowIcon />}
+                info={`Anteil des Nettoumsatzes, der nach Abzug aller Aufwände als Gewinn übrig bleibt. Höher ist besser. Trend in Prozentpunkten (%-Pkt.) vs. Vorjahr. Basis: abgeschlossene Monate${overview?.closed_until_label ? ` (per Ende ${overview.closed_until_label})` : ''}.`}
+                status={overview?.profit_margin_ytd != null
+                  ? (overview.profit_margin_ytd >= 10 ? 'green' : overview.profit_margin_ytd >= 0 ? 'yellow' : 'red')
+                  : 'neutral'}
+              />
+              <KpiCard
+                label="Personalquote"
+                value={overview?.personalquote_ytd != null ? `${overview.personalquote_ytd}%` : '–'}
+                trend={overview?.personalquote_ytd_prior != null
+                  ? { value: ppDelta(overview?.personalquote_ytd, overview.personalquote_ytd_prior) ?? 0, unit: 'pp', goodWhen: 'down', title: 'vs. Vorjahr (Prozentpunkte); tiefer ist besser' }
+                  : null}
+                sublabel={overview?.personalquote_ytd_prior != null
+                  ? `VJ: ${overview.personalquote_ytd_prior}%`
+                  : 'Personalaufwand / Netto-Ertrag'}
+                icon={<ClockIcon />}
+                info={`Personalaufwand im Verhältnis zum Nettoumsatz. Zeigt, wie viel vom Umsatz für Löhne und Sozialleistungen aufgeht – ein tieferer Wert bedeutet höhere Effizienz. Trend in Prozentpunkten (%-Pkt.); tiefer ist besser. Basis: abgeschlossene Monate${overview?.closed_until_label ? ` (per Ende ${overview.closed_until_label})` : ''}.`}
+                status={overview?.personalquote_ytd != null
+                  ? (overview.personalquote_ytd <= 70 ? 'green' : overview.personalquote_ytd <= 85 ? 'yellow' : 'red')
+                  : 'neutral'}
+              />
+            </div>
+          </div>
         </div>
 
-        {/* Cashflow-Chart: Dreistufig (Operativ / Finanzierung / Investition) */}
+        {/* Cashflow: Zwei-Panel (oben Einnahmen/Auszahlungen, unten Banksaldo) */}
         {cashflow && cashflow.months.length > 0 && (
           <div className={`mb-6 ${sectionClass}`}>
-            <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">
-              Cashflow (direkte Methode)
-            </h2>
-            <ResponsiveContainer width="100%" height={isFinanceMobile ? 280 : 380}>
-              <ComposedChart data={cashflow.months.map(m => {
-                const capEntry = capacityForecast.find(c => c.month === m.month);
-                return {
-                  ...m,
-                  label: formatMonthLabel(m.month),
-                  opNeg: -m.expenses,
-                  finNeg: -(m.fin_outflow || 0),
-                  invNeg: -(m.invest_outflow || 0),
-                  hasSpecial: (m.special_items?.length ?? 0) > 0,
-                  capacityRevenue: capEntry?.revenue || null,
-                };
-              })}>
-                <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
-                <XAxis dataKey="label" tick={{ fontSize: isFinanceMobile ? 9 : 11 }} interval={isFinanceMobile ? 1 : 0} angle={isFinanceMobile ? -45 : 0} textAnchor={isFinanceMobile ? 'end' : 'middle'} height={isFinanceMobile ? 50 : 30} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${formatK(v)}`} />
+            <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                Liquiditätsplanung &amp; Cashflow
+              </h2>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Zahlungs-Timing (cash-basis) – wann Geld das Konto verlässt
+              </span>
+            </div>
+            {/* ── Panel A: Einnahmen vs. Auszahlungen nach Liquiditäts-Bucket ── */}
+            <div className="rounded-xl bg-white/95 p-2 dark:bg-gray-900/90">
+            <ResponsiveContainer width="100%" height={isFinanceMobile ? 280 : 360}>
+              <ComposedChart data={cashflowChartData} margin={{ top: 16, right: 16, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" className="dark:opacity-20" />
+                <XAxis dataKey="label" tick={{ fontSize: isFinanceMobile ? 9 : 11, fill: '#475569' }} interval={isFinanceMobile ? 1 : 0} angle={isFinanceMobile ? -45 : 0} textAnchor={isFinanceMobile ? 'end' : 'middle'} height={isFinanceMobile ? 50 : 30} />
+                <YAxis yAxisId="left" width={52} tick={{ fontSize: 11, fill: '#475569' }} tickFormatter={(v: number) => `${formatK(v)}`} />
                 <Tooltip
                   cursor={CURSOR_STYLE}
                   content={({ active, payload, label }) => {
@@ -504,27 +766,86 @@ export function FinancePage() {
                     const d = payload[0]?.payload;
                     if (!d) return null;
                     const items = d.special_items || [];
+                    const fc = d.is_forecast;
                     return (
                       <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-xs text-gray-100 shadow-lg">
                         <p className="mb-2 font-semibold text-white">{label}</p>
                         <div className="space-y-1">
                           <div className="flex justify-between gap-4">
-                            <span className="text-green-400">Einnahmen (brutto)</span>
+                            <span className="text-green-400">{fc ? 'Gesicherter Umsatz (brutto)' : 'Einnahmen (brutto)'}</span>
                             <span className="font-medium">{formatCHF(d.revenue)}</span>
                           </div>
-                          <div className="flex justify-between gap-4">
-                            <span className="text-red-400">Operativ</span>
-                            <span className="font-medium">-{formatCHF(d.expenses)}</span>
-                          </div>
+                          {fc && (
+                            <div className="space-y-0.5 pl-2 text-[10px] text-gray-400">
+                              <div className="flex justify-between gap-4">
+                                <span>· Gebucht (Kapazität)</span>
+                                <span>{formatCHF(d.forecast_committed || 0)}</span>
+                              </div>
+                              <div className="flex justify-between gap-4">
+                                <span>· Pipeline (gewichtet)</span>
+                                <span>{formatCHF(d.forecast_pipeline || 0)}</span>
+                              </div>
+                              {d.runRate != null && (
+                                <div className="flex justify-between gap-4 text-emerald-300/80">
+                                  <span>· Run-Rate (Ø, Referenz)</span>
+                                  <span>{formatCHF(d.runRate)}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {!fc && d.month === currentMonth && (d.forecast_fill || 0) > 0 && (
+                            <div className="space-y-0.5 pl-2 text-[10px] text-gray-400">
+                              <div className="flex justify-between gap-4">
+                                <span>· Bereits erfasst</span>
+                                <span>{formatCHF(d.forecast_committed || 0)}</span>
+                              </div>
+                              <div className="flex justify-between gap-4">
+                                <span>· Erwarteter Rest (Kapazität)</span>
+                                <span>{formatCHF(d.forecast_fill || 0)}</span>
+                              </div>
+                            </div>
+                          )}
+                          <hr className="my-1 border-gray-600" />
+                          <p className="text-[10px] font-medium text-gray-400">Auszahlungen{fc ? ' (Prognose)' : ''}:</p>
+                          {(d.personnel_outflow || 0) > 0 && (
+                            <div className="flex justify-between gap-4">
+                              <span style={{ color: '#dc2626' }}>Personal</span>
+                              <span className="font-medium">-{formatCHF(d.personnel_outflow)}</span>
+                            </div>
+                          )}
+                          {(d.social_outflow || 0) > 0 && (
+                            <div className="flex justify-between gap-4">
+                              <span style={{ color: '#ea580c' }}>Sozialversicherungen</span>
+                              <span className="font-medium">-{formatCHF(d.social_outflow)}</span>
+                            </div>
+                          )}
+                          {(d.pension_outflow || 0) > 0 && (
+                            <div className="flex justify-between gap-4">
+                              <span style={{ color: '#0d9488' }}>Pensionskasse (BVG)</span>
+                              <span className="font-medium">-{formatCHF(d.pension_outflow)}</span>
+                            </div>
+                          )}
+                          {(d.tax_outflow || 0) > 0 && (
+                            <div className="flex justify-between gap-4">
+                              <span style={{ color: '#d97706' }}>MWST/Steuern</span>
+                              <span className="font-medium">-{formatCHF(d.tax_outflow)}</span>
+                            </div>
+                          )}
+                          {(d.expenses || 0) > 0 && (
+                            <div className="flex justify-between gap-4">
+                              <span style={{ color: '#f87171' }}>Übrige operativ</span>
+                              <span className="font-medium">-{formatCHF(d.expenses)}</span>
+                            </div>
+                          )}
                           {d.fin_outflow > 0 && (
                             <div className="flex justify-between gap-4">
-                              <span className="text-orange-400">Finanzierung</span>
+                              <span style={{ color: '#9333ea' }}>Finanzierung{fc ? ' (Ø 12 Mt.)' : ''}</span>
                               <span className="font-medium">-{formatCHF(d.fin_outflow)}</span>
                             </div>
                           )}
                           {d.invest_outflow > 0 && (
                             <div className="flex justify-between gap-4">
-                              <span className="text-gray-400">Investitionen</span>
+                              <span style={{ color: '#64748b' }}>Investitionen{fc ? ' (Ø 12 Mt.)' : ''}</span>
                               <span className="font-medium">-{formatCHF(d.invest_outflow)}</span>
                             </div>
                           )}
@@ -550,28 +871,138 @@ export function FinancePage() {
                     );
                   }}
                 />
-                {avgRevenue > 0 && (
+                <ReferenceLine yAxisId="left" y={0} stroke="#94a3b8" />
+                <ReferenceLine
+                  yAxisId="left"
+                  x={formatMonthLabel(currentMonth)}
+                  stroke="#6366f1"
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
+                  label={{ value: '▼ Heute', fontSize: 11, fill: '#6366f1', position: 'top' }}
+                />
+                {cashflow.months.some(m => m.month === nextYearJan) && (
                   <ReferenceLine
-                    y={avgRevenue}
-                    stroke="#22c55e"
-                    strokeDasharray="6 4"
-                    label={{ value: `Ø ${formatK(avgRevenue)}`, position: 'insideTopRight', fontSize: 10, fill: '#22c55e' }}
-                  />
-                )}
-                {avgExpenses > 0 && (
-                  <ReferenceLine
-                    y={-avgExpenses}
-                    stroke="#ef4444"
-                    strokeDasharray="6 4"
-                    label={{ value: `Ø -${formatK(avgExpenses)}`, position: 'insideBottomRight', fontSize: 10, fill: '#ef4444' }}
-                  />
-                )}
-                {avgRevenuePrior > 0 && (
-                  <ReferenceLine
-                    y={avgRevenuePrior}
+                    yAxisId="left"
+                    x={formatMonthLabel(nextYearJan)}
                     stroke="#94a3b8"
-                    strokeDasharray="4 4"
-                    label={{ value: `Ø VJ: ${formatK(avgRevenuePrior)}`, position: 'insideTopLeft', fontSize: 9, fill: '#94a3b8' }}
+                    strokeWidth={2}
+                    strokeDasharray="6 3"
+                    label={{ value: '▼ Jahreswechsel', fontSize: 11, fill: '#94a3b8', position: 'top' }}
+                  />
+                )}
+                {/* Einnahmen: Ist (solide) + gesicherte Prognose-Schichten (gestapelt).
+                    Das Umsatz-Total-Label haengt am jeweils obersten nicht-leeren Segment,
+                    damit Vergangenheit, laufender Monat UND Prognose den Wert zeigen. */}
+                <Bar yAxisId="left" dataKey="revActual" name="revActual" stackId="in" fill="#22c55e" radius={[4, 4, 0, 0]} isAnimationActive={false}>{renderRevenueTotalLabel('revActual')}</Bar>
+                <Bar yAxisId="left" dataKey="committed" name="committed" stackId="in" fill="#16a34a" isAnimationActive={false}>{renderRevenueTotalLabel('committed')}</Bar>
+                <Bar yAxisId="left" dataKey="pipeline" name="pipeline" stackId="in" fill="#4ade80" radius={[4, 4, 0, 0]} isAnimationActive={false}>{renderRevenueTotalLabel('pipeline')}</Bar>
+                <Bar yAxisId="left" dataKey="fcFill" name="fcFill" stackId="in" fill="#bbf7d0" stroke="#86efac" strokeDasharray="4 2" radius={[4, 4, 0, 0]} isAnimationActive={false}>{renderRevenueTotalLabel('fcFill')}</Bar>
+                {/* Auszahlungen nach Liquiditäts-Bucket (negativ gestapelt). Das Kosten-Total-Label
+                    haengt am jeweils untersten nicht-leeren Segment (Vergangenheit + Prognose). */}
+                <Bar yAxisId="left" dataKey="personnelNeg" name="personnelNeg" stackId="out">{renderCostCells('personnelNeg', '#dc2626')}{renderCostTotalLabel('personnelNeg')}</Bar>
+                <Bar yAxisId="left" dataKey="socialNeg" name="socialNeg" stackId="out">{renderCostCells('socialNeg', '#ea580c')}{renderCostTotalLabel('socialNeg')}</Bar>
+                <Bar yAxisId="left" dataKey="pensionNeg" name="pensionNeg" stackId="out">{renderCostCells('pensionNeg', '#0d9488')}{renderCostTotalLabel('pensionNeg')}</Bar>
+                <Bar yAxisId="left" dataKey="taxNeg" name="taxNeg" stackId="out">{renderCostCells('taxNeg', '#d97706')}{renderCostTotalLabel('taxNeg')}</Bar>
+                <Bar yAxisId="left" dataKey="opNeg" name="opNeg" stackId="out">{renderCostCells('opNeg', '#f87171')}{renderCostTotalLabel('opNeg')}</Bar>
+                <Bar yAxisId="left" dataKey="finNeg" name="finNeg" stackId="out">{renderCostCells('finNeg', '#9333ea')}{renderCostTotalLabel('finNeg')}</Bar>
+                <Bar yAxisId="left" dataKey="invNeg" name="invNeg" stackId="out">{renderCostCells('invNeg', '#64748b')}{renderCostTotalLabel('invNeg')}</Bar>
+                {/* Run-Rate (Ø Monatsumsatz) als Orientierungslinie */}
+                <Line
+                  yAxisId="left"
+                  dataKey="runRate"
+                  name="Run-Rate (Ø)"
+                  stroke="#15803d"
+                  strokeWidth={2}
+                  strokeDasharray="8 4"
+                  dot={false}
+                  connectNulls
+                  isAnimationActive={false}
+                />
+                {(cashflow.monthly_revenue_goal || 0) > 0 && (
+                  <Line
+                    yAxisId="left"
+                    dataKey="goalLine"
+                    name="Monatsziel"
+                    stroke="#7c3aed"
+                    strokeWidth={2}
+                    strokeDasharray="3 3"
+                    dot={false}
+                    connectNulls
+                    isAnimationActive={false}
+                  />
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-gray-600 dark:text-gray-300">
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-green-500" /> Einnahmen (Ist)</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#16a34a' }} /> Gebucht</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#4ade80' }} /> Pipeline</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#dc2626' }} /> Personal</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#ea580c' }} /> Sozialversicherungen</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#0d9488' }} /> Pensionskasse (BVG)</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#d97706' }} /> MWST/Steuern</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#f87171' }} /> Übrige operativ</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#9333ea' }} /> Finanzierung</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded" style={{ background: '#64748b' }} /> Investitionen</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 border-t-2 border-dashed" style={{ borderColor: '#15803d' }} /> Run-Rate (Ø)</span>
+              {(cashflow.monthly_revenue_goal || 0) > 0 && (
+                <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 border-t-2 border-dotted" style={{ borderColor: '#7c3aed' }} /> Monatsziel</span>
+              )}
+              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded border border-dashed border-gray-400 opacity-50" /> Transparent = Prognose</span>
+            </div>
+
+            {/* ── Panel B: Banksaldo-Verlauf (erwartet vs. gesichert) ── */}
+            <div className="mt-4 mb-1 flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Banksaldo-Verlauf</h3>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Liquiditätsverlauf: erwartet vs. gesichert (Worst Case)
+              </span>
+            </div>
+            <div className="rounded-xl bg-white/95 p-2 dark:bg-gray-900/90">
+            <ResponsiveContainer width="100%" height={isFinanceMobile ? 160 : 200}>
+              <ComposedChart data={cashflowChartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" className="dark:opacity-20" />
+                <XAxis dataKey="label" tick={{ fontSize: isFinanceMobile ? 9 : 11, fill: '#475569' }} interval={isFinanceMobile ? 1 : 0} angle={isFinanceMobile ? -45 : 0} textAnchor={isFinanceMobile ? 'end' : 'middle'} height={isFinanceMobile ? 50 : 30} />
+                <YAxis width={52} tick={{ fontSize: 11, fill: '#475569' }} tickFormatter={(v: number) => `${formatK(v)}`} />
+                <Tooltip
+                  cursor={CURSOR_STYLE}
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0]?.payload;
+                    if (!d) return null;
+                    return (
+                      <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-xs text-gray-100 shadow-lg">
+                        <p className="mb-2 font-semibold text-white">{label}</p>
+                        <div className="space-y-1">
+                          <div className="flex justify-between gap-4">
+                            <span style={{ color: '#0ea5e9' }}>Erwarteter Saldo</span>
+                            <span className="font-medium">{formatCHF(d.cumulative_expected ?? d.cumulative)}</span>
+                          </div>
+                          {d.is_forecast && d.cumulative_expected != null && d.cumulative_expected !== d.cumulative && (
+                            <div className="flex justify-between gap-4 text-gray-400">
+                              <span>Gesichert (Worst Case)</span>
+                              <span>{formatCHF(d.cumulative)}</span>
+                            </div>
+                          )}
+                          {d.minLiq != null && (
+                            <div className="flex justify-between gap-4 text-[10px] text-gray-400">
+                              <span>Mindest-Liquidität</span>
+                              <span>{formatCHF(d.minLiq)}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }}
+                />
+                {cashflow.min_liquidity > 0 && (
+                  <ReferenceLine
+                    y={cashflow.min_liquidity}
+                    stroke="#dc2626"
+                    strokeWidth={2}
+                    strokeDasharray="2 3"
+                    label={{ value: `Mindest-Liquidität ${formatK(cashflow.min_liquidity)}`, position: 'insideTopLeft', fontSize: 10, fill: '#dc2626' }}
                   />
                 )}
                 <ReferenceLine
@@ -579,66 +1010,20 @@ export function FinancePage() {
                   stroke="#6366f1"
                   strokeWidth={2}
                   strokeDasharray="6 3"
-                  label={{ value: '▼ Heute', fontSize: 11, fill: '#6366f1', position: 'top' }}
                 />
-                <Bar dataKey="revenue" name="revenue" radius={[4, 4, 0, 0]}>
-                  {cashflow.months.map((m, i) => (
-                    <Cell
-                      key={i}
-                      fill={m.is_forecast ? '#86efac80' : '#22c55e'}
-                      stroke={m.is_forecast ? '#86efac' : undefined}
-                      strokeDasharray={m.is_forecast ? '4 2' : undefined}
-                    />
-                  ))}
-                  <LabelList
-                    dataKey="revenue"
-                    position="top"
-                    fontSize={9}
-                    fill="#16a34a"
-                    formatter={(v: unknown) => Number(v) > 0 ? formatK(Number(v)) : ''}
-                  />
-                </Bar>
-                <Bar dataKey="opNeg" name="opNeg" stackId="out" radius={[0, 0, 0, 0]}>
-                  {cashflow.months.map((m, i) => (
-                    <Cell
-                      key={i}
-                      fill={m.is_forecast ? '#fca5a580' : '#ef4444'}
-                      stroke={m.is_forecast ? '#fca5a5' : undefined}
-                      strokeDasharray={m.is_forecast ? '4 2' : undefined}
-                    />
-                  ))}
-                </Bar>
-                <Bar dataKey="finNeg" name="finNeg" stackId="out" fill="#f97316" radius={[0, 0, 0, 0]}>
-                  {cashflow.months.map((m, i) => (
-                    <Cell key={i} fill={(m.fin_outflow || 0) > 0 ? '#f97316' : 'transparent'} />
-                  ))}
-                </Bar>
-                <Bar dataKey="invNeg" name="invNeg" stackId="out" fill="#9ca3af" radius={[0, 0, 4, 4]}>
-                  {cashflow.months.map((m, i) => (
-                    <Cell key={i} fill={(m.invest_outflow || 0) > 0 ? '#9ca3af' : 'transparent'} />
-                  ))}
-                </Bar>
-                {capacityForecast.length > 0 && (
-                  <Line
-                    dataKey="capacityRevenue"
-                    name="Kapazitäts-Prognose"
-                    stroke="#8B5CF6"
-                    strokeWidth={2}
-                    strokeDasharray="6 3"
-                    dot={{ r: 3, fill: '#8B5CF6' }}
-                    connectNulls
-                  />
-                )}
+                {/* Unsichtbarer Anker-Balken: erzwingt dieselbe Band-Skala wie das obere
+                    Panel, damit Monate und der Heute-Strich exakt deckungsgleich sind. */}
+                <Bar dataKey="__axisAnchor" fill="transparent" isAnimationActive={false} legendType="none" />
+                <Line dataKey="cumulative" name="Gesichert" stroke="#94a3b8" strokeWidth={2} strokeDasharray="5 3" dot={false} isAnimationActive={false} />
+                <Line dataKey="cumulativeExpected" name="Erwarteter Saldo" stroke="#0ea5e9" strokeWidth={3} dot={false} isAnimationActive={false} />
               </ComposedChart>
             </ResponsiveContainer>
-            <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-green-500" /> Einnahmen (brutto)</span>
-              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-red-500" /> Operativ</span>
-              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-orange-500" /> Finanzierung</span>
-              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-gray-400" /> Investitionen</span>
-              <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded border-2 border-dashed border-green-300 bg-green-200/50" /> Prognose</span>
-              {capacityForecast.length > 0 && (
-                <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-purple-500" /> Kapazitäts-Prognose</span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-gray-600 dark:text-gray-300">
+              <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4" style={{ background: '#0ea5e9' }} /> Erwarteter Saldo</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 border-t-2 border-dashed" style={{ borderColor: '#94a3b8' }} /> Gesichert (Worst Case)</span>
+              {cashflow.min_liquidity > 0 && (
+                <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 border-t-2 border-dashed" style={{ borderColor: '#dc2626' }} /> Mindest-Liquidität</span>
               )}
             </div>
           </div>
@@ -701,7 +1086,7 @@ export function FinancePage() {
               : 0;
             return (
               <div className={sectionClass}>
-                <div className="mb-4 flex items-center justify-between">
+                <div className="mb-1 flex items-center justify-between">
                   <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
                     Kostenstruktur {expenseBreakdown.current_year}
                   </h2>
@@ -711,6 +1096,9 @@ export function FinancePage() {
                     </span>
                   )}
                 </div>
+                <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                  Aufwand nach Kategorie (periodengerecht) – nicht nach Zahlungszeitpunkt
+                </p>
                 <ResponsiveContainer width="100%" height={280}>
                   <BarChart
                     data={filteredData}
@@ -957,36 +1345,7 @@ export function FinancePage() {
         </div>
 
         {/* Quell-Karten */}
-        <div className="mb-6 grid gap-4 md:grid-cols-3">
-          <SourceCard title="Bexio" subtitle="Buchhaltung" color="blue" linkUrl="https://office.bexio.com" linkLabel="Bexio öffnen">
-            <div className="space-y-2 text-sm">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">Banksaldo</span>
-                <span className="shrink-0 whitespace-nowrap font-medium text-gray-900 dark:text-white">{formatCHF(overview?.bank_balance)}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">Umsatz YTD (brutto)</span>
-                <span className="shrink-0 whitespace-nowrap font-medium text-gray-900 dark:text-white">{formatCHF(overview?.revenue_ytd)}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">Umsatz YTD (netto)</span>
-                <span className="shrink-0 whitespace-nowrap font-medium text-gray-900 dark:text-white">{formatCHF(overview?.revenue_ytd_net)}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">EBITDA YTD</span>
-                <span className={`shrink-0 whitespace-nowrap font-medium ${(overview?.ebitda_ytd ?? 0) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
-                  {formatCHF(overview?.ebitda_ytd)}
-                </span>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="min-w-0 truncate text-gray-500 dark:text-gray-400">Personalquote</span>
-                <span className={`shrink-0 whitespace-nowrap font-medium ${(overview?.personalquote_ytd ?? 0) <= 80 ? 'text-green-600 dark:text-green-400' : 'text-amber-500'}`}>
-                  {overview?.personalquote_ytd != null ? `${overview.personalquote_ytd}%` : '–'}
-                </span>
-              </div>
-            </div>
-          </SourceCard>
-
+        <div className="mb-6 grid gap-4 md:grid-cols-2">
           <SourceCard title="Toggl Track" subtitle="Leistungserfassung" color="violet" linkUrl="https://track.toggl.com" linkLabel="Toggl öffnen">
             {togglProjects.length === 0 ? (
               <p className="text-sm text-gray-400">Keine Daten für diesen Monat</p>
@@ -1023,7 +1382,7 @@ export function FinancePage() {
                     <th className="px-4 py-3 text-right sm:px-6">Operativ</th>
                     <th className="hidden px-4 py-3 text-right sm:table-cell sm:px-6">Finanz.</th>
                     <th className="px-4 py-3 text-right sm:px-6">Delta</th>
-                    <th className="px-4 py-3 text-right sm:px-6">Kum. Saldo</th>
+                    <th className="px-4 py-3 text-right sm:px-6" title="Banksaldo: bis heute Ist-Stand, ab dem laufenden Monat prognostiziert (am heutigen Saldo verankert)">Kum. Saldo</th>
                     <th className="px-4 py-3 sm:px-6"></th>
                   </tr>
                 </thead>
@@ -1048,11 +1407,21 @@ export function FinancePage() {
                           </td>
                           <td className="whitespace-nowrap px-4 py-2.5 text-right text-green-600 dark:text-green-400 sm:px-6">
                             {formatCHF(m.revenue)}
+                            {m.is_forecast && (m.revenue || 0) > 0 && (
+                              <div className="text-[10px] font-normal text-gray-400" title="Gebucht / Pipeline / Auffüllung">
+                                {formatK(m.forecast_committed || 0)} · {formatK(m.forecast_pipeline || 0)} · {formatK(m.forecast_fill || 0)}
+                              </div>
+                            )}
+                            {!m.is_forecast && m.month === currentMonth && (m.forecast_fill || 0) > 0 && (
+                              <div className="text-[10px] font-normal text-gray-400" title="Bereits erfasst / erwarteter Rest">
+                                {formatK(m.forecast_committed || 0)} erfasst · +{formatK(m.forecast_fill || 0)} erwartet
+                              </div>
+                            )}
                           </td>
                           <td className="whitespace-nowrap px-4 py-2.5 text-right text-red-500 dark:text-red-400 sm:px-6">
                             {formatCHF(m.expenses)}
                           </td>
-                          <td className="hidden whitespace-nowrap px-4 py-2.5 text-right text-orange-500 sm:table-cell sm:px-6">
+                          <td className="hidden whitespace-nowrap px-4 py-2.5 text-right sm:table-cell sm:px-6" style={{ color: '#f59e0b' }}>
                             {(m.fin_outflow || 0) > 0 ? formatCHF(m.fin_outflow) : '–'}
                           </td>
                           <td className={`whitespace-nowrap px-4 py-2.5 text-right font-medium sm:px-6 ${
@@ -1110,11 +1479,68 @@ export function FinancePage() {
 
 // ── Sub-Komponenten ─────────────────────────────────
 
+function InfoTooltip({ text }: { text: string }) {
+  return (
+    <span className="group/tip relative inline-flex shrink-0">
+      <button
+        type="button"
+        aria-label="Erklärung anzeigen"
+        className="text-gray-300 transition-colors hover:text-gray-500 focus:outline-none dark:text-gray-600 dark:hover:text-gray-300"
+      >
+        <InfoIcon className="h-3.5 w-3.5" />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute right-0 top-5 z-30 w-56 rounded-lg bg-gray-900 p-2 text-[11px] font-normal leading-snug text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 dark:bg-gray-700"
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
+
+interface KpiTrend {
+  value: number;            // % (unit '%'), Prozentpunkte (unit 'pp' -> '%-Pkt.') oder CHF-Delta (unit 'chf')
+  unit?: '%' | 'pp' | 'chf';
+  goodWhen?: 'up' | 'down'; // bestimmt Farbe; default 'up'
+  title?: string;           // Tooltip/aria
+}
+
+function TrendPill({ trend }: { trend: KpiTrend }) {
+  const { value, unit = '%', goodWhen = 'up', title } = trend;
+  const isFlat = unit === 'chf' ? Math.round(value) === 0 : Math.round(value) === 0;
+  const isUp = value > 0;
+  // "gut" haengt von der Richtung der Kennzahl ab (z. B. Personalquote: runter = gut)
+  const isGood = isFlat ? null : (goodWhen === 'up' ? isUp : !isUp);
+  const tone = isGood == null
+    ? 'text-gray-500 bg-gray-100 dark:text-gray-400 dark:bg-gray-700/60'
+    : isGood
+      ? 'text-green-700 bg-green-50 dark:text-green-400 dark:bg-green-500/10'
+      : 'text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-500/10';
+  const arrow = isFlat ? '→' : isUp ? '↑' : '↓';
+  const sign = value > 0 ? '+' : '';
+  const display = unit === 'pp'
+    ? `${sign}${Math.round(value)} %-Pkt.`
+    : unit === 'chf'
+      ? `${sign}${formatCHF(value)}`
+      : `${sign}${Math.round(value)}%`;
+  return (
+    <span
+      title={title}
+      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none ${tone}`}
+    >
+      <span aria-hidden>{arrow}</span>{display}
+    </span>
+  );
+}
+
 function KpiCard({
-  label, value, sublabel, icon, status = 'neutral',
+  label, value, sublabel, icon, status = 'neutral', info, trend,
 }: {
   label: string; value: string; sublabel: string; icon: React.ReactNode;
   status?: 'green' | 'yellow' | 'red' | 'neutral';
+  info?: string;
+  trend?: KpiTrend | null;
 }) {
   const statusColors: Record<string, string> = {
     green: 'border-l-green-500',
@@ -1129,9 +1555,15 @@ function KpiCard({
           {icon}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-medium text-gray-500 lg:text-xs dark:text-gray-400">{label}</p>
-          <p className="text-[15px] font-bold leading-tight text-gray-900 lg:text-lg dark:text-white">{value}</p>
-          <p className="truncate text-[11px] text-gray-400 lg:text-xs dark:text-gray-500">{sublabel}</p>
+          <div className="flex items-center gap-1">
+            <p className="min-w-0 truncate text-[11px] font-medium text-gray-500 lg:text-xs dark:text-gray-400">{label}</p>
+            {info && <InfoTooltip text={info} />}
+          </div>
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="min-w-0 truncate text-base font-bold leading-tight text-gray-900 lg:text-xl dark:text-white">{value}</p>
+            {trend && <TrendPill trend={trend} />}
+          </div>
+          <p className="truncate text-[11px] text-gray-500 lg:text-xs dark:text-gray-400">{sublabel}</p>
         </div>
       </div>
     </div>
@@ -1185,6 +1617,14 @@ function RefreshIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
+    </svg>
+  );
+}
+
+function InfoIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
     </svg>
   );
 }

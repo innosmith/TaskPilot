@@ -251,20 +251,27 @@ class GraphClient:
         to_recipients: list[str],
         cc_recipients: list[str] | None = None,
         reply_to_id: str | None = None,
+        reply_all: bool = True,
     ) -> dict:
         """Entwurf im Drafts-Ordner erstellen.
 
-        Bei ``reply_to_id`` wird ``createReply`` genutzt: Microsoft Graph befuellt
-        Empfaenger (Original-Absender) und Betreff ("RE: ...") korrekt vor. Wir
-        ueberschreiben diese Defaults NICHT mehr mit eigenen ``toRecipients`` --
-        das hatte zu falschen/fehlenden Empfaengern und (bei fehlendem
-        ``reply_to_id``) zu neuen Threads gefuehrt. Wir setzen nur den Body und
-        ergaenzen optionale CC-Empfaenger additiv.
+        Bei ``reply_to_id`` wird ein Reply-Entwurf erzeugt: Microsoft Graph
+        befuellt Empfaenger und Betreff ("RE: ...") korrekt vor und garantiert die
+        Thread-Zugehoerigkeit (gleiche ``conversationId``). Mit ``reply_all=True``
+        (Default) nutzen wir ``createReplyAll`` -- wie ein Mensch beim "Allen
+        antworten": To = Absender + urspruengliche To-Empfaenger, CC = urspruengliche
+        CC. Bei einer 1:1-Mail kollabiert das automatisch auf den Absender. Mit
+        ``reply_all=False`` wird ``createReply`` (nur an den Absender) genutzt.
+        Wir ueberschreiben die Empfaenger-Defaults NICHT mit eigenen
+        ``toRecipients`` -- das hatte zu falschen/fehlenden Empfaengern und (bei
+        fehlendem ``reply_to_id``) zu neuen Threads gefuehrt. Wir setzen nur den
+        Body und ergaenzen optionale CC-Empfaenger additiv.
         """
         if reply_to_id:
-            # Reply-Pfad: Empfaenger-Defaults von createReply uebernehmen,
+            # Reply-Pfad: Empfaenger-Defaults von createReply(All) uebernehmen,
             # nur Body setzen (+ optional CC ergaenzen). Betreff bleibt der
-            # createReply-Default ("RE: ..."), Thread-Zugehoerigkeit garantiert.
+            # Reply-Default ("RE: ..."), Thread-Zugehoerigkeit garantiert.
+            reply_action = "createReplyAll" if reply_all else "createReply"
             reply_message: dict = {
                 "body": {"contentType": "HTML", "content": body_html},
             }
@@ -293,7 +300,7 @@ class GraphClient:
                 )
 
             draft = await self._post(
-                f"{self._user_path}/messages/{reply_to_id}/createReply",
+                f"{self._user_path}/messages/{reply_to_id}/{reply_action}",
                 {"message": reply_message},
             )
 

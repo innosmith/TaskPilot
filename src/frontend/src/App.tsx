@@ -29,6 +29,10 @@ const LazyChatPage = lazy(() =>
   import('./pages/ChatPage').then(m => ({ default: m.ChatPage })),
 );
 
+const LazyAnalysisPage = lazy(() =>
+  import('./pages/AnalysisPage').then(m => ({ default: m.AnalysisPage })),
+);
+
 const LazyMindMapsPage = lazy(() => import('./pages/MindMapsPage'));
 const LazyMindMapEditorPage = lazy(() => import('./pages/MindMapEditorPage'));
 const LazySharedMindMapPage = lazy(() => import('./pages/SharedMindMapPage'));
@@ -153,6 +157,7 @@ export default function App() {
             <Route path="/signale" element={<OwnerRoute><SignalePage /></OwnerRoute>} />
             <Route path="/kapazitaet" element={<OwnerRoute><Suspense fallback={<SuspenseFallback />}><LazyCapacityPage /></Suspense></OwnerRoute>} />
             <Route path="/finanzen" element={<OwnerRoute><FinancePage /></OwnerRoute>} />
+            <Route path="/finanzen/analysen" element={<OwnerRoute><Suspense fallback={<SuspenseFallback />}><LazyAnalysisPage /></Suspense></OwnerRoute>} />
             <Route path="/debitoren" element={<OwnerRoute><DebtorsPage /></OwnerRoute>} />
             <Route path="/kreditoren" element={<OwnerRoute><CreditorsPage /></OwnerRoute>} />
           </Route>

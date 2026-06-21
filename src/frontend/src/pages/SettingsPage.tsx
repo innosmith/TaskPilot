@@ -3,6 +3,7 @@ import { useOutletContext, useSearchParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../api/client';
 import type { TaskDetailMode } from '../types';
+import { DEFAULT_PROVIDER_ORDER as PROVIDER_ORDER, PROVIDER_LABELS } from '../lib/modelOrdering';
 
 interface UserProfile {
   id: string;
@@ -24,6 +25,16 @@ interface UserSettingsData {
   cockpit_calendar_exclude_categories?: string | null;
   cockpit_calendar_hide_private?: boolean | null;
   creditors_overview_exclude_vendors?: string | null;
+  default_hourly_rate?: number | null;
+  forecast_pipeline_weight?: number | null;
+  forecast_fill_horizon_months?: number | null;
+  forecast_vat_rate?: number | null;
+  annual_revenue_goal?: number | null;
+  min_liquidity?: number | null;
+  vat_method?: string | null;
+  vat_saldo_rate?: number | null;
+  tax_canton?: string | null;
+  civil_status?: string | null;
 }
 
 interface ManagedUser {
@@ -160,12 +171,10 @@ const LEARN_SIGNAL_LABELS: Record<string, string> = {
   triage_reclass: 'Reklassifiziert',
   task_deleted: 'Aufgabe gelöscht',
   task_moved: 'Aufgabe verschoben',
-  thumbs_up: 'Daumen hoch',
-  thumbs_down: 'Daumen runter',
   chat_teach: 'Im Chat gelernt',
 };
 
-type SettingsTab = 'profile' | 'display' | 'cockpit' | 'llm' | 'integrations' | 'triage' | 'team' | 'intelligence';
+type SettingsTab = 'profile' | 'display' | 'cockpit' | 'finance' | 'finance_analysis' | 'llm' | 'integrations' | 'triage' | 'team' | 'intelligence';
 
 export function SettingsPage() {
   const [searchParams] = useSearchParams();
@@ -442,7 +451,7 @@ export function SettingsPage() {
     }
   };
 
-  const updateSetting = async (key: string, value: string | boolean | null) => {
+  const updateSetting = async (key: string, value: string | boolean | number | null) => {
     const updated = await api.patch<UserSettingsData>('/api/settings', { [key]: value });
     setSettings(updated);
     if (key === 'app_logo_url' || key === 'sidebar_color') {
@@ -671,6 +680,8 @@ export function SettingsPage() {
         { id: 'profile', label: 'Profil' },
         { id: 'display', label: 'Erscheinungsbild' },
         { id: 'cockpit', label: 'Cockpit' },
+        { id: 'finance', label: 'Finanzen' },
+        { id: 'finance_analysis', label: 'Finanzanalysen' },
         { id: 'llm', label: 'LLM-Modelle' },
         { id: 'integrations', label: 'Integrationen' },
         { id: 'triage', label: 'E-Mail-Triage' },
@@ -1176,6 +1187,213 @@ export function SettingsPage() {
                 </div>
 
               </div>
+            </section>
+          )}
+
+          {/* ── Finanzen / Cashflow-Prognose ── */}
+          {tab === 'finance' && isOwner && (
+            <section>
+              <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Finanzen</h2>
+              <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+                Parameter für die Cashflow-Prognose. Stundensätze kommen primär aus Toggl;
+                der Default-Satz greift nur für noch nicht zugesagte (vorläufige) Kapazitätsprojekte.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                    Default-Stundensatz (CHF/h, exkl. MwSt)
+                  </label>
+                  <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                    Für vorläufige Projekte ohne hinterlegten oder Toggl-Satz.
+                  </p>
+                  <input
+                    type="number" min="0" step="10"
+                    defaultValue={settings.default_hourly_rate ?? ''}
+                    placeholder="240"
+                    onBlur={(e) => updateSetting('default_hourly_rate', e.target.value === '' ? null : parseFloat(e.target.value))}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+
+                <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                    Pipeline-Wahrscheinlichkeit (%)
+                  </label>
+                  <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                    Gewichtung vorläufiger (noch nicht zugesagter) Projekte. Empfohlen 70–80%.
+                  </p>
+                  <input
+                    type="number" min="0" max="100" step="5"
+                    defaultValue={settings.forecast_pipeline_weight != null ? Math.round(settings.forecast_pipeline_weight * 100) : ''}
+                    placeholder="75"
+                    onBlur={(e) => updateSetting('forecast_pipeline_weight', e.target.value === '' ? null : Math.min(1, Math.max(0, parseFloat(e.target.value) / 100)))}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+
+                <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                    Auffüll-Horizont (Monate)
+                  </label>
+                  <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                    Ab wann ferne Monate voll auf das historische Niveau aufgefüllt werden
+                    (nahe Monate zählen primär das Gebuchte).
+                  </p>
+                  <input
+                    type="number" min="1" max="12" step="1"
+                    defaultValue={settings.forecast_fill_horizon_months ?? ''}
+                    placeholder="4"
+                    onBlur={(e) => updateSetting('forecast_fill_horizon_months', e.target.value === '' ? null : Math.max(1, parseInt(e.target.value, 10)))}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+
+                <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                    MwSt-Satz / Fakturierungssatz (%)
+                  </label>
+                  <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                    Normalsatz für die Brutto-Hochrechnung der Kapazität (CH typ. 8.1%).
+                    Die MWST-Methode (Saldosatz/effektiv) wird unter «Finanzanalysen» gesetzt.
+                  </p>
+                  <input
+                    type="number" min="0" max="100" step="0.1"
+                    defaultValue={settings.forecast_vat_rate != null ? +(settings.forecast_vat_rate * 100).toFixed(2) : ''}
+                    placeholder="8.1"
+                    onBlur={(e) => updateSetting('forecast_vat_rate', e.target.value === '' ? null : Math.max(0, parseFloat(e.target.value) / 100))}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+
+                <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                    Umsatz-Jahresziel (CHF, brutto)
+                  </label>
+                  <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                    Zielumsatz für das laufende Jahr. Zeigt im Cockpit die Lücke zum Ziel
+                    und im Cashflow-Chart die Monatsziel-Linie (Ziel / 12). Leer = kein Ziel.
+                  </p>
+                  <input
+                    type="number" min="0" step="10000"
+                    defaultValue={settings.annual_revenue_goal ?? ''}
+                    placeholder="z.B. 360000"
+                    onBlur={(e) => updateSetting('annual_revenue_goal', e.target.value === '' ? null : Math.max(0, parseFloat(e.target.value)))}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+
+                <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                    Mindest-Liquidität (CHF)
+                  </label>
+                  <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                    Schwelle für den Banksaldo. Erscheint als Warnlinie im Cashflow-Chart und
+                    färbt die Cashflow-KPI rot, wenn der Saldo darunter fällt. Leer = keine Schwelle.
+                  </p>
+                  <input
+                    type="number" min="0" step="5000"
+                    defaultValue={settings.min_liquidity ?? ''}
+                    placeholder="z.B. 50000"
+                    onBlur={(e) => updateSetting('min_liquidity', e.target.value === '' ? null : Math.max(0, parseFloat(e.target.value)))}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* ── Finanzanalysen ── */}
+          {tab === 'finance_analysis' && isOwner && (
+            <section className="space-y-8">
+              <div>
+                <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">MWST-Methode</h2>
+                <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+                  Bestimmt, wie der Netto-Umsatz aus dem fakturierten Brutto-Umsatz abgeleitet wird
+                  (Basis für Marge, EBITDA und Personalquote).
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                      Abrechnungsmethode
+                    </label>
+                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                      Saldosteuersatz: Normalsatz fakturiert, nur Saldosatz an die ESTV abgeliefert
+                      (CH-Standard für viele KMU-Dienstleister).
+                    </p>
+                    <select
+                      value={settings.vat_method ?? 'saldo'}
+                      onChange={(e) => updateSetting('vat_method', e.target.value)}
+                      className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                    >
+                      <option value="saldo">Saldosteuersatz</option>
+                      <option value="effektiv">Effektive Methode</option>
+                      <option value="none">Keine MWST</option>
+                    </select>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                      Saldosteuersatz (%)
+                    </label>
+                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                      Branchenabhängig (Beratung/Dienstleistung typ. 6.2%). Nur bei Methode «Saldosteuersatz» relevant.
+                    </p>
+                    <input
+                      type="number" min="0" max="100" step="0.1"
+                      defaultValue={settings.vat_saldo_rate != null ? +(settings.vat_saldo_rate * 100).toFixed(2) : ''}
+                      placeholder="6.2"
+                      disabled={(settings.vat_method ?? 'saldo') !== 'saldo'}
+                      onBlur={(e) => updateSetting('vat_saldo_rate', e.target.value === '' ? null : Math.max(0, parseFloat(e.target.value) / 100))}
+                      className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Steuer-Kontext</h2>
+                <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+                  Für treffende Steuer- und Lohn-/Dividenden-Empfehlungen. Ohne Angabe rechnet die
+                  Analyse mit Annahmen und weist dies als Datenlücke aus.
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                      Sitz-/Wohnkanton
+                    </label>
+                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                      Bestimmt Teilbesteuerung der Dividende und Grenzsteuersatz (z.B. Bern).
+                    </p>
+                    <input
+                      type="text"
+                      defaultValue={settings.tax_canton ?? ''}
+                      placeholder="z.B. Bern"
+                      onBlur={(e) => updateSetting('tax_canton', e.target.value.trim() === '' ? null : e.target.value.trim())}
+                      className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                    />
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white">
+                      Zivilstand
+                    </label>
+                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                      Beeinflusst den privaten Steuertarif.
+                    </p>
+                    <select
+                      value={settings.civil_status ?? ''}
+                      onChange={(e) => updateSetting('civil_status', e.target.value === '' ? null : e.target.value)}
+                      className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                    >
+                      <option value="">– nicht angegeben –</option>
+                      <option value="ledig">ledig</option>
+                      <option value="verheiratet">verheiratet / eingetragene Partnerschaft</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <FinanceDocumentsManager />
             </section>
           )}
 
@@ -1777,7 +1995,6 @@ export function SettingsPage() {
                       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
                         <span>{learning.stats.drafts_edited} editiert</span>
                         <span>{learning.stats.episodes_corrected} korrigierte Episoden</span>
-                        <span>👍 {learning.stats.thumbs_up} · 👎 {learning.stats.thumbs_down}</span>
                         {learning.stats.rules_proposed > 0 && <span>{learning.stats.rules_proposed} Regel-Vorschläge offen</span>}
                       </div>
                       {learning.recent.length > 0 && (
@@ -2032,6 +2249,122 @@ export function SettingsPage() {
   );
 }
 
+interface FinanceDocMeta {
+  id: string;
+  label: string;
+  filename: string | null;
+  mime: string | null;
+  file_size: number | null;
+  text_chars: number;
+  created_at: string | null;
+}
+
+function FinanceDocumentsManager() {
+  const [docs, setDocs] = useState<FinanceDocMeta[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [label, setLabel] = useState('');
+  const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.get<{ documents: FinanceDocMeta[] }>('/api/analysis/documents');
+      setDocs(res.documents || []);
+    } catch {
+      setDocs([]);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleUpload = async (file: File) => {
+    setUploading(true);
+    setMsg(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      if (label.trim()) fd.append('label', label.trim());
+      await api.upload<FinanceDocMeta>('/api/analysis/documents', fd);
+      setLabel('');
+      if (fileRef.current) fileRef.current.value = '';
+      setMsg({ type: 'ok', text: 'Dokument hochgeladen und Text extrahiert.' });
+      await load();
+    } catch (e) {
+      const text = e instanceof Error ? e.message : 'Upload fehlgeschlagen';
+      setMsg({ type: 'err', text });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await api.delete(`/api/analysis/documents/${id}`);
+      await load();
+    } catch { /* */ }
+  };
+
+  const fmtSize = (n: number | null) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+  return (
+    <div>
+      <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Jahresrechnung / Finanzbelege</h2>
+      <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+        Lade eine Jahresrechnung (PDF/DOCX) hoch. Es wird nur der extrahierte Text gespeichert
+        (kein Original-PDF) und vor dem Versand an ein Cloud-Modell anonymisiert. Hochgeladene
+        Belege können bei einer Analyse als zusätzlicher Kontext ausgewählt werden.
+      </p>
+
+      <div className="mb-4 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+        <label className="block text-sm font-medium text-gray-900 dark:text-white">Bezeichnung (optional)</label>
+        <input
+          type="text"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="z.B. Jahresrechnung 2025"
+          className="mt-1 mb-3 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+        />
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".pdf,.docx,.doc,.txt,.md"
+          disabled={uploading}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); }}
+          className="block w-full text-sm text-gray-600 file:mr-3 file:rounded-md file:border-0 file:bg-indigo-600 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-indigo-700 disabled:opacity-50 dark:text-gray-300"
+        />
+        {uploading && <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Lädt hoch und extrahiert Text…</p>}
+        {msg && (
+          <p className={`mt-2 text-xs ${msg.type === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>{msg.text}</p>
+        )}
+      </div>
+
+      {docs.length === 0 ? (
+        <p className="text-sm text-gray-400 dark:text-gray-500">Noch keine Dokumente hochgeladen.</p>
+      ) : (
+        <ul className="space-y-2">
+          {docs.map((d) => (
+            <li key={d.id} className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3 dark:border-gray-700">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-gray-900 dark:text-white">{d.label}</p>
+                <p className="truncate text-xs text-gray-500 dark:text-gray-400">
+                  {d.filename || '—'} · {fmtSize(d.file_size)} · {d.text_chars.toLocaleString('de-CH')} Zeichen
+                  {d.created_at ? ` · ${new Date(d.created_at).toLocaleDateString('de-CH')}` : ''}
+                </p>
+              </div>
+              <button
+                onClick={() => handleDelete(d.id)}
+                className="ml-3 shrink-0 rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+              >
+                Löschen
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function LlmSettingsTab() {
   const [models, setModels] = useState<{ id: string; name: string; provider: string }[]>([]);
   const [llmSettings, setLlmSettings] = useState<{
@@ -2053,14 +2386,8 @@ function LlmSettingsTab() {
     }).catch(() => {});
   }, []);
 
-  const providers = ['ollama', 'openai', 'anthropic', 'gemini', 'perplexity'];
-  const providerLabels: Record<string, string> = {
-    ollama: 'Ollama (Lokal)',
-    openai: 'OpenAI',
-    anthropic: 'Anthropic',
-    gemini: 'Google Gemini',
-    perplexity: 'Perplexity',
-  };
+  const providers = PROVIDER_ORDER;
+  const providerLabels = PROVIDER_LABELS;
 
   const getProviderModels = (provider: string) =>
     models.filter((m) => m.provider === provider);

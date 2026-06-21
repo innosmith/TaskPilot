@@ -6,6 +6,8 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, delete, func, select, update
@@ -249,14 +251,24 @@ async def get_draft_preview(
             "source_from": meta.get("from_address"),
             "conversation_id": meta.get("conversation_id"),
         }
-    except Exception as e:
-        if job.status == "awaiting_approval":
+    except httpx.HTTPStatusError as e:
+        # NUR ein echtes 404 schliesst den Job ab (Entwurf wirklich gesendet/
+        # geloescht). Bei transienten Fehlern (5xx, Drosselung) bleibt die Freigabe
+        # erhalten -- das blosse Oeffnen des Cockpits darf einen gueltigen Entwurf
+        # niemals zerstoeren.
+        if e.response.status_code == 404 and job.status == "awaiting_approval":
             job.status = "completed"
             job.output = (job.output or "") + "\n\n--- Entwurf wurde in Outlook gesendet oder gelöscht. Job automatisch abgeschlossen. ---"
             job.completed_at = datetime.now(timezone.utc)
             await db.commit()
+            logger.info("Draft-Preview: Job %s abgeschlossen (Draft 404)", job_id)
+            raise HTTPException(status_code=404, detail="Entwurf wurde in Outlook gesendet oder gelöscht")
+        logger.warning("Draft-Preview: transienter Graph-Fehler (%s) für Job %s", e.response.status_code, job_id)
+        raise HTTPException(status_code=502, detail="Draft konnte nicht geladen werden (vorübergehender Fehler)")
+    except Exception:
+        # Unklarer Fehler -> Job NICHT abschliessen, transient behandeln.
         logger.exception("Draft konnte nicht geladen werden für Job %s", job_id)
-        raise HTTPException(status_code=502, detail="Draft konnte nicht geladen werden")
+        raise HTTPException(status_code=502, detail="Draft konnte nicht geladen werden (vorübergehender Fehler)")
     finally:
         await client.close()
 

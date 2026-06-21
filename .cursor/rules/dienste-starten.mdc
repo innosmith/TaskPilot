@@ -120,6 +120,34 @@ curl -s http://localhost:8100/api/health    # Int Backend
 curl -s http://localhost:8200/api/health    # Prod Backend
 ```
 
+## Datenbank-Zugriff
+
+**Es gibt KEIN separates DB-Tool** (kein DBCode, kein MCP-DB-Server). Jeder
+Datenbankzugriff erfolgt direkt via `docker exec` auf den jeweiligen Postgres-Container.
+Niemals nach einem GUI-/MCP-DB-Tool fragen.
+
+| Umgebung | Container | Port (Host) |
+|----------|-----------|-------------|
+| **Prod** | `taskpilot-postgres-prod` | 127.0.0.1:5437 |
+| **Dev/Int (shared)** | `taskpilot-postgres` | 127.0.0.1:5435 |
+
+Die Zugangsdaten stehen als Env-Vars **im Container** (`POSTGRES_USER`, `POSTGRES_DB`) --
+im `psql`-Aufruf darauf verweisen statt Werte hart zu kodieren:
+
+```bash
+# Produktive DB (interaktiv)
+docker exec -it taskpilot-postgres-prod \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+
+# Einzelne Query gegen Prod (z. B. Tabellen-Existenz pruefen)
+docker exec taskpilot-postgres-prod \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt agent_*"
+
+# Dev/Int (shared DB)
+docker exec -it taskpilot-postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
+
 ## Dienste stoppen
 
 ```bash

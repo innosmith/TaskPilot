@@ -10,6 +10,7 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import {
+  arrayMove,
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
@@ -336,9 +337,18 @@ export default function TaskDetailContent({
       const newIndex = checklist.findIndex((i) => i.id === over.id);
       if (oldIndex === -1 || newIndex === -1) return;
 
-      await api.patch(`/api/tasks/${taskId}/checklist/${active.id}`, {
-        position: checklist[newIndex].position,
-      });
+      // Komplette neue Reihenfolge berechnen und allen Eintraegen eine
+      // eindeutige, fortlaufende Position zuweisen. Nur einen Wert zu kopieren
+      // wuerde bei benachbarten Verschiebungen doppelte Positionen erzeugen.
+      const reordered = arrayMove(checklist, oldIndex, newIndex);
+      await Promise.all(
+        reordered
+          .map((item, index) => ({ item, index }))
+          .filter(({ item, index }) => item.position !== index)
+          .map(({ item, index }) =>
+            api.patch(`/api/tasks/${taskId}/checklist/${item.id}`, { position: index }),
+          ),
+      );
       await refreshTask();
       onUpdated();
     },

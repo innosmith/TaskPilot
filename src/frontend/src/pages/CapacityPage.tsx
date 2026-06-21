@@ -1125,6 +1125,7 @@ function ProjectDialog({
 
   const [available, setAvailable] = useState<AvailableProjectOption[]>([]);
   const [loadingAvail, setLoadingAvail] = useState(false);
+  const [defaultRate, setDefaultRate] = useState<number | null>(null);
   const [togglClients, setTogglClients] = useState<{ id: number; name: string }[]>([]);
   const [filter, setFilter] = useState('');
   const [showPicker, setShowPicker] = useState(!initial);
@@ -1157,6 +1158,13 @@ function ProjectDialog({
         .finally(() => setLoadingAvail(false));
     }
   }, [open, initial]);
+
+  useEffect(() => {
+    if (!open) return;
+    api.get<{ default_hourly_rate?: number | null }>('/api/settings')
+      .then(s => setDefaultRate(s.default_hourly_rate ?? null))
+      .catch(() => {});
+  }, [open]);
 
   useEffect(() => {
     if (open && togglClients.length === 0) {
@@ -1361,9 +1369,19 @@ function ProjectDialog({
               <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Stundensatz (CHF)</label>
               <input
                 type="number" value={hourlyRate} onChange={e => setHourlyRate(e.target.value)}
+                placeholder={defaultRate != null ? String(defaultRate) : '240'}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
                 data-testid="capacity-project-rate"
               />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {hourlyRate
+                  ? 'Manueller Satz – überschreibt den Toggl-Satz.'
+                  : togglProjectId
+                    ? 'Leer: effektiver Toggl-Satz wird verwendet.'
+                    : status === 'vorläufig'
+                      ? `Leer: Default-Satz (${defaultRate ?? 240} CHF/h) wird verwendet.`
+                      : 'Leer: Toggl-Satz, sonst Default-Satz.'}
+              </p>
             </div>
           </div>
 

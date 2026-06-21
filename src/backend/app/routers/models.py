@@ -89,7 +89,18 @@ def _get_capabilities(model_id: str, litellm_caps: dict | None = None) -> list[s
         except Exception:
             pass
 
-    return caps
+    # Heuristik fuer brandneue Modelle, die LiteLLM noch nicht kennt.
+    # Moderne Claude-Modelle (3.7 und alle 4.x) unterstuetzen Extended Thinking.
+    if provider == "anthropic" and "thinking" not in caps:
+        if any(k in model for k in ("opus-4", "sonnet-4", "haiku-4", "3-7-", "3.7")):
+            caps.append("thinking")
+    # Moderne OpenAI-Reasoning-Modelle (o-Serie, gpt-5+).
+    if provider == "openai" and "thinking" not in caps:
+        if model.startswith(("o1", "o3", "o4")) or model.startswith("gpt-5"):
+            caps.append("thinking")
+
+    # Duplikate entfernen, Reihenfolge erhalten
+    return list(dict.fromkeys(caps))
 
 
 def _make_entry(model_id: str, friendly_name: str, model_type: str, provider: str, litellm_caps: dict | None = None) -> dict:
@@ -190,11 +201,8 @@ async def _fetch_gemini_models(litellm_caps: dict | None = None) -> list[dict]:
     return []
 
 
-def _get_anthropic_models(litellm_caps: dict | None = None) -> list[dict]:
-    """Anthropic-Modelle dynamisch via LiteLLM-Library."""
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        return []
+def _anthropic_models_from_litellm(litellm_caps: dict | None = None) -> list[dict]:
+    """Fallback: Anthropic-Modelle aus der (statischen) LiteLLM-Liste."""
     raw_models = litellm.models_by_provider.get("anthropic", [])
     models = []
     for mid in sorted(raw_models):
@@ -203,6 +211,49 @@ def _get_anthropic_models(litellm_caps: dict | None = None) -> list[dict]:
         friendly = " ".join(w.capitalize() if not w[0].isdigit() else w for w in friendly.split())
         models.append(_make_entry(model_id, friendly, "cloud", "anthropic", litellm_caps))
     return models
+
+
+async def _fetch_anthropic_models(litellm_caps: dict | None = None) -> list[dict]:
+    """Anthropic-Modelle live via Models API (damit neue Modelle sofort erscheinen).
+
+    Die LiteLLM-Liste ist statisch und hinkt neuen Releases (z. B. Opus 4.8)
+    hinterher. Die Anthropic Models API liefert immer den aktuellen Stand.
+    Bei Fehlern Fallback auf die LiteLLM-Liste.
+    """
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        return []
+
+    EXCLUDE = ("deprecated",)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.anthropic.com/v1/models",
+                params={"limit": 100},
+                headers={
+                    "x-api-key": settings.anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                models = []
+                for m in data.get("data", []):
+                    mid = m.get("id", "")
+                    if not mid or any(x in mid for x in EXCLUDE):
+                        continue
+                    model_id = f"anthropic/{mid}"
+                    display = m.get("display_name") or mid
+                    models.append(_make_entry(model_id, display, "cloud", "anthropic", litellm_caps))
+                if models:
+                    # Neueste zuerst (Anthropic liefert created_at-sortiert, neueste oben)
+                    return models
+            else:
+                logger.warning("Anthropic Models API HTTP %s", resp.status_code)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Anthropic Models API nicht erreichbar: %s", e)
+
+    return _anthropic_models_from_litellm(litellm_caps)
 
 
 def _get_perplexity_models(litellm_caps: dict | None = None) -> list[dict]:
@@ -236,16 +287,19 @@ async def _fetch_all_models() -> dict:
     ollama_task = asyncio.create_task(_fetch_ollama_models(litellm_caps))
     openai_task = asyncio.create_task(_fetch_openai_models(litellm_caps))
     gemini_task = asyncio.create_task(_fetch_gemini_models(litellm_caps))
+    anthropic_task = asyncio.create_task(_fetch_anthropic_models(litellm_caps))
 
     ollama_models = await ollama_task
     openai_models = await openai_task
     gemini_models = await gemini_task
-    anthropic_models = _get_anthropic_models(litellm_caps)
+    anthropic_models = await anthropic_task
     perplexity_models = _get_perplexity_models(litellm_caps)
     gemini_research_models = _get_gemini_research_models(litellm_caps)
 
     local_models = ollama_models
-    cloud_models = openai_models + anthropic_models + gemini_models + perplexity_models + gemini_research_models
+    # Reihenfolge: Anthropic -> Gemini -> OpenAI -> Perplexity -> Deep-Research.
+    # Konsumenten, die ohne eigene Gruppierung rendern, erhalten so die richtige Sortierung.
+    cloud_models = anthropic_models + gemini_models + openai_models + perplexity_models + gemini_research_models
 
     return {"local": local_models, "cloud": cloud_models}
 

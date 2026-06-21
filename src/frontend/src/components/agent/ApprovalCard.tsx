@@ -62,7 +62,6 @@ export function ApprovalCard({
   const [failed, setFailed] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
 
   const fromAddress = (meta.from_address as string) || '';
   const fromName = (meta.from_name as string) || '';
@@ -96,15 +95,6 @@ export function ApprovalCard({
       onResolved();
     } catch { /* belassen */ }
     finally { setProcessing(false); }
-  };
-
-  const sendFeedback = async (rating: 'up' | 'down') => {
-    setFeedback(rating);
-    try {
-      await api.post(`/api/agent-jobs/${jobId}/feedback`, { rating });
-    } catch {
-      setFeedback(null);
-    }
   };
 
   const muted = glassBg ? 'text-white/50' : 'text-gray-400 dark:text-gray-500';
@@ -226,27 +216,6 @@ export function ApprovalCard({
         >
           Ablehnen
         </button>
-        <div className="ml-auto flex items-center gap-1">
-          <span className={`text-[11px] ${muted}`}>War das gut?</span>
-          <button
-            onClick={() => sendFeedback('up')}
-            title="Guter Entwurf — InnoPilot lernt daraus"
-            className={`rounded-lg px-2 py-1 text-sm transition-colors ${
-              feedback === 'up' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' : `${muted} hover:bg-emerald-50 dark:hover:bg-emerald-900/20`
-            }`}
-          >
-            👍
-          </button>
-          <button
-            onClick={() => sendFeedback('down')}
-            title="Daneben — InnoPilot lernt daraus"
-            className={`rounded-lg px-2 py-1 text-sm transition-colors ${
-              feedback === 'down' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : `${muted} hover:bg-red-50 dark:hover:bg-red-900/20`
-            }`}
-          >
-            👎
-          </button>
-        </div>
       </div>
 
       {(preview?.conversation_id || metaConvId) && (

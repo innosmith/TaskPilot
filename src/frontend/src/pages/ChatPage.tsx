@@ -17,6 +17,7 @@ import { ExportDialog } from '../components/ExportDialog';
 import { AnonymizePanel } from '../components/AnonymizePanel';
 import { OneDrivePicker, type ContextSource } from '../components/OneDrivePicker';
 import { useMediaQuery } from '../hooks/useMediaQuery';
+import { DEFAULT_PROVIDER_ORDER as PROVIDER_ORDER, PROVIDER_LABELS } from '../lib/modelOrdering';
 
 let mermaidReady: Promise<typeof import('mermaid')> | null = null;
 function getMermaid() {
@@ -92,7 +93,7 @@ interface ChatMessage {
   citations: unknown[] | null;
   attachments?: { name: string; type: string }[];
   created_at: string;
-  /** Agent-Job hinter dieser Antwort (für 👍/👎-Feedback). */
+  /** Agent-Job hinter dieser Antwort (Trace/Streaming). */
   job_id?: string | null;
 }
 
@@ -199,15 +200,6 @@ function detectTeachIntent(text: string): boolean {
   return TEACH_TRIGGERS.some((re) => re.test(text));
 }
 
-const PROVIDER_ORDER = ['ollama', 'openai', 'anthropic', 'gemini', 'perplexity'];
-const PROVIDER_LABELS: Record<string, string> = {
-  ollama: 'Ollama (Lokal)',
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  gemini: 'Google Gemini',
-  perplexity: 'Perplexity',
-};
-
 // Laufende Chat-Agent-Jobs überleben einen Reload: wir merken {jobId, offset}
 // pro Konversation in localStorage und binden den SSE-Stream danach wieder an.
 const AGENT_JOB_KEY = (convId: string) => `tp_chat_agent_${convId}`;
@@ -263,16 +255,6 @@ export function ChatPage() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copyMenuId, setCopyMenuId] = useState<string | null>(null);
-  const [msgFeedback, setMsgFeedback] = useState<Record<string, 'up' | 'down'>>({});
-
-  const sendMsgFeedback = useCallback(async (jobId: string, rating: 'up' | 'down') => {
-    setMsgFeedback(prev => ({ ...prev, [jobId]: rating }));
-    try {
-      await api.post(`/api/agent-jobs/${jobId}/feedback`, { rating });
-    } catch {
-      setMsgFeedback(prev => { const n = { ...prev }; delete n[jobId]; return n; });
-    }
-  }, []);
   const [exportMsgId, setExportMsgId] = useState<string | null>(null);
   const [exportMsgContent, setExportMsgContent] = useState('');
   const [convertRawContent, setConvertRawContent] = useState<string | null>(null);
@@ -1691,25 +1673,6 @@ export function ChatPage() {
                         <button onClick={() => createTaskFromMessage(msg.id, msg.content)} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Aufgabe erstellen">
                           <TaskIcon className="h-3.5 w-3.5" />
                         </button>
-                        {msg.job_id && (
-                          <>
-                            <span className="mx-0.5 h-4 w-px bg-gray-200 dark:bg-gray-700" />
-                            <button
-                              onClick={() => sendMsgFeedback(msg.job_id!, 'up')}
-                              title="Gute Antwort — InnoPilot lernt daraus"
-                              className={`rounded p-1 transition-colors ${msgFeedback[msg.job_id] === 'up' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400'}`}
-                            >
-                              <ThumbUpIcon className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              onClick={() => sendMsgFeedback(msg.job_id!, 'down')}
-                              title="Daneben — InnoPilot lernt daraus"
-                              className={`rounded p-1 transition-colors ${msgFeedback[msg.job_id] === 'down' ? 'text-red-600 dark:text-red-400' : 'text-gray-400 hover:text-red-600 dark:hover:text-red-400'}`}
-                            >
-                              <ThumbDownIcon className="h-3.5 w-3.5" />
-                            </button>
-                          </>
-                        )}
                       </div>
                     ) : (
                       <div className="absolute -bottom-3 left-2 flex items-center gap-0.5 rounded-lg border border-indigo-400/30 bg-indigo-700 px-1 py-0.5 opacity-0 shadow-sm transition-opacity group-hover/msg:opacity-100">
@@ -2106,12 +2069,6 @@ function TaskIcon({ className }: { className?: string }) {
 }
 function HtmlIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5" /></svg>;
-}
-function ThumbUpIcon({ className }: { className?: string }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6.633 10.5c.806 0 1.533-.446 2.031-1.08a9.041 9.041 0 0 1 2.861-2.4c.723-.384 1.35-.956 1.653-1.715a4.498 4.498 0 0 0 .322-1.672V2.75a.75.75 0 0 1 .75-.75 2.25 2.25 0 0 1 2.25 2.25c0 1.152-.26 2.243-.723 3.218-.266.558.107 1.282.725 1.282h3.126c1.026 0 1.945.694 2.054 1.715.045.422.068.85.068 1.285a11.95 11.95 0 0 1-2.649 7.521c-.388.482-.987.729-1.605.729H13.48c-.483 0-.964-.078-1.423-.23l-3.114-1.04a4.501 4.501 0 0 0-1.423-.23H5.904M6.633 10.5H5.25m1.383 0c.07.243.107.5.107.766 0 .266-.037.523-.107.766m0-1.532V18.75m0-8.25h.008v.008H6.633V10.5Z" /></svg>;
-}
-function ThumbDownIcon({ className }: { className?: string }) {
-  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M7.5 15h2.25m8.024-9.75c.011.05.028.1.052.148.591 1.2.924 2.55.924 3.977a8.96 8.96 0 0 1-.999 4.125m.023-8.25c-.076-.365.183-.75.575-.75h.908c.889 0 1.713.518 1.972 1.368.339 1.11.521 2.287.521 3.507 0 1.553-.295 3.036-.831 4.398C20.613 14.547 19.833 15 19 15h-1.053c-.472 0-.745-.556-.5-.96a8.95 8.95 0 0 0 .303-.54m.023-8.25H16.48a4.5 4.5 0 0 1-1.423-.23l-3.114-1.04a4.5 4.5 0 0 0-1.423-.23H6.504c-.618 0-1.217.247-1.605.729A11.95 11.95 0 0 0 2.25 12c0 .435.023.863.068 1.285C2.427 14.306 3.346 15 4.372 15h3.126c.618 0 .991.724.725 1.282A7.471 7.471 0 0 0 7.5 19.5a2.25 2.25 0 0 0 2.25 2.25.75.75 0 0 0 .75-.75v-.633c0-.573.11-1.14.322-1.672.304-.76.93-1.33 1.653-1.715a9.04 9.04 0 0 0 2.86-2.4c.498-.634 1.226-1.08 2.032-1.08h.384" /></svg>;
 }
 function OneDriveIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 0 0 4.5 4.5H18a3.75 3.75 0 0 0 1.332-7.257 3 3 0 0 0-3.758-3.848 5.25 5.25 0 0 0-10.233 2.33A4.502 4.502 0 0 0 2.25 15Z" /></svg>;

@@ -381,6 +381,49 @@ class WebSearch(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
+class FinanceAnalysis(Base):
+    """Persistierte LLM-Finanzanalyse (Treuhand-, Finanz-, Kosten-Analysen)."""
+
+    __tablename__ = "finance_analyses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    analysis_type: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    anonymized: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="completed")
+    prompt: Mapped[str | None] = mapped_column(Text)          # finaler (ggf. anonymisierter) Prompt
+    report: Mapped[str | None] = mapped_column(Text)          # Markdown-Report (de-anonymisiert)
+    thinking: Mapped[str | None] = mapped_column(Text)
+    snapshot_meta: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    tokens: Mapped[int | None] = mapped_column(Integer)
+    cost_usd: Mapped[float | None] = mapped_column(Numeric(10, 6))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class FinanceDocument(Base):
+    """Hochgeladenes Finanzdokument (z. B. Jahresrechnung) als extrahierter Text.
+
+    Es wird bewusst nur der extrahierte Text gespeichert (kein PDF-Binary) --
+    die Anonymisierung erfolgt pro Analyse-Lauf, bevor der Text an ein Cloud-LLM
+    geht. Owner-only.
+    """
+
+    __tablename__ = "finance_documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    label: Mapped[str] = mapped_column(Text, nullable=False)        # z. B. "Jahresrechnung 2025"
+    filename: Mapped[str | None] = mapped_column(Text)
+    mime: Mapped[str | None] = mapped_column(Text)
+    file_size: Mapped[int | None] = mapped_column(Integer)
+    extracted_text: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class Notification(Base):
     __tablename__ = "notifications"
 

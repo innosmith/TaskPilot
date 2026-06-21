@@ -315,6 +315,27 @@ CREATE TABLE web_searches (
     created_at      TIMESTAMPTZ DEFAULT now()
 );
 
+-- LLM-Finanzanalysen (Treuhand-, Finanz-, Kosten-Analysen)
+CREATE TABLE finance_analyses (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    analysis_type   TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    anonymized      BOOLEAN DEFAULT false,
+    status          TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('completed', 'failed')),
+    prompt          TEXT,
+    report          TEXT,
+    thinking        TEXT,
+    snapshot_meta   JSONB DEFAULT '{}'::jsonb,
+    tokens          INT,
+    cost_usd        NUMERIC(10,6),
+    error_message   TEXT,
+    user_id         UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_finance_analyses_created ON finance_analyses(created_at DESC);
+CREATE INDEX idx_finance_analyses_type ON finance_analyses(analysis_type);
+
 -- Indizes
 CREATE INDEX idx_llm_conversations_task ON llm_conversations(task_id);
 CREATE INDEX idx_llm_conversations_user ON llm_conversations(user_id);

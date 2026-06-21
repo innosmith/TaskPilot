@@ -153,13 +153,13 @@ import json as _json
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_create_draft_reply_uses_createreply_without_overriding_recipients(graph_client):
-    """Reply: createReply nutzen, toRecipients NICHT mitschicken (Default behalten)."""
+async def test_create_draft_reply_uses_createreplyall_without_overriding_recipients(graph_client):
+    """Reply (Default): createReplyAll nutzen, toRecipients NICHT mitschicken."""
     isread_route = respx.get(
         url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-1",
     ).respond(json={"id": "orig-1", "isRead": True})
-    reply_route = respx.post(
-        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-1/createReply",
+    reply_all_route = respx.post(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-1/createReplyAll",
     ).respond(json={"id": "draft-1", "conversationId": "conv-1"})
     new_mail_route = respx.post(
         url="https://graph.microsoft.com/v1.0/users/user@example.com/messages",
@@ -173,25 +173,52 @@ async def test_create_draft_reply_uses_createreply_without_overriding_recipients
     )
 
     assert draft["id"] == "draft-1"
-    assert reply_route.called
+    assert reply_all_route.called
     # Niemals ein neuer Thread bei Reply.
     assert not new_mail_route.called
     assert isread_route.called
-    body = _json.loads(reply_route.calls[0].request.content)
-    # createReply-Default-Empfaenger NICHT ueberschreiben.
+    body = _json.loads(reply_all_route.calls[0].request.content)
+    # createReplyAll-Default-Empfaenger NICHT ueberschreiben.
     assert "toRecipients" not in body["message"]
     assert body["message"]["body"]["content"] == "<p>Antwort</p>"
 
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_create_draft_reply_sender_only_uses_createreply(graph_client):
+    """reply_all=False: createReply (nur an den Absender) nutzen, nicht createReplyAll."""
+    respx.get(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-3",
+    ).respond(json={"id": "orig-3", "isRead": True})
+    reply_all_route = respx.post(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-3/createReplyAll",
+    ).respond(json={"id": "should-not-be-used"})
+    reply_route = respx.post(
+        url="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-3/createReply",
+    ).respond(json={"id": "draft-3", "conversationId": "conv-3"})
+
+    draft = await graph_client.create_draft(
+        subject="RE: Test",
+        body_html="<p>Antwort</p>",
+        to_recipients=["sender@example.com"],
+        reply_to_id="orig-3",
+        reply_all=False,
+    )
+
+    assert draft["id"] == "draft-3"
+    assert reply_route.called
+    assert not reply_all_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_create_draft_reply_adds_cc_additively(graph_client):
-    """CC darf bei Reply ergaenzt werden (additiv), TO bleibt createReply-Default."""
+    """CC darf bei Reply ergaenzt werden (additiv), TO bleibt createReplyAll-Default."""
     respx.get(
         url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-2",
     ).respond(json={"id": "orig-2", "isRead": True})
     reply_route = respx.post(
-        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-2/createReply",
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-2/createReplyAll",
     ).respond(json={"id": "draft-2"})
 
     await graph_client.create_draft(
