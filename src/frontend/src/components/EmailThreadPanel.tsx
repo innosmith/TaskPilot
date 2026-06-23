@@ -37,7 +37,7 @@ export function EmailThreadPanel({ conversationId, glassBg = false, compact = fa
     setError(null);
     api.get<ThreadResponse>(`/api/emails/thread/${encodeURIComponent(conversationId)}`)
       .then(data => setMessages(data.messages.slice().reverse()))
-      .catch(() => setError('Thread konnte nicht geladen werden'))
+      .catch(() => setError('Thread aktuell nicht abrufbar (z. B. CC-only-Mail). Bitte direkt in Outlook öffnen.'))
       .finally(() => setLoading(false));
   }, [open, conversationId, messages.length]);
 
@@ -95,7 +95,7 @@ export function EmailThreadPanel({ conversationId, glassBg = false, compact = fa
           )}
 
           {error && (
-            <div className="py-2 text-xs text-red-500">{error}</div>
+            <div className={`py-2 text-xs ${textMuted}`}>{error}</div>
           )}
 
           {!loading && !error && messages.length === 0 && (

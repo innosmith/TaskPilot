@@ -237,6 +237,57 @@ async def test_create_draft_reply_adds_cc_additively(graph_client):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_create_draft_reply_falls_back_to_createreply_on_400(graph_client):
+    """createReplyAll 400 -> deterministischer Fallback auf createReply (kein Scheitern)."""
+    respx.get(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-4",
+    ).respond(json={"id": "orig-4", "isRead": True})
+    reply_all_route = respx.post(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-4/createReplyAll",
+    ).respond(400, json={"error": {"code": "ErrorInvalidRecipients"}})
+    reply_route = respx.post(
+        url="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-4/createReply",
+    ).respond(json={"id": "draft-4", "conversationId": "conv-4"})
+
+    draft = await graph_client.create_draft(
+        subject="RE: Test",
+        body_html="<p>Antwort</p>",
+        to_recipients=["sender@example.com"],
+        reply_to_id="orig-4",
+    )
+
+    assert draft["id"] == "draft-4"
+    assert reply_all_route.called
+    assert reply_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_draft_reply_404_propagates(graph_client):
+    """createReplyAll 404 (z.B. CC-only-Mail) -> sauber weiterreichen, kein Fallback."""
+    respx.get(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-5",
+    ).respond(json={"id": "orig-5", "isRead": True})
+    reply_all_route = respx.post(
+        url__startswith="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-5/createReplyAll",
+    ).respond(404, json={"error": {"code": "ErrorItemNotFound"}})
+    reply_route = respx.post(
+        url="https://graph.microsoft.com/v1.0/users/user@example.com/messages/orig-5/createReply",
+    ).respond(json={"id": "should-not-be-used"})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await graph_client.create_draft(
+            subject="RE: Test",
+            body_html="<p>Antwort</p>",
+            to_recipients=["x@example.com"],
+            reply_to_id="orig-5",
+        )
+    assert reply_all_route.called
+    assert not reply_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_create_draft_new_mail_sets_recipients(graph_client):
     """Ohne reply_to_id: normale neue Mail mit explizitem TO-Empfaenger."""
     new_mail_route = respx.post(

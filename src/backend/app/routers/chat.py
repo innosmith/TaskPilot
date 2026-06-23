@@ -4,13 +4,14 @@ import asyncio
 import json
 import logging
 import os
+import pathlib
 import threading
 import time
 import uuid
 
 import litellm
 import markdown as md_lib
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -48,6 +49,97 @@ def _should_enable_thinking(model_id: str) -> bool:
         return litellm.supports_reasoning(model=model_id)
     except Exception:
         return False
+
+
+# ── Datei-Anhänge als LLM-Kontext (Dokumenten-Kontext-Brücke) ──
+
+_UPLOADS_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "uploads"
+_CHAT_UPLOAD_SUBFOLDER = "chat"
+_CHAT_UPLOAD_MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+# Erlaubte Endungen für Chat-Kontext-Dateien (Text + PDF/DOCX/XLSX). Bilder
+# laufen über einen separaten Vision-Pfad und sind hier bewusst ausgeschlossen.
+_CHAT_UPLOAD_ALLOWED_EXTENSIONS = {
+    ".md", ".txt", ".csv", ".json", ".xml", ".yaml", ".yml",
+    ".py", ".js", ".ts", ".html", ".css", ".sql", ".sh",
+    ".log", ".ini", ".toml", ".cfg", ".conf",
+    ".pdf", ".docx", ".xlsx",
+}
+
+
+@router.post("/uploads")
+async def upload_chat_context_file(
+    file: UploadFile,
+    _user: User = Depends(require_role("owner")),
+):
+    """Lädt eine Datei als Chat-/Agent-Kontext hoch (mit ClamAV-Scan).
+
+    Liefert eine `upload_id` zurück, die als `local_upload`-Kontextquelle an die
+    Chat-/Agent-Endpoints übergeben werden kann. Der Inhalt wird beim Senden
+    serverseitig via `context_resolver` extrahiert.
+    """
+    from app.routers.uploads import _scan_with_clamav
+
+    ext = pathlib.Path(file.filename or "datei").suffix.lower()
+    if ext not in _CHAT_UPLOAD_ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Dateityp '{ext or 'unbekannt'}' wird nicht unterstützt. "
+                "Erlaubt: PDF, DOCX, XLSX und Textformate."
+            ),
+        )
+
+    data = await file.read()
+    if len(data) > _CHAT_UPLOAD_MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Datei zu gross (max 10 MB)")
+    if not data:
+        raise HTTPException(status_code=400, detail="Leere Datei")
+
+    is_clean = await _scan_with_clamav(data)
+    if not is_clean:
+        raise HTTPException(status_code=422, detail="Datei wurde als schädlich erkannt")
+
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    dest = _UPLOADS_DIR / _CHAT_UPLOAD_SUBFOLDER / stored_name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+
+    return {
+        "upload_id": f"{_CHAT_UPLOAD_SUBFOLDER}/{stored_name}",
+        "name": file.filename or stored_name,
+        "mime_type": file.content_type or "",
+    }
+
+
+async def _resolve_attached_context(context_sources: list | None) -> str:
+    """Löst Kontext-Quellen (lokale Uploads + OneDrive) zu einem LLM-Block auf.
+
+    Gemeinsame Brücke für Chat- und Agent-Modus: extrahiert die Inhalte der
+    angehängten Dokumente und liefert einen `<attached_files>`-Block. Fehler
+    dürfen den Chat/Agent niemals blockieren — im Zweifel leerer String.
+    """
+    if not context_sources:
+        return ""
+
+    from app.services.context_resolver import resolve_context_sources
+
+    needs_graph = any(
+        str(s.get("type", "")).startswith("onedrive") for s in context_sources
+    )
+    graph_client = None
+    if needs_graph:
+        from app.services.graph import get_graph_client
+
+        graph_client = get_graph_client()
+        if graph_client is None:
+            logger.warning("Graph nicht konfiguriert — OneDrive-Kontext wird übersprungen")
+
+    try:
+        ctx = await resolve_context_sources(context_sources, graph_client)
+        return ctx.to_llm_context()
+    except Exception:  # noqa: BLE001 - best-effort, darf den Chat nie blockieren
+        logger.exception("Kontext-Auflösung der Anhänge fehlgeschlagen")
+        return ""
 
 
 @router.get("/conversations")
@@ -335,6 +427,7 @@ async def send_message(
 
     user_content = body.get("content", "")
     user_attachments = body.get("attachments", [])
+    context_sources = body.get("context_sources", [])
 
     user_msg = LlmMessage(
         conversation_id=conv.id,
@@ -348,9 +441,21 @@ async def send_message(
     if not conv.title and len(conv.messages) <= 1:
         conv.title = user_content[:80] + ("..." if len(user_content) > 80 else "")
 
+    # Inhalte angehängter Dokumente serverseitig extrahieren und als Kontext-Block
+    # vor die aktuelle Frage stellen (funktioniert auch ohne Tool-Zugriff).
+    attached_context = await _resolve_attached_context(context_sources)
+
     messages_for_llm = [{"role": "system", "content": _PLAIN_CHAT_TOOL_HINT}]
     for msg in conv.messages:
         messages_for_llm.append({"role": msg.role, "content": msg.content})
+    if attached_context:
+        messages_for_llm.append({
+            "role": "user",
+            "content": (
+                "Die folgenden Dokumente wurden als Kontext angehängt. "
+                "Beziehe dich bei deiner Antwort darauf:\n\n" + attached_context
+            ),
+        })
     messages_for_llm.append({"role": "user", "content": user_content})
 
     await db.commit()
@@ -789,7 +894,11 @@ def _get_configured_mcp_servers() -> dict:
         return {}
 
 
-def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
+def _build_agent_prompt(
+    user_content: str,
+    conversation_messages: list,
+    attached_context: str = "",
+) -> str:
     """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Hermes-Agent via MCP."""
     from datetime import datetime, timezone as tz
     from zoneinfo import ZoneInfo
@@ -825,6 +934,15 @@ def _build_agent_prompt(user_content: str, conversation_messages: list) -> str:
         history_lines.append(f"**{role_label}:** {msg.content[:500]}")
     history_block = "\n\n".join(history_lines) if history_lines else "(Erste Nachricht)"
 
+    attached_block = ""
+    if attached_context:
+        attached_block = (
+            "\n## Angehängte Dokumente\n\n"
+            "Anthony hat folgende Dokumente angehängt. Nutze ihren Inhalt direkt. "
+            "Weitere/grössere Dateien kannst du bei Bedarf mit download_file nachladen.\n\n"
+            f"{attached_context}\n"
+        )
+
     return f"""Du bist InnoPilot, der KI-Agent von Anthony Smith (InnoSmith GmbH, Schweiz).
 Du hast direkten Zugriff auf Firmendaten über deine MCP-Tools (siehst du in deiner Tool-Liste).
 Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
@@ -856,7 +974,7 @@ Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
 ## Verfügbare Skills (bei Bedarf mit skill_view laden)
 
 {skills_text}
-
+{attached_block}
 ## Chat-Verlauf
 
 {history_block}
@@ -909,6 +1027,7 @@ async def send_agent_message(
 
     user_content = body.get("content", "")
     selected_model = body.get("model", "hermes")
+    context_sources = body.get("context_sources", [])
     logger.info("[agent] Nachricht (%.80s…), conv=%s", user_content, conversation_id)
 
     # Grounding-Politik: Lokale Modelle = voller Zugriff. Cloud-Modelle =
@@ -964,8 +1083,12 @@ async def send_agent_message(
     if not conv.title and len(conv.messages) <= 1:
         conv.title = user_content[:80] + ("..." if len(user_content) > 80 else "")
 
+    # Inhalte angehängter Dokumente extrahieren und in den Agent-Prompt einbetten
+    # (zusätzlich zu den On-Demand-Tools search_files/download_file).
+    attached_context = await _resolve_attached_context(context_sources)
+
     sorted_messages = sorted(conv.messages, key=lambda m: m.created_at)
-    full_prompt = _build_agent_prompt(user_content, sorted_messages)
+    full_prompt = _build_agent_prompt(user_content, sorted_messages, attached_context)
 
     agent_job = AgentJob(
         job_type="chat_agent",

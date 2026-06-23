@@ -194,7 +194,12 @@ async def _resolve_onedrive_folder(
 
 
 def _resolve_local_upload(ctx: ResolvedContext, source: dict):
-    """Löst eine lokal hochgeladene Datei auf (Sicherheitsprüfung inklusive)."""
+    """Löst eine lokal hochgeladene Datei auf (Sicherheitsprüfung inklusive).
+
+    Liest die Datei als Bytes und nutzt dieselbe Extraktions-Pipeline wie
+    OneDrive (`_extract_text`), damit auch lokale PDF/DOCX/XLSX-Dateien
+    unterstützt werden — nicht nur reine Textdateien.
+    """
     upload_id = source.get("upload_id", "")
     name = source.get("name", "upload")
 
@@ -209,18 +214,23 @@ def _resolve_local_upload(ctx: ResolvedContext, source: dict):
         logger.warning("Path-Traversal-Versuch blockiert: %s", upload_id)
         return
 
-    if not resolved.exists():
+    if not resolved.exists() or not resolved.is_file():
         logger.warning("Upload-Datei nicht gefunden: %s", resolved)
         return
 
-    ext = resolved.suffix.lower()
-    if ext in ALLOWED_TEXT_EXTENSIONS:
-        try:
-            text = resolved.read_text(encoding="utf-8", errors="replace")
-            ctx.add_file(name, text, "Upload")
-        except Exception as e:
-            ctx.add_file(name, f"[Fehler beim Lesen: {e}]", "Upload")
+    try:
+        data = resolved.read_bytes()
+    except Exception as e:
+        ctx.add_file(name, f"[Fehler beim Lesen: {e}]", "Upload")
+        return
+
+    # Extension der gespeicherten Datei bestimmt den Typ (upload_id behält die
+    # echte Endung); `name` dient nur der Anzeige.
+    text = _extract_text(data, resolved.name, "")
+    if text is not None:
+        ctx.add_file(name, text, "Upload")
     else:
+        ext = resolved.suffix.lower()
         ctx.add_file(name, f"[Dateityp {ext} wird nicht als Text unterstützt]", "Upload")
 
 
@@ -239,6 +249,9 @@ def _extract_text(data: bytes, filename: str, mime: str) -> Optional[str]:
 
     if ext in (".docx",):
         return _extract_docx_text(data)
+
+    if ext in (".xlsx",):
+        return _extract_xlsx_text(data)
 
     return None
 
@@ -273,4 +286,28 @@ def _extract_docx_text(data: bytes) -> Optional[str]:
         return None
     except Exception as e:
         logger.error("DOCX-Extraktion fehlgeschlagen: %s", e)
+        return None
+
+
+def _extract_xlsx_text(data: bytes) -> Optional[str]:
+    """Extrahiert Tabelleninhalte aus XLSX-Bytes via openpyxl."""
+    try:
+        import io
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        parts: list[str] = []
+        for ws in wb.worksheets:
+            parts.append(f"### Blatt: {ws.title}")
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) for c in row if c is not None]
+                if cells:
+                    parts.append("\t".join(cells))
+        wb.close()
+        return "\n".join(parts)
+    except ImportError:
+        logger.warning("openpyxl nicht installiert — XLSX-Extraktion nicht möglich")
+        return None
+    except Exception as e:
+        logger.error("XLSX-Extraktion fehlgeschlagen: %s", e)
         return None

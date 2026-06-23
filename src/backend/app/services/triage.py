@@ -20,7 +20,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from dateutil.parser import isoparse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -248,6 +248,7 @@ async def _reconcile_sent_drafts(limit: int = 25) -> int:
     Best-effort -- darf den Poll-Loop nie scheitern lassen.
     """
     from app.services.learning import (
+        bump_sender_correction,
         compute_draft_diff,
         mark_episode_corrected,
         record_feedback,
@@ -325,6 +326,7 @@ async def _reconcile_sent_drafts(limit: int = 25) -> int:
                 )
                 if not is_clean:
                     await mark_episode_corrected(db, agent_job_id=job.id)
+                    await bump_sender_correction(db, email=recipient, diff_text=diff_text)
 
                 meta["feedback_captured"] = True
                 job.metadata_json = meta
@@ -332,6 +334,12 @@ async def _reconcile_sent_drafts(limit: int = 25) -> int:
                 job.completed_at = datetime.now(timezone.utc)
                 job.output = (job.output or "") + (
                     "\n\n--- In Outlook versendet erkannt; Lernsignal erfasst. ---"
+                )
+                # Die zugehoerige Triage nicht in 'processing' haengen lassen.
+                await db.execute(
+                    update(EmailTriage)
+                    .where(EmailTriage.agent_job_id == job.id)
+                    .values(status="acted")
                 )
                 reconciled += 1
 
@@ -343,6 +351,35 @@ async def _reconcile_sent_drafts(limit: int = 25) -> int:
             await client.close()
 
     return reconciled
+
+
+async def _reconcile_stuck_processing() -> int:
+    """Repariert ``email_triage``-Records, die in ``processing`` haengen geblieben sind.
+
+    Wird ein auto_reply-Entwurf ueber das Cockpit freigegeben oder vom
+    Draft-Cleanup abgeschlossen, geht der Agent-Job auf ``completed``, der
+    Triage-Record blieb bisher aber auf ``processing`` (sichtbar als Dauer-
+    "in Bearbeitung"). Diese Wartung setzt solche Records auf ``acted``.
+    """
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                update(EmailTriage)
+                .where(
+                    EmailTriage.status == "processing",
+                    EmailTriage.agent_job_id.in_(
+                        select(AgentJob.id).where(AgentJob.status == "completed")
+                    ),
+                )
+                .values(status="acted")
+                .returning(EmailTriage.id)
+            )
+            fixed = result.scalars().all()
+            await db.commit()
+        return len(fixed)
+    except Exception:
+        logger.exception("Stuck-Processing-Reconciliation fehlgeschlagen")
+        return 0
 
 
 async def triage_loop() -> None:
@@ -374,6 +411,9 @@ async def triage_loop() -> None:
             reconciled = await _reconcile_sent_drafts()
             if reconciled:
                 logger.info("Reconciliation: %d in Outlook versendete Entwurf/Entwuerfe als Lernsignal erfasst", reconciled)
+            stuck_fixed = await _reconcile_stuck_processing()
+            if stuck_fixed:
+                logger.info("Reconciliation: %d haengende 'processing'-Triage(s) auf 'acted' gesetzt", stuck_fixed)
         except Exception:
             logger.exception("Triage-Service: unerwarteter Fehler")
         await asyncio.sleep(interval)

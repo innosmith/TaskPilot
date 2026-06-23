@@ -945,8 +945,15 @@ export function ChatPage() {
       }
     }
 
+    // Anhänge erfassen, bevor der UI-State zurückgesetzt wird
+    const filesToUpload = attachments;
+    const odSources = contextSources;
+
     // User-Nachricht sofort anzeigen
-    const attachmentMeta = attachments.map(f => ({ name: f.name, type: f.type }));
+    const attachmentMeta = [
+      ...filesToUpload.map(f => ({ name: f.name, type: f.type })),
+      ...odSources.map(cs => ({ name: cs.name, type: 'onedrive' })),
+    ];
     const userMsg: ChatMessage = {
       id: uuid(), role: 'user', content,
       tokens: null, cost_usd: null, citations: null,
@@ -959,8 +966,36 @@ export function ChatPage() {
       thinkingContent: mode === 'agent' ? 'InnoPilot wird gestartet...' : '',
     });
     setAttachments([]);
+    setContextSources([]);
 
     const token = getToken();
+
+    // Dokument-Kontext-Brücke: lokale Dateien hochladen und mit OneDrive-Quellen
+    // zu einem context_sources-Array kombinieren (Backend extrahiert die Inhalte).
+    const contextSourcesPayload: Array<Record<string, unknown>> = [];
+    for (const file of filesToUpload) {
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const res = await api.upload<{ upload_id: string; name: string }>('/api/chat/uploads', fd);
+        contextSourcesPayload.push({ type: 'local_upload', upload_id: res.upload_id, name: res.name });
+      } catch (err) {
+        setMessages(prev => [...prev, {
+          id: uuid(), role: 'assistant',
+          content: `Datei "${file.name}" konnte nicht als Kontext verarbeitet werden: ${(err as Error).message}`,
+          tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
+        }]);
+      }
+    }
+    for (const cs of odSources) {
+      contextSourcesPayload.push({
+        type: cs.type,
+        item_id: cs.item_id,
+        path: cs.path,
+        name: cs.name,
+        recursive: cs.recursive,
+      });
+    }
 
     if (mode === 'agent') {
       try {
@@ -973,6 +1008,7 @@ export function ChatPage() {
             temperature,
             enabled_servers: Array.from(enabledServers),
             include_memory: includeMemory,
+            context_sources: contextSourcesPayload,
           }),
         });
         if (!resp.ok) {
@@ -1006,7 +1042,7 @@ export function ChatPage() {
         const resp = await fetch(`/api/chat/conversations/${convId}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: JSON.stringify({ content, model: selectedModel, temperature }),
+          body: JSON.stringify({ content, model: selectedModel, temperature, context_sources: contextSourcesPayload }),
           signal: controller.signal,
         });
         if (!resp.ok) {

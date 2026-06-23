@@ -279,6 +279,7 @@ async def capture_draft_feedback(
         )
         if not is_clean:
             await mark_episode_corrected(db, agent_job_id=src_job.id)
+            await bump_sender_correction(db, email=recipient, diff_text=diff_text)
 
         meta["feedback_captured"] = True
         src_job.metadata_json = meta
@@ -287,6 +288,69 @@ async def capture_draft_feedback(
     except Exception:  # noqa: BLE001 - best-effort
         logger.warning("capture_draft_feedback fehlgeschlagen (draft_id=%s)", str(draft_id)[:40])
         return False
+
+
+def _summarize_diff_for_style(diff_text: str | None) -> str | None:
+    """Leitet eine knappe Stil-Notiz aus einem Draft-Diff ab.
+
+    Nutzt die vom Berater hinzugefuegten/bevorzugten Zeilen (``+``) als Signal,
+    wie die Antwort an diesen Kontakt klingen soll. Rein und damit testbar.
+    """
+    if not diff_text:
+        return None
+    added = [
+        line[1:].strip()
+        for line in diff_text.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    ]
+    added = [a for a in added if a]
+    if not added:
+        return None
+    sample = added[0][:160]
+    return f'Berater bevorzugte Formulierung: "{sample}"'
+
+
+async def bump_sender_correction(
+    db: AsyncSession,
+    *,
+    email: str | None,
+    diff_text: str | None = None,
+    commit: bool = False,
+) -> None:
+    """Schreibt das per-Absender-Lernsignal nach einer Draft-Korrektur fort.
+
+    Erhoeht ``sender_profiles.correction_count`` und haengt -- sofern ableitbar --
+    eine knappe Stil-Notiz an ``style_notes`` an (gedeckelt auf 2000 Zeichen).
+    Legt das Profil bei Bedarf an. Best-effort -- darf den Aufrufer nie stoppen.
+    """
+    if not email:
+        return
+    try:
+        note = _summarize_diff_for_style(diff_text)
+        bullet = f"- {note}" if note else None
+        await db.execute(
+            text(
+                """
+                INSERT INTO sender_profiles (email, correction_count, style_notes, language)
+                VALUES (:email, 1, :bullet, 'de')
+                ON CONFLICT (email) DO UPDATE SET
+                    correction_count = sender_profiles.correction_count + 1,
+                    style_notes = CASE
+                        WHEN :bullet IS NULL THEN sender_profiles.style_notes
+                        ELSE left(
+                            COALESCE(sender_profiles.style_notes || E'\\n', '') || :bullet,
+                            2000
+                        )
+                    END,
+                    updated_at = now()
+                """
+            ),
+            {"email": email.lower(), "bullet": bullet},
+        )
+        if commit:
+            await db.commit()
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("bump_sender_correction fehlgeschlagen (%s)", email)
 
 
 async def record_episode(

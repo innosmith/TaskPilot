@@ -83,7 +83,12 @@ class Settings(BaseSettings):
     # LiteLLM Gateway
     litellm_base_url: str = "http://localhost:4000"
     ollama_base_url: str = "http://localhost:11434"
-    triage_model: str = "ollama/qwen3.6:latest"  # Legacy — wird durch llm_default_local_model ersetzt
+    # Triage-/Worker-Modell (lokal via Ollama). ACHTUNG: Der Tag ``:latest`` ist
+    # GLEITEND -- ein Ollama-Modell-Update kann die Triage-Qualitaet ueber Nacht
+    # veraendern (beobachtet als Regression). Fuer reproduzierbares Verhalten in
+    # Prod einen FIXEN Tag/Digest via ``TP_TRIAGE_MODEL`` setzen und Kandidaten
+    # vorher mit der Eval-Suite (scripts/eval/) vergleichen.
+    triage_model: str = "ollama/qwen3.6:latest"
 
     # Agent-Memory / Lernen (lokale Embeddings via Ollama)
     # Qwen3-Embedding-0.6B: SOTA-Familie (MTEB-Multilingual #1 bei 8B), exzellentes

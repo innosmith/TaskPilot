@@ -24,6 +24,7 @@ Default-Pfad scharfgeschaltet, da das Verhalten ueber Ollama ``/v1``
 versionsabhaengig ist und vor Aktivierung live verifiziert werden muss.
 """
 
+import ast
 import asyncio
 import json
 import logging
@@ -34,6 +35,7 @@ import time
 import httpx
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
@@ -58,7 +60,13 @@ logger = logging.getLogger("taskpilot.hermes_worker")
 POLL_INTERVAL = 10
 REAP_INTERVAL = 60
 DRAFT_CLEANUP_INTERVAL = 300  # 5 Minuten
+RESWEEP_INTERVAL = 3600  # 60 Minuten: still durchgefallene Triages erneut einreihen
 STALE_TIMEOUT_MINUTES = 30
+# Maximale Anzahl automatischer Re-Triagen pro E-Mail (verhindert Endlosschleifen).
+MAX_RESWEEP = 2
+# Nur frische Mails resweepen. Aeltere Mails sind im Postfach oft verschoben/geloescht
+# (-> get_email 404) und erzeugten nur Churn + "neue" Vorschlaege aus alten Items.
+RESWEEP_MAX_AGE_DAYS = 7
 
 HERMES_HOME = get_hermes_home()
 # Hermes-native Skills (Progressive Disclosure via skill_view). Der Worker laedt sie
@@ -96,7 +104,10 @@ WORKER_SYSTEM_PROMPT = (
     "Wenn du eine dauerhaft gueltige Tatsache ueber Anthony, einen Absender oder "
     "eine Arbeitsweise lernst (z. B. eine stabile Praeferenz oder Triage-Regel), "
     "halte sie knapp mit dem memory-Tool fest, damit sie kuenftig verfuegbar ist. "
-    "Sprache: Schweizer Hochdeutsch (ss statt scharfem S, korrekte Umlaute ae/oe/ue als ä/ö/ü). "
+    "Sprache: Schweizer Hochdeutsch. Verbindlich: immer 'ss' statt 'ß' und korrekte "
+    "Umlaute 'ä'/'ö'/'ü' -- NIEMALS die Umschreibungen 'ae'/'oe'/'ue'. "
+    "Schreibe natuerliches, fehlerfreies Deutsch ohne englische Brocken oder erfundene Woerter. "
+    "Ton: freundlich, klar und direkt, aber nie forsch oder schroff gegenueber Kunden. "
     "Zeitzone: Europe/Zurich."
 )
 
@@ -117,6 +128,19 @@ _MAX_TRACE_EVENTS = 200
 # verstuemmelt, was den spaeteren get_email-Abruf (Snapshot/Cleanup/Preview)
 # scheitern laesst und die Freigabe-Karte aus dem Cockpit verschwinden laesst.
 _job_created_draft_id: str | None = None
+
+# Neue Message-ID, falls die E-Mail im aktuellen Job per move_email_to_folder
+# verschoben wurde. Ein Move aendert die Graph-Message-ID (Graph liefert die neue
+# ID als ``new_id``). Wird fuer die deterministische Finalisierung benoetigt, damit
+# Kategorie/ungelesen auf der FINALEN ID landen und nicht auf einer veralteten.
+_job_moved_message_id: str | None = None
+
+# Vollstaendige Menge der im aktuellen Job aufgerufenen Tool-Namen. Bewusst
+# UNABHAENGIG vom 200-Event-Trace-Limit gefuehrt: spaete Tools (create_draft,
+# search_my_replies, set_categories, update_sender_profile) laufen erst nach
+# Schritt 6-7 und fielen sonst aus dem gekappten Trace -- was self_grade und das
+# Kontext-Gate systematisch verfaelschte. Quelle der Wahrheit fuer tools_used.
+_job_tool_names: set[str] = set()
 
 
 def _get_runtime_lock() -> asyncio.Lock:
@@ -185,6 +209,10 @@ def _on_reasoning(text: str) -> None:
 
 
 def _on_tool_start(tc_id, name, args) -> None:
+    # Tool-Namen ungekappt mitschreiben (Quelle der Wahrheit fuer tools_used),
+    # bevor das 200-Event-Trace-Limit greift.
+    if name:
+        _job_tool_names.add(str(name))
     event = {"type": "tool_start", "name": str(name)}
     # Bei Skill-Aufrufen den geladenen Skill-Namen miterfassen (Grundlage fuer
     # die Skill-Nutzungs-Analytics im Intelligenz-Tab). Best-effort -- args kann
@@ -263,8 +291,60 @@ def _extract_draft_id_from_tool_result(result) -> str | None:
     return m.group(1) if m else None
 
 
+def _extract_new_id_from_move_result(result) -> str | None:
+    """Liest die neue Message-ID aus dem move_email_to_folder-Tool-Ergebnis.
+
+    Der MCP-Graph-Server liefert ``{"status": "moved", ..., "new_id": "<neue ID>"}``,
+    von Hermes als ``{"result": "<innerer JSON-String>"}`` gewrappt. Wir suchen
+    rekursiv durch Dicts/Listen/JSON-Strings nach dem Feld ``new_id``. Regex als
+    Fallback fuer doppelt kodiertes JSON. ``None``, wenn nichts gefunden wird.
+    """
+
+    def _search(obj, depth: int = 0):
+        if depth > 6:
+            return None
+        if isinstance(obj, dict):
+            if obj.get("new_id"):
+                return str(obj["new_id"])
+            for key in ("result", "text", "data", "content"):
+                if key in obj:
+                    found = _search(obj[key], depth + 1)
+                    if found:
+                        return found
+            for value in obj.values():
+                found = _search(value, depth + 1)
+                if found:
+                    return found
+            return None
+        if isinstance(obj, list):
+            for item in obj:
+                found = _search(item, depth + 1)
+                if found:
+                    return found
+            return None
+        if isinstance(obj, str):
+            s = obj.strip()
+            if s[:1] in ("{", "["):
+                try:
+                    return _search(json.loads(s), depth + 1)
+                except (json.JSONDecodeError, ValueError):
+                    return None
+        return None
+
+    found = _search(result)
+    if found:
+        return found
+    text = result if isinstance(result, str) else str(result)
+    m = re.search(r'\\?"new_id\\?"\s*:\s*\\?"([^"\\]+)', text)
+    return m.group(1) if m else None
+
+
 def _on_tool_complete(tc_id, name, args, result) -> None:
-    global _job_created_draft_id
+    global _job_created_draft_id, _job_moved_message_id
+    # Tool-Namen vollstaendig (ungekappt) erfassen -- dient als verlaessliche
+    # Quelle fuer tools_used/self_grade, unabhaengig vom 200-Event-Trace-Limit.
+    if name:
+        _job_tool_names.add(str(name))
     # Echte Draft-ID deterministisch aus dem Tool-Ergebnis erfassen (statt aus dem
     # vom LLM abgetippten JSON). Unabhaengig vom 200-Event-Trace-Limit -- so geht
     # die ID auch bei langlaufenden, tool-intensiven Jobs nicht verloren.
@@ -276,6 +356,19 @@ def _on_tool_complete(tc_id, name, args, result) -> None:
         else:
             logger.warning(
                 "create_draft lief, aber keine ID aus Tool-Ergebnis extrahierbar: %s",
+                str(result)[:300],
+            )
+    # Neue Message-ID nach einem Move deterministisch erfassen -- ein Move aendert
+    # die Graph-ID, sodass die spaetere Finalisierung (Kategorie/ungelesen) sonst
+    # auf einer veralteten ID landen wuerde. last-wins.
+    if str(name) == "mcp_graph_move_email_to_folder":
+        new_mid = _extract_new_id_from_move_result(result)
+        if new_mid:
+            _job_moved_message_id = new_mid
+            logger.info("Neue Message-ID nach Move erfasst (len=%d)", len(new_mid))
+        else:
+            logger.warning(
+                "move_email_to_folder lief, aber keine new_id extrahierbar: %s",
                 str(result)[:300],
             )
     _trace_append({"type": "tool_complete", "name": str(name), "result": str(result)[:500]})
@@ -454,6 +547,64 @@ async def _build_active_rules_block() -> str:
         return ""
 
 
+async def _build_sender_style_block(from_addr: str) -> str:
+    """Per-Absender-Stilprofil in den Prompt einspeisen (Ton-Treffsicherheit).
+
+    Nutzt die ueber Korrekturen gelernten Felder aus ``sender_profiles``
+    (Beziehung, Tonalitaet, Sprache, ``learned_tone``, ``style_notes``,
+    ``correction_count``). Best-effort -- ohne Profil faellt der Block weg.
+    """
+    if not from_addr:
+        return ""
+    try:
+        from app.models import SenderProfile
+
+        async with async_session() as db:
+            row = await db.execute(
+                select(SenderProfile).where(SenderProfile.email == from_addr.lower())
+            )
+            p = row.scalar_one_or_none()
+        if p is None:
+            return ""
+
+        facts: list[str] = []
+        if p.display_name:
+            facts.append(f"Name: {p.display_name}")
+        if p.relationship:
+            facts.append(f"Beziehung: {p.relationship}")
+        if p.tone:
+            facts.append(f"Tonalitaet: {p.tone}")
+        if p.language:
+            facts.append(f"Sprache: {p.language}")
+
+        lines: list[str] = []
+        if facts:
+            lines.append("- " + "; ".join(facts))
+        learned = p.learned_tone if isinstance(p.learned_tone, dict) else {}
+        if learned:
+            lt = ", ".join(f"{k}={v}" for k, v in learned.items())
+            lines.append(f"- Gelernte Tonmerkmale: {lt}")
+        notes = (p.style_notes or "").strip()
+        if notes:
+            lines.append("- Stil-Notizen aus frueheren Korrekturen:\n" + notes)
+        if p.correction_count:
+            lines.append(
+                f"- Achtung: {p.correction_count} manuelle Stil-Korrektur(en) an diesen "
+                "Kontakt erfasst -- richte Anrede, Ton und Laenge besonders genau danach."
+            )
+
+        if not lines:
+            return ""
+        return (
+            "\n---\n\n## ABSENDER-STILPROFIL (fuer diesen Kontakt -- VERBINDLICH beim Draft)\n"
+            "Beachte das gelernte Profil dieses Absenders genau (Anrede/Du-Sie, Ton, Laenge):\n"
+            + "\n".join(lines) + "\n"
+        )
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("Sender-Style-Block konnte nicht erzeugt werden")
+        return ""
+
+
 async def _build_triage_prompt(job: AgentJob) -> str:
     """Baut den Prompt für einen email_triage Job aus Metadata.
 
@@ -491,6 +642,7 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     correction_reason = meta.get("correction_reason") or ""
     recall_block = await _build_recall_block(meta)
     rules_block = await _build_active_rules_block()
+    sender_style_block = await _build_sender_style_block(from_addr)
 
     correction_block = ""
     if forced_class:
@@ -577,7 +729,7 @@ Du hast einen email_triage Job erhalten. Führe den kompletten Triage-Ablauf gem
 **Microsoft Inference:** {inference}
 **Body-Vorschau:** {preview[:300]}
 {recipient_hint}{thread_hint}
-{style_section}
+{style_section}{sender_style_block}
 ## PFLICHT-AUFRUFE VOR JEDER KLASSIFIKATION UND DRAFT-ERSTELLUNG
 
 Du MUSST die folgenden drei Kontext-Quellen laden, BEVOR du klassifizierst oder einen Draft erstellst:
@@ -662,7 +814,8 @@ def _format_task_context(task: Task) -> str:
             f"### Checkliste ({offen} offen / {len(items)} total)\n" + "\n".join(lines)
         )
 
-    # Anhänge: Dateinamen + Hinweis, sie bei Bedarf zu lesen
+    # Anhänge: Dateinamen + Hinweis. Die extrahierten Textinhalte werden vom
+    # Aufrufer (_build_generic_prompt) separat als 'Anhang-Inhalte' eingebettet.
     attachments = task.attachments or []
     if attachments:
         lines = [
@@ -671,8 +824,10 @@ def _format_task_context(task: Task) -> str:
         ]
         parts.append(
             "### Anhänge\n"
-            "Lies relevante Anhänge bei Bedarf per read_file (Pfad rechts) bzw. "
-            "vision_analyze (Bilder):\n" + "\n".join(lines)
+            "Die extrahierten Textinhalte der Anhänge stehen unten unter "
+            "'Anhang-Inhalte'. Bilder analysierst du bei Bedarf mit vision_analyze, "
+            "OneDrive-Dateien (onedrive://) lädst du bei Bedarf mit download_file "
+            "nach:\n" + "\n".join(lines)
         )
 
     # Tags als Themen-/Kategorie-Hinweis
@@ -700,6 +855,53 @@ def _format_task_context(task: Task) -> str:
         )
 
     return "\n\n".join(parts)
+
+
+async def _resolve_task_attachment_context(task: Task) -> str:
+    """Extrahiert die Inhalte der Task-Anhänge als `<attached_files>`-Block.
+
+    Lokale Uploads (Pfad unter `/uploads/...`) und OneDrive-Referenzen
+    (`onedrive://{item_id}`) werden via `context_resolver` aufgelöst, damit der
+    Agent die Dokumentinhalte direkt im Prompt vorfindet statt nur Metadaten.
+    Bilder/nicht-Text-Formate werden vom Resolver entsprechend markiert.
+    """
+    attachments = task.attachments or []
+    if not attachments:
+        return ""
+
+    sources: list[dict] = []
+    for a in attachments:
+        path = a.filepath or ""
+        if path.startswith("onedrive://"):
+            sources.append({
+                "type": "onedrive_file",
+                "item_id": path[len("onedrive://"):],
+                "name": a.filename,
+            })
+        elif path.startswith("/uploads/"):
+            sources.append({
+                "type": "local_upload",
+                "upload_id": path[len("/uploads/"):],
+                "name": a.filename,
+            })
+
+    if not sources:
+        return ""
+
+    from app.services.context_resolver import resolve_context_sources
+
+    graph_client = None
+    if any(s["type"].startswith("onedrive") for s in sources):
+        from app.services.graph import get_graph_client
+
+        graph_client = get_graph_client()
+
+    try:
+        ctx = await resolve_context_sources(sources, graph_client)
+        return ctx.to_llm_context()
+    except Exception:  # noqa: BLE001 - best-effort, darf den Job nie blockieren
+        logger.exception("Auflösung der Task-Anhänge fehlgeschlagen")
+        return ""
 
 
 async def _build_generic_prompt(job: AgentJob) -> str:
@@ -760,6 +962,9 @@ async def _build_generic_prompt(job: AgentJob) -> str:
             ).scalar_one_or_none()
         if task:
             description = _format_task_context(task)
+            attached = await _resolve_task_attachment_context(task)
+            if attached:
+                description += "\n\n### Anhang-Inhalte\n\n" + attached
     if not description:
         description = str(meta)
 
@@ -778,26 +983,113 @@ Führe den Auftrag aus und gib dein **vollständiges** Ergebnis direkt als final
 
 # ── Post-Processing (framework-agnostisch) ───────────────
 
-def _extract_json_block(content: str) -> dict | None:
-    """Extrahiert den JSON-Block aus dem LLM-Output."""
-    pattern = r"```json\s*\n(.*?)\n\s*```"
-    match = re.search(pattern, content, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            logger.warning("JSON-Block gefunden aber nicht parsebar: %s", match.group(1)[:200])
-            return None
+def _loads_lenient(raw: str) -> dict | None:
+    """Parst einen JSON-Objekt-String tolerant.
 
-    json_pattern = r"\{[^{}]*\"label\"[^{}]*\"triage_class\"[^{}]*\}"
-    matches = list(re.finditer(json_pattern, content, re.DOTALL))
-    if matches:
-        try:
-            return json.loads(matches[-1].group(0))
-        except json.JSONDecodeError:
-            return None
-
+    Lokale Modelle liefern den Pflicht-Block oft leicht abweichend: Code-Fence-
+    Reste, trailing commas oder Python-Stil mit einfachen Anfuehrungszeichen.
+    Diese Funktion versucht der Reihe nach: striktes JSON, JSON ohne trailing
+    commas, und als letzter Ausweg ``ast.literal_eval`` (Python-Dict-Literal).
+    Gibt nur dict zurueck (sonst None).
+    """
+    if not raw:
+        return None
+    s = raw.strip().strip("`").strip()
+    # 1) Striktes JSON (deckt true/false/null korrekt ab).
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # 2) Trailing commas vor schliessender Klammer entfernen.
+    try:
+        obj = json.loads(re.sub(r",(\s*[}\]])", r"\1", s))
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # 3) Python-Dict-Literal (einfache Quotes). literal_eval kennt kein
+    #    true/false/null -> nur als letzter Ausweg, daher zuvor mappen.
+    try:
+        py = re.sub(r"\btrue\b", "True", s)
+        py = re.sub(r"\bfalse\b", "False", py)
+        py = re.sub(r"\bnull\b", "None", py)
+        obj = ast.literal_eval(py)
+        if isinstance(obj, dict):
+            return obj
+    except (ValueError, SyntaxError, TypeError):
+        pass
     return None
+
+
+def _iter_balanced_objects(text: str):
+    """Liefert alle klammer-balancierten ``{...}``-Teilstrings (String-/Escape-sicher).
+
+    Im Gegensatz zu einer flachen Regex erfasst dies auch Objekte mit
+    verschachtelten Feldern (z. B. ``categories``-Arrays oder Sub-Objekte).
+    """
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    quote = ""
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                in_str = False
+            continue
+        if ch in ('"', "'"):
+            in_str = True
+            quote = ch
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    yield text[start : i + 1]
+                    start = -1
+
+
+def _extract_json_block(content: str) -> dict | None:
+    """Extrahiert den Triage-JSON-Block robust aus dem LLM-Output.
+
+    Lokale Modelle formatieren den Pflicht-Block inkonsistent: Fence fehlt,
+    Felder sind verschachtelt, die Reihenfolge weicht ab oder es steht Prosa
+    drumherum. Frueher griff nur eine sehr enge Regex (Fence ODER flaches
+    ``{...}`` mit ``label`` UND ``triage_class`` ohne Verschachtelung) -- ~11%
+    der Jobs fielen deshalb still durch (keine Klasse persistiert).
+
+    Diese Implementierung scannt alle klammer-balancierten Objekte, parst sie
+    tolerant und waehlt das **letzte** valide Objekt mit ``triage_class`` (der
+    Abschluss-Block steht in der Regel am Ende der Antwort). Gibt None zurueck,
+    wenn nichts Verwertbares vorhanden ist -- der Aufrufer eskaliert dann
+    (Retry/Fallback), statt still zu verwerfen.
+    """
+    if not content:
+        return None
+
+    candidates: list[dict] = []
+    for raw in _iter_balanced_objects(content):
+        obj = _loads_lenient(raw)
+        if isinstance(obj, dict):
+            candidates.append(obj)
+
+    if not candidates:
+        return None
+
+    for obj in reversed(candidates):
+        if "triage_class" in obj:
+            return obj
+    # Kein Objekt mit triage_class -> bestmoegliches letztes Objekt (Best-Effort).
+    return candidates[-1]
 
 
 def _match_project(suggested_name: str | None, projects: list) -> tuple | None:
@@ -870,6 +1162,68 @@ async def _snapshot_agent_draft(draft_id: str) -> dict | None:
     except Exception:  # noqa: BLE001 - best-effort, darf Job nicht stoppen
         logger.warning("Draft-Snapshot fehlgeschlagen (draft_id=%s)", str(draft_id)[:40])
         return None
+    finally:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _finalize_email_state(
+    meta: dict,
+    label: str | None,
+    moved_id: str | None,
+) -> None:
+    """Deterministische Finalisierung des Outlook-Zustands nach der Triage.
+
+    Zwei Garantien, die NICHT dem (unzuverlaessigen) LLM ueberlassen werden:
+
+    1. Kategorie-Sicherheitsnetz: Hat die Mail nach der Triage noch GAR KEINE
+       Outlook-Kategorie, wird sie aus dem JSON-``label`` nachgezogen. Eine vom
+       Agenten bereits gesetzte Kategorie wird NIE ueberschrieben.
+    2. ``mark_as_unread`` als ALLERLETZTER Graph-Schritt -- immer. Ein
+       ``set_categories``-PATCH kippt ``isRead`` in Exchange auf ``true``; nur wenn
+       das ungelesen-Setzen zuletzt laeuft, bleibt die Mail fuer Anthony sichtbar
+       neu.
+
+    Laeuft auf der FINALEN Message-ID: ``moved_id`` (nach einem Move) hat Vorrang
+    vor ``email_message_id``. Best-effort und 404-tolerant (CC-only-Mails / bereits
+    veraltete IDs duerfen den Job nicht stoppen), andere Fehler werden geloggt.
+    """
+    final_mid = moved_id or meta.get("email_message_id")
+    if not final_mid:
+        return
+
+    client = await _build_graph_client()
+    if client is None:
+        return
+    try:
+        # Schritt 1: Kategorie nur als Luecken-Fueller (Agent-Arbeit nie ueberschreiben).
+        if label and label != "Unklassifiziert":
+            try:
+                existing = await client.get_email_categories(final_mid)
+                if not (existing or {}).get("categories"):
+                    await client.set_categories(final_mid, [label])
+                    logger.info("Finalize: Kategorie '%s' nachgezogen (Sicherheitsnetz)", label)
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 404:
+                    logger.info("Finalize: Kategorie nicht setzbar (404, z. B. CC-only/veraltete ID)")
+                else:
+                    logger.warning("Finalize: Kategorie-Schritt fehlgeschlagen (HTTP %s)", status)
+
+        # Schritt 2: IMMER und als letzte Aktion -- Mail auf ungelesen zuruecksetzen.
+        try:
+            await client.mark_as_unread(final_mid)
+            logger.info("Finalize: Mail auf ungelesen gesetzt (mid=%s)", str(final_mid)[:40])
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 404:
+                logger.info("Finalize: ungelesen nicht setzbar (404, z. B. CC-only/veraltete ID)")
+            else:
+                logger.warning("Finalize: ungelesen-Schritt fehlgeschlagen (HTTP %s)", status)
+    except Exception:  # noqa: BLE001 - Finalisierung darf den Job nie stoppen
+        logger.warning("Finalize: unerwarteter Fehler (mid=%s)", str(final_mid)[:40])
     finally:
         try:
             await client.close()
@@ -976,8 +1330,219 @@ async def _ensure_draft_in_thread(
             pass
 
 
+def _json_retry_prompt(prev: str) -> str:
+    """Strikter Nachfass-Prompt: erzwingt NUR den Pflicht-JSON-Block.
+
+    Wird genau einmal ausgefuehrt, wenn der erste Lauf keinen verwertbaren Block
+    lieferte. Leitet die Werte aus der bereits erstellten Analyse ab, ohne erneut
+    Tools zu bemuehen.
+    """
+    tail = (prev or "")[-4000:]
+    return (
+        "Deine vorherige Antwort enthielt keinen maschinenlesbaren Pflicht-JSON-Block. "
+        "Gib jetzt AUSSCHLIESSLICH den JSON-Block aus -- kein Text davor oder danach, "
+        "keine weiteren Tool-Aufrufe -- in einem ```json ... ``` Codeblock.\n"
+        "Pflichtfelder: triage_class (genau einer von \"auto_reply\", \"task\", \"fyi\"), "
+        "label, reply_expected (true/false), confidence (Zahl 0..1), rationale. "
+        "Bei task zusaetzlich: task_title, task_description, suggested_project, deadline.\n\n"
+        "Leite die Werte aus deiner bisherigen Analyse ab:\n---\n" + tail + "\n---\n"
+    )
+
+
+_INTERNAL_NOISE_RE = re.compile(
+    r"(?:\b404\b|\b400\b|HTTPStatusError|Bad Request|Not Found|createReply(?:All)?|"
+    r"per Graph[- ]?API|via Graph[- ]?API|Graph[- ]?API nicht|"
+    r"l(?:ä|ae)sst sich (?:nicht|per|via)|liess sich (?:nicht|per|via))",
+    re.IGNORECASE,
+)
+
+
+def _strip_internal_notes(text: str | None) -> str | None:
+    """Entfernt interne API-/Fehler-Diagnosen aus nutzersichtbarem Text.
+
+    Der Agent schreibt gelegentlich technische Hinweise (404, HTTPStatusError,
+    createReplyAll, "via Graph API nicht lesbar") in task_description/Rationale.
+    Solche Saetze lesen sich im Cockpit wie ein Fehlschlag ("ging nicht") und
+    gehoeren nicht in die nutzersichtbare Aufgabe -- sie werden satzweise entfernt.
+    """
+    if not text:
+        return text
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+    kept = [p for p in parts if p.strip() and not _INTERNAL_NOISE_RE.search(p)]
+    cleaned = " ".join(s.strip() for s in kept).strip()
+    return cleaned or None
+
+
+def _outlook_deeplink(message_id: str | None) -> str | None:
+    """Baut einen Outlook-Web-Deeplink auf eine E-Mail aus ihrer Graph-Message-ID."""
+    if not message_id:
+        return None
+    return f"https://outlook.office.com/mail/deeplink/read/{quote(message_id, safe='')}"
+
+
+def _email_reference_block(meta: dict) -> str:
+    """Strukturierter Quell-E-Mail-Block (Von/Betreff/Deeplink) fuer Task-Beschreibungen."""
+    lines: list[str] = []
+    from_name = (meta.get("from_name") or "").strip()
+    from_addr = (meta.get("from_address") or "").strip()
+    subject = (meta.get("subject") or "").strip()
+    if from_addr or from_name:
+        lines.append(f"Von: {from_name} <{from_addr}>".strip())
+    if subject:
+        lines.append(f"Betreff: {subject}")
+    deeplink = _outlook_deeplink(meta.get("email_message_id"))
+    if deeplink:
+        lines.append(f"E-Mail oeffnen: {deeplink}")
+    if not lines:
+        return ""
+    return "\n\n---\nQuell-E-Mail:\n" + "\n".join(lines)
+
+
+async def _create_email_task(
+    db,
+    job_id,
+    meta: dict,
+    *,
+    task_title: str,
+    task_description: str | None,
+    suggested_project: str | None,
+    deadline: str | None,
+    reply_expected: bool = False,
+) -> Task | None:
+    """Legt aus einer triagierten E-Mail eine Task an (geteilt von Normal- + Fallback-Pfad).
+
+    Waehlt das passende Projekt (oder das erste), die erste Board-Spalte und die
+    Pipeline-Spalte nach Deadline. Verknuepft ``email_message_id`` /
+    ``email_conversation_id`` und setzt ``needs_review=True``. Gibt die Task
+    zurueck oder None, wenn kein Projekt/keine Spalte existiert.
+    """
+    proj_result = await db.execute(
+        select(Project).where(Project.status != "archived").order_by(Project.name)
+    )
+    projects = list(proj_result.scalars().all())
+    matched_project = _match_project(suggested_project, projects)
+    if not matched_project and projects:
+        matched_project = projects[0]
+    if not matched_project:
+        logger.warning("Job %s: Kein Projekt fuer Task vorhanden", job_id)
+        return None
+
+    col_result = await db.execute(
+        select(BoardColumn)
+        .where(BoardColumn.project_id == matched_project.id)
+        .order_by(BoardColumn.position)
+        .limit(1)
+    )
+    first_col = col_result.scalar_one_or_none()
+    if not first_col:
+        logger.warning("Job %s: Projekt '%s' hat keine Board-Spalte", job_id, matched_project.name)
+        return None
+
+    pipeline_col_id = _determine_pipeline_column(deadline)
+    due_date = None
+    if deadline:
+        try:
+            due_date = date.fromisoformat(deadline)
+        except ValueError:
+            pass
+
+    max_pos_result = await db.execute(
+        select(Task.board_position)
+        .where(Task.board_column_id == first_col.id)
+        .order_by(Task.board_position.desc())
+        .limit(1)
+    )
+    next_pos = (max_pos_result.scalar_one_or_none() or 0) + 1
+
+    # Nutzersichtbare Beschreibung saeubern (interne API-/Fehler-Diagnosen raus)
+    # und immer mit einem Quell-E-Mail-Block (Von/Betreff/Deeplink) abschliessen,
+    # damit jede E-Mail-Task die Herkunft + einen Link zur Original-Mail traegt.
+    base_desc = _strip_internal_notes(task_description) or f"Erstellt aus E-Mail: {meta.get('subject', '')}"
+    full_desc = base_desc + _email_reference_block(meta)
+
+    new_task = Task(
+        title=task_title,
+        description=full_desc,
+        project_id=matched_project.id,
+        board_column_id=first_col.id,
+        board_position=next_pos,
+        pipeline_column_id=pipeline_col_id,
+        email_message_id=meta.get("email_message_id"),
+        email_conversation_id=meta.get("conversation_id"),
+        due_date=due_date,
+        needs_review=True,
+        assignee="me",
+    )
+    db.add(new_task)
+    await db.flush()
+    await notify_task_suggested(
+        db,
+        task_id=new_task.id,
+        task_title=task_title,
+        from_email=meta.get("from_address"),
+    )
+    logger.info(
+        "Job %s: Task erstellt '%s' in Projekt '%s' (reply_expected=%s)",
+        job_id, task_title, matched_project.name, reply_expected,
+    )
+    return new_task
+
+
+async def _fallback_unparsed_triage(job_id, meta: dict, moved_id: str | None = None) -> str:
+    """Sicherheitsnetz, wenn der LLM keinen verwertbaren Triage-Block lieferte.
+
+    Statt die E-Mail still auf ``triage_class = NULL`` / ``pending`` zu lassen
+    (frueheres Verhalten -> ~11% verschluckt), wird sie deterministisch als
+    ``task`` mit ``needs_review`` eingeordnet, damit sie sichtbar im Cockpit
+    landet und manuell behandelt werden kann.
+    """
+    logger.warning("Job %s: Kein verwertbarer JSON-Block -- Fallback auf task/needs_review", job_id)
+    async with async_session() as db:
+        await db.execute(
+            update(EmailTriage)
+            .where(EmailTriage.agent_job_id == job_id)
+            .values(
+                triage_class="task",
+                reply_expected=False,
+                confidence=None,
+                suggested_action={
+                    "label": "Unklassifiziert",
+                    "triage_class": "task",
+                    "rationale": (
+                        "Agent lieferte keinen strukturierten Triage-Block. Zur manuellen "
+                        "Pruefung als Aufgabe angelegt (Sicherheitsnetz)."
+                    ),
+                    "fallback": True,
+                },
+                status="acted",
+            )
+        )
+        await _create_email_task(
+            db,
+            job_id,
+            meta,
+            task_title=meta.get("subject") or "E-Mail (unklassifiziert)",
+            task_description=(
+                "Die automatische Triage lieferte keinen strukturierten Entscheid. "
+                "Bitte die E-Mail manuell sichten und einordnen."
+            ),
+            suggested_project=None,
+            deadline=None,
+        )
+        await db.commit()
+    # Auch im Fallback deterministisch finalisieren: Kategorie (Unklassifiziert ->
+    # kein Setzen) ueberspringen, aber Mail trotzdem auf ungelesen zuruecksetzen.
+    await _finalize_email_state(meta, "Unklassifiziert", moved_id)
+    return "completed"
+
+
 async def _post_process_triage(
-    job_id, content: str, meta: dict, captured_draft_id: str | None = None
+    job_id,
+    content: str,
+    meta: dict,
+    captured_draft_id: str | None = None,
+    tools_used: list[str] | None = None,
+    moved_id: str | None = None,
 ) -> str:
     """Deterministische Post-Processing-Logik nach LLM-Klassifikation.
 
@@ -985,11 +1550,15 @@ async def _post_process_triage(
     dem ``create_draft``-Tool-Ergebnis erfasst hat (ground truth). Sie hat IMMER
     Vorrang vor einer im JSON-Block gemeldeten ID -- letztere wird vom LLM bei
     langen Graph-IDs regelmaessig verstuemmelt und ist deshalb nicht vertrauenswuerdig.
+
+    ``tools_used`` (tatsaechlich aufgerufene Tools) dient dem Kontext-Gate: ein
+    ``auto_reply`` ohne geladene Pflicht-Kontexte (Thread/History/Profil/Stil-Anker)
+    wird auf ``task`` heruntergestuft, da solche Entwuerfe erfahrungsgemaess
+    tonal/inhaltlich unbrauchbar sind.
     """
     parsed = _extract_json_block(content)
     if parsed is None:
-        logger.warning("Job %s: Kein JSON-Block im Output gefunden", job_id)
-        return "completed"
+        return await _fallback_unparsed_triage(job_id, meta, moved_id)
 
     triage_class = parsed.get("triage_class")
     label = parsed.get("label")
@@ -1053,6 +1622,34 @@ async def _post_process_triage(
         if not task_title:
             task_title = meta.get("subject", "E-Mail Triage")
 
+    # Kontext-Gate (NICHT-destruktiv): Ein bereits ERSTELLTER Entwurf wird NIE
+    # mehr verworfen. Frueher wurde bei fehlendem Pflicht-Kontext auf 'task'
+    # heruntergestuft und draft_id genullt -- das liess gute Entwuerfe in Outlook
+    # verwaisen und zeigte im Cockpit nur eine Task mit "ging nicht"-Notiz. Jeder
+    # Entwurf bleibt jetzt als auto_reply zur HITL-Freigabe sichtbar; fehlender
+    # Kontext senkt nur die angezeigte Confidence und wird INTERN vermerkt (nicht
+    # im nutzersichtbaren Text). forced_class bleibt unberuehrt.
+    gate_internal_note: str | None = None
+    if (
+        triage_class == "auto_reply"
+        and draft_id
+        and tools_used is not None
+        and forced_class != "auto_reply"
+    ):
+        grade = _compute_self_grade(meta, {"draft_id": draft_id}, list(tools_used))
+        if grade["missing"]:
+            logger.info(
+                "Job %s: auto_reply mit unvollstaendigem Pflicht-Kontext %s -- "
+                "Entwurf bleibt erhalten, Confidence gesenkt (kein Downgrade)",
+                job_id, grade["missing"],
+            )
+            capped = 0.4
+            confidence = capped if confidence is None else min(confidence, capped)
+            gate_internal_note = (
+                "Entwurf ohne vollstaendigen Pflicht-Kontext erstellt "
+                f"(fehlend: {', '.join(grade['missing'])}) -- vor Freigabe pruefen."
+            )
+
     if triage_class == "task" and not task_title:
         task_title = meta.get("subject", "E-Mail Triage (kein Titel)")
         logger.warning("Job %s: task ohne task_title, verwende Subject: %s", job_id, task_title)
@@ -1088,69 +1685,16 @@ async def _post_process_triage(
         final_status = "completed"
 
         if triage_class == "task" and task_title:
-            proj_result = await db.execute(
-                select(Project).where(Project.status != "archived").order_by(Project.name)
+            await _create_email_task(
+                db,
+                job_id,
+                meta,
+                task_title=task_title,
+                task_description=task_description,
+                suggested_project=suggested_project,
+                deadline=deadline,
+                reply_expected=reply_expected,
             )
-            projects = list(proj_result.scalars().all())
-            matched_project = _match_project(suggested_project, projects)
-            if not matched_project and projects:
-                matched_project = projects[0]
-
-            if matched_project:
-                col_result = await db.execute(
-                    select(BoardColumn)
-                    .where(BoardColumn.project_id == matched_project.id)
-                    .order_by(BoardColumn.position)
-                    .limit(1)
-                )
-                first_col = col_result.scalar_one_or_none()
-
-                if first_col:
-                    pipeline_col_id = _determine_pipeline_column(deadline)
-                    email_message_id = meta.get("email_message_id")
-                    email_conversation_id = meta.get("conversation_id")
-
-                    due_date = None
-                    if deadline:
-                        try:
-                            due_date = date.fromisoformat(deadline)
-                        except ValueError:
-                            pass
-
-                    max_pos_result = await db.execute(
-                        select(Task.board_position)
-                        .where(Task.board_column_id == first_col.id)
-                        .order_by(Task.board_position.desc())
-                        .limit(1)
-                    )
-                    max_pos_row = max_pos_result.scalar_one_or_none()
-                    next_pos = (max_pos_row or 0) + 1
-
-                    new_task = Task(
-                        title=task_title,
-                        description=task_description or f"Erstellt aus E-Mail: {meta.get('subject', '')}",
-                        project_id=matched_project.id,
-                        board_column_id=first_col.id,
-                        board_position=next_pos,
-                        pipeline_column_id=pipeline_col_id,
-                        email_message_id=email_message_id,
-                        email_conversation_id=email_conversation_id,
-                        due_date=due_date,
-                        needs_review=True,
-                        assignee="me",
-                    )
-                    db.add(new_task)
-                    await db.flush()
-                    await notify_task_suggested(
-                        db,
-                        task_id=new_task.id,
-                        task_title=task_title,
-                        from_email=meta.get("from_address"),
-                    )
-                    logger.info(
-                        "Job %s: Task erstellt '%s' in Projekt '%s' (reply_expected=%s)",
-                        job_id, task_title, matched_project.name, reply_expected,
-                    )
 
         elif triage_class == "auto_reply" and draft_id:
             job_result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
@@ -1164,6 +1708,8 @@ async def _post_process_triage(
                     existing_meta["rationale"] = rationale
                 if confidence is not None:
                     existing_meta["confidence"] = confidence
+                if gate_internal_note:
+                    existing_meta["context_warning"] = gate_internal_note
                 existing_meta["summary"] = (
                     rationale
                     or f"Antwort-Entwurf für '{meta.get('subject') or '(kein Betreff)'}' vorbereitet."
@@ -1212,6 +1758,11 @@ async def _post_process_triage(
             )
 
         await db.commit()
+
+    # Deterministische Outlook-Finalisierung NACH der DB-Transaktion (reine Netz-
+    # I/O): Kategorie-Sicherheitsnetz + Mail immer auf ungelesen zuruecksetzen.
+    # Laeuft fuer alle Klassen (task/auto_reply/fyi) und auf der finalen ID.
+    await _finalize_email_state(meta, label, moved_id)
 
     return final_status
 
@@ -1535,7 +2086,7 @@ def _enforce_autonomy_status(meta: dict, content: str) -> str:
 
 async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) -> None:
     """Verarbeitet einen einzelnen AgentJob via Hermes AIAgent."""
-    global _job_trace, _job_created_draft_id
+    global _job_trace, _job_created_draft_id, _job_moved_message_id
     logger.info("Starte Job %s (type=%s)", job_id, job_type)
 
     async with async_session() as db:
@@ -1548,19 +2099,39 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
 
     _job_trace = []
     _job_created_draft_id = None
+    _job_moved_message_id = None
+    _job_tool_names.clear()
     disable_thinking = _thinking_disabled(job_type, meta.get("skill"))
 
     try:
         content = await asyncio.to_thread(_run_agent_sync, agent, prompt, disable_thinking)
-        trace = list(_job_trace)
         # Echte Draft-ID aus dem Tool-Ergebnis (ground truth) an das Post-Processing
         # weiterreichen -- die vom LLM gemeldete ID wird bewusst ignoriert.
         captured_draft_id = _job_created_draft_id
+        captured_moved_id = _job_moved_message_id
         logger.info("Job %s abgeschlossen: %s", job_id, content[:200])
 
         if job_type == "email_triage":
-            status = await _post_process_triage(job_id, content, meta, captured_draft_id)
+            # Zuverlaessigkeit: Liefert der erste Lauf keinen verwertbaren JSON-Block,
+            # genau EIN strikter Nachfass-Prompt, bevor das Fallback-Netz greift.
+            if _extract_json_block(content) is None:
+                logger.info("Job %s: kein JSON-Block -- strikter Nachfass-Lauf", job_id)
+                retry = await asyncio.to_thread(
+                    _run_agent_sync, agent, _json_retry_prompt(content), disable_thinking
+                )
+                if retry and _extract_json_block(retry) is not None:
+                    content = f"{content}\n\n{retry}"
+            trace = list(_job_trace)
+            # tools_used aus der ungekappten Tool-Namen-Menge (nicht aus dem
+            # 200-Event-Trace) -- sonst fehlen spaete Tools wie create_draft/
+            # search_my_replies und das Kontext-Gate stuft faelschlich herunter.
+            tools_used = sorted(_job_tool_names)
+            status = await _post_process_triage(
+                job_id, content, meta, captured_draft_id, tools_used, captured_moved_id
+            )
         else:
+            trace = list(_job_trace)
+            tools_used = sorted(_job_tool_names)
             status = _enforce_autonomy_status(meta, content)
 
         if job_type != "email_triage":
@@ -1574,7 +2145,6 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
                     await notify_agent_completed(notif_db, job_id=job_id)
                     await notif_db.commit()
 
-        tools_used = sorted({e["name"] for e in trace if e.get("type") == "tool_start"})
         async with async_session() as db:
             job_result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
             job = job_result.scalar_one_or_none()
@@ -1729,6 +2299,74 @@ async def _reap_stale_jobs() -> int:
     return len(reaped_ids)
 
 
+async def _resweep_unclassified_triages(limit: int = 20) -> int:
+    """Holt still durchgefallene Triages zurueck in die Queue (Selbstheilung).
+
+    E-Mails, deren Agent-Job abgeschlossen/fehlgeschlagen ist, deren
+    ``email_triage`` aber ohne Klasse auf ``pending`` haengt (z. B. aus der Zeit
+    vor dem robusten Parser, oder weil der LLM keinen Block lieferte), werden mit
+    geklonter Metadata neu eingereiht. Ein ``resweep_count`` deckelt die
+    Wiederholungen (``MAX_RESWEEP``), damit dauerhaft problematische Mails nicht
+    endlos zirkulieren.
+    """
+    requeued = 0
+    dismissed = 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RESWEEP_MAX_AGE_DAYS)
+    async with async_session() as db:
+        rows = await db.execute(
+            select(EmailTriage, AgentJob)
+            .join(AgentJob, EmailTriage.agent_job_id == AgentJob.id)
+            .where(
+                EmailTriage.triage_class.is_(None),
+                EmailTriage.status == "pending",
+                AgentJob.status.in_(["completed", "failed"]),
+                # Nur frische Mails -- aeltere 404en ohnehin und erzeugen nur Churn.
+                EmailTriage.created_at >= cutoff,
+            )
+            .order_by(EmailTriage.created_at.desc())
+            .limit(limit)
+        )
+        for triage, job in rows.all():
+            meta = dict(job.metadata_json or {})
+            # Ohne Message-ID ist ein Re-Run sinnlos (get_email schluege fehl).
+            if not meta.get("email_message_id"):
+                triage.status = "dismissed"
+                dismissed += 1
+                continue
+            resweep_count = int(meta.get("resweep_count") or 0)
+            if resweep_count >= MAX_RESWEEP:
+                # Erschoepfte Wiederholungen: endgueltig schliessen, statt jeden
+                # Zyklus erneut zu selektieren (kein Dauer-Churn).
+                triage.status = "dismissed"
+                dismissed += 1
+                continue
+            new_meta = {
+                k: v for k, v in meta.items()
+                if k not in ("trace", "tools_used", "self_grade")
+            }
+            new_meta["resweep_count"] = resweep_count + 1
+            new_meta["resweep_of"] = str(job.id)
+            new_job = AgentJob(
+                task_id=None,
+                job_type="email_triage",
+                status="queued",
+                llm_model=job.llm_model,
+                metadata_json=new_meta,
+            )
+            db.add(new_job)
+            await db.flush()
+            triage.agent_job_id = new_job.id
+            triage.status = "pending"
+            requeued += 1
+        if requeued or dismissed:
+            await db.commit()
+            logger.info(
+                "Resweep: %d Triage(s) neu eingereiht, %d endgueltig geschlossen",
+                requeued, dismissed,
+            )
+    return requeued
+
+
 # ── Worker-Loop ──────────────────────────────────────────
 
 async def _worker_loop() -> None:
@@ -1744,6 +2382,7 @@ async def _worker_loop() -> None:
 
     last_reap = time.monotonic()
     last_draft_cleanup = time.monotonic()
+    last_resweep = time.monotonic()
 
     while True:
         try:
@@ -1757,6 +2396,13 @@ async def _worker_loop() -> None:
                 except Exception:
                     logger.exception("Draft-Cleanup fehlgeschlagen")
                 last_draft_cleanup = time.monotonic()
+
+            if time.monotonic() - last_resweep >= RESWEEP_INTERVAL:
+                try:
+                    await _resweep_unclassified_triages()
+                except Exception:
+                    logger.exception("Resweep fehlgeschlagen")
+                last_resweep = time.monotonic()
 
             async with async_session() as db:
                 result = await db.execute(

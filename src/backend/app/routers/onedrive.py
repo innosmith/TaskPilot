@@ -6,8 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth.deps import get_current_user, require_role
-from app.config import get_settings
+from app.auth.deps import require_role
 from app.models import User
 
 logger = logging.getLogger(__name__)
@@ -37,22 +36,9 @@ class DriveSearchResponse(BaseModel):
 
 def _get_graph_client():
     """Erstellt einen GraphClient mit den konfigurierten Credentials."""
-    import sys
-    import os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
-    from graph_client import GraphClient, GraphConfig
+    from app.services.graph import get_graph_client
 
-    s = get_settings()
-    if not s.graph_tenant_id or not s.graph_client_id:
-        return None
-
-    config = GraphConfig(
-        tenant_id=s.graph_tenant_id,
-        client_id=s.graph_client_id,
-        client_secret=s.graph_client_secret,
-        user_email=s.graph_user_email,
-    )
-    return GraphClient(config)
+    return get_graph_client()
 
 
 def _item_to_drive_item(item: dict) -> DriveItem:

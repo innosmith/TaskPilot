@@ -61,6 +61,9 @@ pypandoc_binary>=1.17
 # ── PDF-Extraktion (OneDrive-Downloads) ──
 pymupdf>=1.27
 
+# ── XLSX-Extraktion (Dokumenten-Kontext-Brücke) ──
+openpyxl>=3.1
+
 # ── Web Search ──
 ddgs>=9.14
 

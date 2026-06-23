@@ -173,6 +173,33 @@ class TestExtractText:
         result = _extract_text(data, f"test{ext}", "")
         assert result is not None
 
+    def test_pdf_dispatch(self):
+        """PDF-Endung wird an _extract_pdf_text delegiert."""
+        with patch(
+            "app.services.context_resolver._extract_pdf_text", return_value="PDF"
+        ) as m:
+            result = _extract_text(b"%PDF-1.4", "doc.pdf", "")
+        assert result == "PDF"
+        m.assert_called_once()
+
+    def test_docx_dispatch(self):
+        """DOCX-Endung wird an _extract_docx_text delegiert."""
+        with patch(
+            "app.services.context_resolver._extract_docx_text", return_value="DOCX"
+        ) as m:
+            result = _extract_text(b"PK\x03\x04", "doc.docx", "")
+        assert result == "DOCX"
+        m.assert_called_once()
+
+    def test_xlsx_dispatch(self):
+        """XLSX-Endung wird an _extract_xlsx_text delegiert."""
+        with patch(
+            "app.services.context_resolver._extract_xlsx_text", return_value="XLSX"
+        ) as m:
+            result = _extract_text(b"PK\x03\x04", "sheet.xlsx", "")
+        assert result == "XLSX"
+        m.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Konstanten-Validierung
@@ -311,3 +338,40 @@ class TestResolveLocalUpload:
             _resolve_local_upload(ctx, source)
 
         assert len(ctx.files) == 0
+
+    def test_local_upload_pdf_extracts(self, tmp_path):
+        """Lokales PDF wird als Bytes gelesen und extrahiert (nicht mehr abgelehnt)."""
+        pdf_file = tmp_path / "report.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+        ctx = ResolvedContext()
+        source = {"upload_id": "report.pdf", "name": "Report"}
+
+        with patch(
+            "app.services.context_resolver.ALLOWED_UPLOAD_DIR", tmp_path
+        ), patch(
+            "app.services.context_resolver._extract_pdf_text", return_value="EXTRAHIERT"
+        ):
+            _resolve_local_upload(ctx, source)
+
+        assert len(ctx.files) == 1
+        assert ctx.files[0]["content"] == "EXTRAHIERT"
+        assert ctx.files[0]["source"] == "Upload"
+
+    def test_local_upload_docx_extracts(self, tmp_path):
+        """Lokales DOCX wird via _extract_docx_text extrahiert."""
+        docx_file = tmp_path / "brief.docx"
+        docx_file.write_bytes(b"PK\x03\x04 fake")
+
+        ctx = ResolvedContext()
+        source = {"upload_id": "brief.docx", "name": "Brief"}
+
+        with patch(
+            "app.services.context_resolver.ALLOWED_UPLOAD_DIR", tmp_path
+        ), patch(
+            "app.services.context_resolver._extract_docx_text", return_value="DOCX TEXT"
+        ):
+            _resolve_local_upload(ctx, source)
+
+        assert len(ctx.files) == 1
+        assert ctx.files[0]["content"] == "DOCX TEXT"

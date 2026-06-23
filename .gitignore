@@ -1,6 +1,10 @@
 meistertask_export_*.json
 dataimport/
 
+# LLM-Eval: enthaelt echte E-Mail-Inhalte -- nur lokal, nie committen
+scripts/eval/*.jsonl
+scripts/eval/results/
+
 # Umgebung & Secrets
 .env
 .env.*

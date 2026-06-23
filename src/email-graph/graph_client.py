@@ -299,10 +299,31 @@ class GraphClient:
                     reply_to_id,
                 )
 
-            draft = await self._post(
-                f"{self._user_path}/messages/{reply_to_id}/{reply_action}",
-                {"message": reply_message},
-            )
+            try:
+                draft = await self._post(
+                    f"{self._user_path}/messages/{reply_to_id}/{reply_action}",
+                    {"message": reply_message},
+                )
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                # createReplyAll quittiert Exchange gelegentlich mit 400 (z.B. wenn
+                # keine weiteren "Allen antworten"-Empfaenger existieren). Dann
+                # deterministisch auf createReply (nur Absender) ausweichen, statt
+                # den Entwurf scheitern zu lassen.
+                if status == 400 and reply_action == "createReplyAll":
+                    logger.warning(
+                        "createReplyAll mit 400 fehlgeschlagen (message_id=%s) -- "
+                        "Fallback auf createReply",
+                        reply_to_id,
+                    )
+                    draft = await self._post(
+                        f"{self._user_path}/messages/{reply_to_id}/createReply",
+                        {"message": reply_message},
+                    )
+                else:
+                    # 404 (z.B. CC-only-Mail nicht im Postfach) ist nicht reparierbar
+                    # -- sauber weiterreichen, damit der Worker als Task fortfaehrt.
+                    raise
 
             if was_unread:
                 try:
