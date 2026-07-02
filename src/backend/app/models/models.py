@@ -313,6 +313,25 @@ class AgentEpisode(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
+class SentMailExample(Base):
+    """Style-Store: eine gesendete Antwort als Few-Shot-Stil-Anker fuer Entwuerfe.
+
+    Wie ``AgentEpisode`` wird die ``embedding``-Spalte (pgvector) bewusst NICHT
+    gemappt -- Schreiben/Retrieval laufen ueber rohes SQL im Style-Store-Service.
+    """
+
+    __tablename__ = "sent_mail_examples"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    graph_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    recipient: Mapped[str | None] = mapped_column(Text)
+    subject: Mapped[str | None] = mapped_column(Text)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    language: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
 class LearnedRule(Base):
     """Vom Agenten vorgeschlagene oder manuell gepflegte Regel.
 

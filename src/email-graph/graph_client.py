@@ -569,6 +569,24 @@ class GraphClient:
         msgs.sort(key=lambda m: m.get("sentDateTime", ""), reverse=True)
         return msgs
 
+    async def list_sent_messages(self, top: int = 200, skip: int = 0) -> list[dict]:
+        """Zuletzt GESENDETE E-Mails (Ordner ``sentitems``), neueste zuerst.
+
+        Grundlage fuer den Style-Store: Anthonys eigene Antworten werden lokal
+        indexiert und pro Draft als Few-Shot-Stil-Anker abgerufen. Liefert Roh-
+        Nachrichten inkl. ``body`` und ``toRecipients``.
+        """
+        data = await self._get(
+            f"{self._user_path}/mailFolders/sentitems/messages",
+            {
+                "$top": str(top),
+                "$skip": str(skip),
+                "$orderby": "sentDateTime desc",
+                "$select": "id,subject,toRecipients,sentDateTime,bodyPreview,body,conversationId",
+            },
+        )
+        return data.get("value", [])
+
     async def search_emails(self, query: str, top: int = 5) -> list[dict]:
         """Volltextsuche über alle E-Mails (Graph $search)."""
         data = await self._get(

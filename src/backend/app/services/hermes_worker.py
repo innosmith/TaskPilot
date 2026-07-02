@@ -649,6 +649,87 @@ async def _build_sender_style_block(from_addr: str) -> str:
         return ""
 
 
+async def _build_style_anchor_block(meta: dict) -> str:
+    """Few-Shot-Stil-Anker aus dem lokalen Style-Store (semantisch aehnliche eigene Antworten).
+
+    Ergaenzt ``search_my_replies`` (nur derselbe Kontakt) um die stilistisch/
+    thematisch passendsten eigenen Antworten ueber ALLE Kontakte -- entscheidend fuer
+    neue Absender ohne History. Best-effort: ohne Store/Embedding faellt der Block weg.
+    """
+    if not get_settings().style_store_enabled:
+        return ""
+    try:
+        from app.services.style_store import find_style_anchors
+
+        subject = meta.get("subject", "")
+        preview = (meta.get("body_preview") or "")[:400]
+        from_addr = meta.get("from_address", "")
+        query = f"Betreff: {subject}\n{preview}"
+        async with async_session() as db:
+            anchors = await find_style_anchors(
+                db, query_text=query, recipient=from_addr, k=3
+            )
+        blocks: list[str] = []
+        for a in anchors:
+            body = (a.get("body_text") or "").strip()
+            if not body:
+                continue
+            if len(body) > 700:
+                body = body[:700].rstrip() + " […]"
+            subj = a.get("subject") or ""
+            blocks.append(f'### Beispiel (Betreff: "{subj}")\n{body}')
+        if not blocks:
+            return ""
+        return (
+            "\n---\n\n## SO SCHREIBT ANTHONY (echte frühere Antworten -- Ton kalibrieren, NICHT kopieren)\n"
+            "Diese von Anthony gesendeten Antworten treffen Ton, Rhythmus und Länge. "
+            "Nimm sie als Stil-Vorbild, übernimm aber KEINE Formulierungen wörtlich -- "
+            "schreibe passend zum aktuellen Inhalt neu:\n\n" + "\n\n".join(blocks) + "\n"
+        )
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("Stil-Anker-Block konnte nicht erzeugt werden")
+        return ""
+
+
+# Signalwoerter fuer eine Terminanfrage -- loesen im Draft-Pass den Kalender-Check aus.
+_CALENDAR_INTENT_PATTERNS = [
+    r"termin", r"meeting", r"besprechung", r"kalender", r"verf[üu]gbar",
+    r"wann\s+(?:passt|h[äa]tt|hast|k[öo]nn|kannst|w[äa]r)", r"zeitfenster",
+    r"\bslot", r"\bcall\b", r"telefonat", r"appointment", r"available",
+    r"schedule", r"treffen", r"sitzung", r"zoom", r"teams-call",
+]
+
+
+def _looks_like_scheduling(subject: str, preview: str) -> bool:
+    """Heuristik: Geht es in der Mail um einen Termin/Verfügbarkeit? Rein/testbar."""
+    text = f"{subject}\n{preview}".lower()
+    return any(re.search(p, text) for p in _CALENDAR_INTENT_PATTERNS)
+
+
+def _build_calendar_draft_step(subject: str, preview: str) -> str:
+    """Konditionale Kalender-Anweisung: bei Terminwunsch echte freie Slots vorschlagen.
+
+    Nur lesend (``find_free_slots``); es wird KEIN Termin erstellt. Faellt weg, wenn
+    die Mail nicht nach einem Termin aussieht -- haelt den Prompt sonst schlank.
+    """
+    if not _looks_like_scheduling(subject or "", preview or ""):
+        return ""
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("Europe/Zurich"))
+    start = now.strftime("%Y-%m-%dT08:00:00")
+    end = (now + timedelta(days=10)).strftime("%Y-%m-%dT19:00:00")
+    return (
+        f'3a. Diese Mail betrifft eine Terminfrage. Rufe find_free_slots(start="{start}", '
+        f'end="{end}", duration_minutes=60) auf und schlage **2-3 konkrete freie '
+        "Zeitfenster** in natürlicher Sprache vor (Wochentag + Datum + Uhrzeit, "
+        "Europe/Zurich). Biete zusätzlich als Alternative die Terminseite "
+        "https://innosmith.ch/termin/ an. Erfinde NIEMALS Slots -- nutze nur echte "
+        "Rückgaben von find_free_slots. Bei Fehler/keinen freien Slots: nur den "
+        "Terminseiten-Link anbieten.\n"
+    )
+
+
 async def _build_project_routing_hint(from_addr: str) -> str:
     """Gelerntes Projekt-Routing als weichen Prompt-Hinweis ("korrekte Zuweisung").
 
@@ -919,13 +1000,15 @@ Status und Output werden automatisch aus deiner finalen Antwort gespeichert -- r
 """ + (f"\n\n## ZUSÄTZLICHE BENUTZER-REGELN (haben Vorrang!)\n{custom_triage_prompt}" if custom_triage_prompt else "")
 
 
-async def _build_draft_prompt(meta: dict) -> str:
+async def _build_draft_prompt(meta: dict, parsed: dict | None = None) -> str:
     """Baut den fokussierten Schreib-Prompt fuer den Zwei-Pass-Draft.
 
     Einzige Aufgabe: den besten Antwort-Entwurf in Anthonys Stimme schreiben --
-    getrennt von der Klassifikation, ohne JSON-/Move-/Task-Druck. Der Lauf laedt
-    den Stil-Kanon, den Thread und die letzten eigenen Antworten (Kalibrierung) und
-    erstellt den Entwurf mit erzwungenem ``reply_to_id`` im selben Thread.
+    getrennt von der Klassifikation, ohne JSON-/Move-/Task-Druck. Der Prompt
+    enthaelt den vollstaendigen E-Mail-Body (server-seitig geladen), das Briefing
+    aus der Klassifikation (``parsed``), gelernte Stil-Anker sowie Kontext (Profil,
+    Regeln, Lektionen, Datum) und erstellt den Entwurf mit erzwungenem
+    ``reply_to_id`` im selben Thread.
     """
     email_id = meta.get("email_message_id", "")
     from_addr = meta.get("from_address", "")
@@ -949,13 +1032,22 @@ async def _build_draft_prompt(meta: dict) -> str:
         )
     sender_style_block = await _build_sender_style_block(from_addr)
     rules_block = await _build_rules_block("draft")
+    recall_block = await _build_recall_block(meta)
+    anchors_block = await _build_style_anchor_block(meta)
+    calendar_step = _build_calendar_draft_step(subject, preview)
+
+    # Vollstaendigen Body server-seitig laden (kein Verlass auf get_email-Tool).
+    body_text = await _load_email_body_text(email_id)
+    body_block = body_text or preview or "(kein Textinhalt verfügbar)"
+    briefing_block = _build_draft_briefing(parsed)
+    today = _today_context_line()
 
     thread_load = (
-        f'→ **get_thread("{conversation_id}")** -- vollständiger Thread-Kontext.\n'
+        f'→ **get_thread("{conversation_id}")** -- vollständiger Verlauf, falls der Kontext unklar ist.\n'
         if conversation_id else ""
     )
 
-    return f"""{style_section}{sender_style_block}{rules_block}
+    return f"""{style_section}{sender_style_block}{anchors_block}{rules_block}{recall_block}{briefing_block}
 ---
 
 ## AUFGABE: ANTWORT-ENTWURF SCHREIBEN
@@ -964,20 +1056,24 @@ Diese E-Mail wurde als **auto_reply** eingestuft. Schreibe jetzt den bestmöglic
 Antwort-Entwurf im persönlichen Stil von Anthony Smith. Klassifiziere NICHT neu,
 verschiebe nichts, erstelle keinen Task -- schreibe nur den Entwurf.
 
+**Heute:** {today} (Europe/Zurich)
 **E-Mail Message-ID:** {email_id}
 **Betreff:** {subject}
 **Von:** {from_name} <{from_addr}>
-**Vorschau:** {preview}
+
+**E-MAIL-INHALT (vollständig, bereinigt -- darauf beziehst du dich):**
+{body_block}
 
 ### Vorgehen
-1. **get_email("{email_id}")** -- lies die vollständige E-Mail (nicht nur die Vorschau).
-{thread_load}2. **search_my_replies("{from_addr}")** -- nimm die letzten eigenen Antworten an
-   diesen Kontakt als Ton-/Register-Kalibrierung (Anrede, Länge, Schlussformel).
-   Orientiere dich daran, **kopiere aber nicht wörtlich** -- schreibe passend zum
-   aktuellen Inhalt neu.
+1. Der vollständige E-Mail-Inhalt steht oben. Rufe get_email("{email_id}") nur auf,
+   wenn du wirklich zusätzliche Details brauchst.
+{thread_load}2. Nutze die Stil-Anker oben («SO SCHREIBT ANTHONY») und -- für diesen konkreten
+   Kontakt -- **search_my_replies("{from_addr}")** als Ton-/Register-Kalibrierung
+   (Anrede, Länge, Schlussformel). Orientiere dich daran, **kopiere aber nicht
+   wörtlich** -- schreibe passend zum aktuellen Inhalt neu.
 3. **Spiegle das Register** des Absenders (Du/Sie und Grussform, siehe Schreibstil).
    Schreibt er «Hallo Anthony», antworte «Hallo [Vorname]», nicht «Lieber/Liebe».
-4. Formuliere natürlich und flüssig, halte dich an den Self-Review im email-style-Skill.
+{calendar_step}4. Formuliere natürlich und flüssig, halte dich an den Self-Review im email-style-Skill.
 5. **create_draft** mit **reply_to_id="{email_id}"** (Antwort im selben Thread,
    NIE ein neuer Thread). Empfänger NICHT manuell überschreiben -- To + CC der
    Diskussion werden automatisch übernommen. Das Backend erzwingt die Thread-
@@ -1435,6 +1531,78 @@ async def _build_graph_client():
         client_secret=s.graph_client_secret,
         user_email=s.graph_user_email,
     ))
+
+
+_WEEKDAYS_DE = [
+    "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag",
+]
+
+
+def _today_context_line() -> str:
+    """Heutiges Datum + Wochentag in Europe/Zurich (fuer terminbezogene Antworten)."""
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("Europe/Zurich"))
+    return f"{_WEEKDAYS_DE[now.weekday()]}, {now.strftime('%d.%m.%Y')}"
+
+
+async def _load_email_body_text(email_id: str, cap: int = 4000) -> str:
+    """Laedt den vollstaendigen E-Mail-Body server-seitig (HTML->Text, gekappt).
+
+    Wird direkt in den Draft-Prompt eingebettet, damit der Schreib-Pass den echten
+    Inhalt kennt, ohne auf einen (fehleranfaelligen) get_email-Tool-Call angewiesen
+    zu sein -- verhindert Halluzinationen bei abgekuerztem Vorgehen. Der zitierte
+    Original-Thread wird fuer einen fokussierten Prompt entfernt. Best-effort:
+    liefert "" bei fehlender Graph-Konfiguration oder Fehler.
+    """
+    if not email_id:
+        return ""
+    client = await _build_graph_client()
+    if client is None:
+        return ""
+    try:
+        from app.services.learning import html_to_text, strip_quoted_history
+
+        msg = await client.get_email(email_id)
+        body = msg.get("body", {}) or {}
+        raw = body.get("content") or msg.get("bodyPreview") or ""
+        text_body = html_to_text(raw) if raw else ""
+        # Zitierten Verlauf abtrennen (der eigentliche neue Inhalt zaehlt); faellt
+        # der Trim leer aus (Marker am Anfang), bleibt der volle Text erhalten.
+        text_body = strip_quoted_history(text_body) or text_body
+        if len(text_body) > cap:
+            text_body = text_body[:cap].rstrip() + " […]"
+        return text_body
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("Draft: voller Body konnte nicht geladen werden (email_id=%s)", str(email_id)[:40])
+        return ""
+    finally:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _build_draft_briefing(parsed: dict | None) -> str:
+    """Reicht die Begruendung des Klassifikations-Passes als Antwort-Briefing weiter.
+
+    Pass 1 hat die volle Mail gelesen und begruendet (``rationale``), warum geantwortet
+    wird -- dieses Signal geht sonst verloren. Rein und damit testbar.
+    """
+    parsed = parsed or {}
+    rationale = (parsed.get("rationale") or "").strip()
+    label = (parsed.get("label") or "").strip()
+    if not rationale and not label:
+        return ""
+    lines: list[str] = []
+    if label:
+        lines.append(f"- Einordnung: {label}")
+    if rationale:
+        lines.append(f"- Weshalb eine Antwort nötig ist: {rationale}")
+    return (
+        "\n---\n\n## BRIEFING AUS DER KLASSIFIKATION (das soll die Antwort leisten)\n"
+        + "\n".join(lines) + "\n"
+    )
 
 
 async def _snapshot_agent_draft(draft_id: str) -> dict | None:
@@ -2149,7 +2317,7 @@ async def _post_process_triage(
         and not draft_id
         and get_settings().two_pass_draft
     ):
-        draft_id = await _generate_reply_draft(meta)
+        draft_id = await _generate_reply_draft(meta, parsed)
         if draft_id:
             # Tools des Schreib-Passes fürs Kontext-Gate mitzählen (get_email/
             # get_thread/search_my_replies liefen erst jetzt).
@@ -2646,20 +2814,21 @@ def _run_agent_sync(
     return str(result or "")
 
 
-async def _generate_reply_draft(meta: dict) -> str | None:
+async def _generate_reply_draft(meta: dict, parsed: dict | None = None) -> str | None:
     """Zweiter, fokussierter Schreib-Pass (nur bei ``two_pass_draft``).
 
     Erzeugt den Antwort-Entwurf in einem eigenen Agenten-Lauf mit Prosa-Sampling,
-    getrennt von der Klassifikation. Best-effort: liefert die echte create_draft-ID
-    (ground truth aus dem Tool-Callback) oder ``None``. Bei ``None`` greift im
-    Post-Processing der bestehende Fail-closed-Pfad (auto_reply ohne Draft -> fyi).
+    getrennt von der Klassifikation. ``parsed`` reicht das Briefing (rationale/label)
+    aus Pass 1 weiter. Best-effort: liefert die echte create_draft-ID (ground truth
+    aus dem Tool-Callback) oder ``None``. Bei ``None`` greift im Post-Processing der
+    bestehende Fail-closed-Pfad (auto_reply ohne Draft -> fyi).
     """
     global _job_created_draft_id
     if _agent is None:
         logger.warning("Zwei-Pass-Draft: kein Worker-Agent verfügbar")
         return None
     try:
-        prompt = await _build_draft_prompt(meta)
+        prompt = await _build_draft_prompt(meta, parsed)
     except Exception:  # noqa: BLE001 - best-effort
         logger.exception("Zwei-Pass-Draft: Prompt-Bau fehlgeschlagen")
         return None
@@ -3020,12 +3189,28 @@ async def _worker_loop() -> None:
     last_reap = time.monotonic()
     last_draft_cleanup = time.monotonic()
     last_resweep = time.monotonic()
+    # Style-Store gleich nach dem Start einmal synchronisieren (Initial-Backfill),
+    # danach im konfigurierten Intervall.
+    style_interval = max(3600, get_settings().style_store_sync_interval_seconds)
+    last_style_sync = time.monotonic() - style_interval - 1
 
     while True:
         try:
             if time.monotonic() - last_reap >= REAP_INTERVAL:
                 await _reap_stale_jobs()
                 last_reap = time.monotonic()
+
+            if (
+                get_settings().style_store_enabled
+                and time.monotonic() - last_style_sync >= style_interval
+            ):
+                try:
+                    from app.services.style_store import sync_style_store
+
+                    await sync_style_store()
+                except Exception:
+                    logger.exception("Style-Store-Sync fehlgeschlagen")
+                last_style_sync = time.monotonic()
 
             if time.monotonic() - last_draft_cleanup >= DRAFT_CLEANUP_INTERVAL:
                 try:

@@ -8,9 +8,33 @@ Prueft die signal-relevanten Hilfsfunktionen ohne DB/LLM:
 
 from app.services.learning import (
     compute_draft_diff,
+    extract_salutation_signature,
     html_to_text,
     strip_quoted_history,
 )
+
+
+class TestExtractSalutationSignature:
+    def test_informal_du_greeting_and_closing(self):
+        body = "Hallo Peter,\n\nDanke dir für die Rückmeldung. Ich melde mich.\n\nLG Anthony"
+        out = extract_salutation_signature(body)
+        assert out["greeting"] == "Hallo Peter"
+        assert out["register"] == "du"
+        assert out["closing"].lower().startswith("lg")
+
+    def test_formal_sie_greeting(self):
+        body = (
+            "Sehr geehrter Herr Müller,\n\nBesten Dank für Ihre Anfrage.\n\n"
+            "Freundliche Grüsse\nAnthony Smith"
+        )
+        out = extract_salutation_signature(body)
+        assert out["greeting"].startswith("Sehr geehrter Herr Müller")
+        assert out["register"] == "sie"
+        assert "grüsse" in out["closing"].lower()
+
+    def test_no_signals_returns_empty(self):
+        assert extract_salutation_signature("") == {}
+        assert "greeting" not in extract_salutation_signature("Text ohne Anrede.")
 
 
 class TestHtmlToText:

@@ -188,11 +188,22 @@ async def test_two_pass_skipped_when_draft_already_present():
 # ── _build_draft_prompt ──────────────────────────────────────────────────────
 
 
+def _draft_prompt_patches():
+    """Alle asynchronen Kontext-Builder von _build_draft_prompt neutralisieren."""
+    return [
+        patch.object(hw, "_style_skill_available", lambda: True),
+        patch.object(hw, "_build_sender_style_block", new=AsyncMock(return_value="")),
+        patch.object(hw, "_build_rules_block", new=AsyncMock(return_value="")),
+        patch.object(hw, "_build_recall_block", new=AsyncMock(return_value="")),
+        patch.object(hw, "_build_style_anchor_block", new=AsyncMock(return_value="")),
+        patch.object(hw, "_load_email_body_text", new=AsyncMock(return_value="Voller Mailtext.")),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_build_draft_prompt_forces_reply_to_id_and_calibration():
-    with patch.object(hw, "_style_skill_available", lambda: True), \
-            patch.object(hw, "_build_sender_style_block", new=AsyncMock(return_value="")), \
-            patch.object(hw, "_build_rules_block", new=AsyncMock(return_value="")):
+    p = _draft_prompt_patches()
+    with p[0], p[1], p[2], p[3], p[4], p[5]:
         prompt = await hw._build_draft_prompt(dict(_META))
     assert 'reply_to_id="M1"' in prompt
     assert "create_draft" in prompt
@@ -201,3 +212,43 @@ async def test_build_draft_prompt_forces_reply_to_id_and_calibration():
     assert "skill_view(name='email-style')" in prompt
     # Der Schreib-Pass verlangt KEIN erneutes Klassifizieren.
     assert "Klassifiziere NICHT" in prompt
+    # Voller Body ist eingebettet, Datum-Kontext vorhanden.
+    assert "Voller Mailtext." in prompt
+    assert "Heute:" in prompt
+
+
+@pytest.mark.asyncio
+async def test_build_draft_prompt_includes_briefing_from_parsed():
+    p = _draft_prompt_patches()
+    parsed = {"rationale": "Kundin bittet um Offerte", "label": "Wichtig"}
+    with p[0], p[1], p[2], p[3], p[4], p[5]:
+        prompt = await hw._build_draft_prompt(dict(_META), parsed)
+    assert "BRIEFING AUS DER KLASSIFIKATION" in prompt
+    assert "Kundin bittet um Offerte" in prompt
+
+
+@pytest.mark.asyncio
+async def test_build_draft_prompt_injects_calendar_step_for_scheduling():
+    p = _draft_prompt_patches()
+    meta = dict(_META)
+    meta["subject"] = "Terminanfrage nächste Woche"
+    meta["body_preview"] = "Hast du Zeit für ein kurzes Meeting?"
+    with p[0], p[1], p[2], p[3], p[4], p[5]:
+        prompt = await hw._build_draft_prompt(meta)
+    assert "find_free_slots" in prompt
+    assert "innosmith.ch/termin" in prompt
+
+
+def test_build_draft_briefing_empty_without_signals():
+    assert hw._build_draft_briefing(None) == ""
+    assert hw._build_draft_briefing({}) == ""
+
+
+def test_looks_like_scheduling_detects_and_ignores():
+    assert hw._looks_like_scheduling("Kurzer Call morgen?", "Wann passt es dir?")
+    assert hw._looks_like_scheduling("Meeting", "")
+    assert not hw._looks_like_scheduling("Rechnung Juni", "Anbei die Rechnung.")
+
+
+def test_calendar_step_absent_for_non_scheduling():
+    assert hw._build_calendar_draft_step("Rechnung", "Anbei die Rechnung") == ""

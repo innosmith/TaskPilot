@@ -139,6 +139,15 @@ class Settings(BaseSettings):
     draft_top_k: int = 20
     draft_presence_penalty: float = 1.5
 
+    # Style-Store (lokaler Few-Shot-Speicher gesendeter Mails, pgvector). Ein
+    # periodischer Sync indexiert Anthonys gesendete Antworten; pro Draft werden
+    # die stilistisch/thematisch passendsten als Few-Shot-Anker geholt -- auch fuer
+    # neue Kontakte ohne History. Bleibt vollstaendig on-prem (lokale Embeddings).
+    style_store_enabled: bool = True
+    # Sync-Intervall (Default: taeglich) und Menge pro Lauf/Backfill.
+    style_store_sync_interval_seconds: int = 86400
+    style_store_sync_top: int = 300
+
     # Pipedrive CRM
     pipedrive_api_token: str = ""
     pipedrive_domain: str = "innosmith"

@@ -598,6 +598,24 @@ CREATE INDEX idx_learned_rules_status ON learned_rules(status);
 CREATE INDEX idx_learned_rules_scope ON learned_rules(scope);
 CREATE INDEX idx_learned_rules_type ON learned_rules(rule_type);
 
+-- Style-Store: gesendete Antworten als Few-Shot-Stil-Anker fuer Entwuerfe (pgvector)
+CREATE TABLE sent_mail_examples (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    graph_id    TEXT UNIQUE NOT NULL,
+    recipient   TEXT,
+    subject     TEXT,
+    body_text   TEXT NOT NULL,
+    sent_at     TIMESTAMPTZ,
+    language    TEXT,
+    embedding   vector(1024),
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_sent_mail_examples_recipient ON sent_mail_examples(recipient);
+CREATE INDEX idx_sent_mail_examples_sent_at ON sent_mail_examples(sent_at DESC);
+CREATE INDEX idx_sent_mail_examples_embedding
+    ON sent_mail_examples USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
 CREATE TRIGGER agent_feedback_notify AFTER INSERT OR UPDATE ON agent_feedback
     FOR EACH ROW EXECUTE FUNCTION notify_change('agent_feedback_changed');
 

@@ -78,6 +78,106 @@ def _normalize(text_body: str) -> str:
     return re.sub(r"\s+", " ", text_body or "").strip().lower()
 
 
+# Anrede-Marker: formell -> Sie, informell -> eher Du (feiner via Pronomen bestaetigt).
+_FORMAL_GREETING = re.compile(
+    r"^(sehr geehrte[rs]?|guten (?:tag|morgen|abend)|gr[üu]ezi|dear)\b", re.I
+)
+_INFORMAL_GREETING = re.compile(
+    r"^(hallo|hoi|hi|hey|liebe[rs]?|salut|servus|hoi zäme|hoi zäme)\b", re.I
+)
+_ANY_GREETING = re.compile(
+    r"^(sehr geehrte[rs]?|guten (?:tag|morgen|abend)|gr[üu]ezi|dear|hallo|hoi|hi|"
+    r"hey|liebe[rs]?|salut|servus)\b",
+    re.I,
+)
+# Schlussformeln (Phrase, ohne Namenszeile).
+_CLOSING = re.compile(
+    r"^(lg\b|liebe gr[üu]sse|freundliche gr[üu]sse|beste gr[üu]sse|herzliche gr[üu]sse|"
+    r"viele gr[üu]sse|sonnige gr[üu]sse|gr[üu]sse\b|gruss\b|mit freundlichen gr[üu]ssen|"
+    r"besten dank und gr[üu]sse|best regards|kind regards|warm regards|cheers|"
+    r"thanks and regards|thank you)\b",
+    re.I,
+)
+
+
+def extract_salutation_signature(text_body: str) -> dict:
+    """Leitet Anrede, Register (Du/Sie) und Schlussformel aus einer echten Antwort ab.
+
+    Rein und damit testbar. Nutzt bewusst nur robuste Muster (Zeilenanfang), damit
+    keine Halluzination entsteht -- fehlt ein Signal, bleibt der Schluessel aussen vor.
+    Returns z. B. ``{"greeting": "Hallo Peter", "register": "du", "closing": "LG"}``.
+    """
+    clean = strip_quoted_history(html_to_text(text_body)) or html_to_text(text_body)
+    lines = [ln.strip() for ln in clean.splitlines() if ln.strip()]
+    result: dict[str, str] = {}
+    if not lines:
+        return result
+
+    # Anrede: erste passende Zeile in den ersten drei Zeilen.
+    greeting_line = None
+    for ln in lines[:3]:
+        if _ANY_GREETING.match(ln):
+            greeting_line = ln.rstrip(",").strip()
+            break
+    if greeting_line:
+        result["greeting"] = greeting_line[:80]
+
+    # Register: primaer aus der Anrede, sonst aus Pronomen-Haeufigkeit.
+    lowered = clean.lower()
+    if greeting_line and _FORMAL_GREETING.match(greeting_line):
+        result["register"] = "sie"
+    elif greeting_line and _INFORMAL_GREETING.match(greeting_line) and not greeting_line.lower().startswith(("liebe", "lieber")):
+        result["register"] = "du"
+    else:
+        du = len(re.findall(r"\b(du|dich|dir|dein[e]?[nmrs]?)\b", lowered))
+        sie = len(re.findall(r"\b(ihnen|ihre[nmrs]?)\b", lowered))
+        if du or sie:
+            result["register"] = "du" if du >= sie else "sie"
+
+    # Schlussformel: letzte passende Zeile in den letzten sechs Zeilen.
+    for ln in reversed(lines[-6:]):
+        if _CLOSING.match(ln):
+            result["closing"] = ln.rstrip(",").strip()[:60]
+            break
+    return result
+
+
+async def update_learned_tone(
+    db: AsyncSession,
+    *,
+    email: str | None,
+    tone: dict | None,
+    commit: bool = False,
+) -> None:
+    """Merged Anrede/Register/Schlussformel in ``sender_profiles.learned_tone``.
+
+    JSONB-Merge (``||``) -- vorhandene Schluessel werden durch neuere Werte ersetzt,
+    andere bleiben erhalten. Legt das Profil bei Bedarf an. Best-effort.
+    """
+    if not email or not tone:
+        return
+    try:
+        import json as _json
+
+        await db.execute(
+            text(
+                """
+                INSERT INTO sender_profiles (email, learned_tone, language)
+                VALUES (:email, CAST(:tone AS jsonb), 'de')
+                ON CONFLICT (email) DO UPDATE SET
+                    learned_tone = COALESCE(sender_profiles.learned_tone, '{}'::jsonb)
+                                   || CAST(:tone AS jsonb),
+                    updated_at = now()
+                """
+            ),
+            {"email": email.lower(), "tone": _json.dumps(tone)},
+        )
+        if commit:
+            await db.commit()
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("update_learned_tone fehlgeschlagen (%s)", email)
+
+
 def compute_draft_diff(original_html: str | None, sent_html: str | None) -> tuple[str, bool]:
     """Vergleicht Agent-Entwurf und gesendete Fassung (nur neuer Text, ohne Zitat).
 
@@ -283,6 +383,10 @@ async def capture_draft_feedback(
         if not is_clean:
             await mark_episode_corrected(db, agent_job_id=src_job.id)
             await bump_sender_correction(db, email=recipient, diff_text=diff_text)
+            # Die versendete Fassung zeigt Anthonys tatsaechlich bevorzugte Anrede/
+            # Schlussformel fuer diesen Kontakt -> als learned_tone festhalten.
+            tone = extract_salutation_signature(sent_html or "")
+            await update_learned_tone(db, email=recipient, tone=tone)
 
         meta["feedback_captured"] = True
         src_job.metadata_json = meta
