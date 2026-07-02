@@ -82,6 +82,7 @@ CREATE TABLE tasks (
     recurrence_max_instances INT,
     template_id     UUID REFERENCES tasks(id),
     email_message_id TEXT,
+    email_conversation_id TEXT,
     calendar_event_id TEXT,
     calendar_duration_minutes INT,
     calendar_preferred_time TEXT,
@@ -571,22 +572,31 @@ CREATE INDEX idx_agent_episodes_corrected ON agent_episodes(was_corrected);
 CREATE INDEX idx_agent_episodes_embedding
     ON agent_episodes USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
--- Gelernte Regeln (Agent schlaegt vor, Berater gibt frei)
+-- Gelernte/gepflegte Regeln (Agent schlaegt vor oder manuell gepflegt)
+--   rule_type='llm'           -> Freitext-Leitregel, je nach scope in Prompt injiziert
+--   rule_type='deterministic' -> match_conditions -> action, im Code vor dem LLM
 CREATE TABLE learned_rules (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scope           TEXT NOT NULL DEFAULT 'triage'
-                    CHECK (scope IN ('triage', 'draft', 'task', 'calendar', 'general')),
-    rule_text       TEXT NOT NULL,
-    evidence        JSONB DEFAULT '{}'::jsonb,
-    status          TEXT NOT NULL DEFAULT 'proposed'
-                    CHECK (status IN ('proposed', 'active', 'rejected', 'archived')),
-    autonomy_hint   TEXT,
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    approved_at     TIMESTAMPTZ
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scope            TEXT NOT NULL DEFAULT 'triage'
+                     CHECK (scope IN ('triage', 'draft', 'task', 'calendar', 'general', 'chat')),
+    rule_text        TEXT NOT NULL,
+    evidence         JSONB DEFAULT '{}'::jsonb,
+    status           TEXT NOT NULL DEFAULT 'proposed'
+                     CHECK (status IN ('proposed', 'active', 'rejected', 'archived')),
+    autonomy_hint    TEXT,
+    rule_type        TEXT NOT NULL DEFAULT 'llm'
+                     CHECK (rule_type IN ('llm', 'deterministic')),
+    match_conditions JSONB DEFAULT '{}'::jsonb,
+    action           JSONB DEFAULT '{}'::jsonb,
+    priority         INT DEFAULT 100,
+    applied_count    INT DEFAULT 0,
+    created_at       TIMESTAMPTZ DEFAULT now(),
+    approved_at      TIMESTAMPTZ
 );
 
 CREATE INDEX idx_learned_rules_status ON learned_rules(status);
 CREATE INDEX idx_learned_rules_scope ON learned_rules(scope);
+CREATE INDEX idx_learned_rules_type ON learned_rules(rule_type);
 
 CREATE TRIGGER agent_feedback_notify AFTER INSERT OR UPDATE ON agent_feedback
     FOR EACH ROW EXECUTE FUNCTION notify_change('agent_feedback_changed');

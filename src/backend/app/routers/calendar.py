@@ -377,11 +377,9 @@ async def get_capacity(
     month = _calc_period(now, month_end_date, events)
 
     if month.free_hours < week.free_hours:
-        month = CapacityPeriod(
-            total_hours=month.total_hours,
-            booked_hours=month.booked_hours,
-            free_hours=week.free_hours,
-            work_days=month.work_days,
-        )
+        # Monat kann nie weniger frei haben als die (enthaltene) Woche. Nur
+        # free_hours anheben, alle uebrigen Felder erhalten (frueher wurden hier
+        # meeting_hours/blocker_hours weggelassen -> 500 ValidationError).
+        month = month.model_copy(update={"free_hours": week.free_hours})
 
     return CapacityResponse(week=week, month=month, generated_at=now)

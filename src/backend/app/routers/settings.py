@@ -9,7 +9,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, require_role
-from app.config import get_settings
+# Alias, weil dieses Modul einen Route-Handler ``get_settings`` definiert, der den
+# Config-Getter sonst im Namespace ueberschattet (Coroutine statt Settings).
+from app.config import get_settings as get_app_settings
 from app.database import get_db
 from app.models import User
 
@@ -163,7 +165,7 @@ async def get_triage_settings(
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
     s = user.settings or {}
-    cfg = get_settings()
+    cfg = get_app_settings()
     return TriageSettingsResponse(
         **{f: s.get(f) for f in TRIAGE_FIELDS},
         integrations_active_env=cfg.integrations_active,
@@ -215,7 +217,7 @@ async def get_integration_settings(
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Nur Owner")
     s = user.settings or {}
-    cfg = get_settings()
+    cfg = get_app_settings()
     return IntegrationSettingsResponse(
         pipedrive_api_token=_mask_token(s.get("pipedrive_api_token") or ""),
         pipedrive_domain=s.get("pipedrive_domain") or "innosmith",

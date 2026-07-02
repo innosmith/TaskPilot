@@ -1,0 +1,33 @@
+# TaskPilot Sandbox-Executor
+#
+# Der EINZIGE Container mit Zugriff auf den Docker-Socket. Startet ausschliesslich
+# das gehaertete Image `taskpilot-sandbox:latest` mit fest verdrahteten Flags.
+# Basis `docker:cli` bringt den Docker-Client multi-arch (inkl. arm64) aus Docker Hub
+# mit -- keine zusaetzliche Build-Whitelist-Domain noetig.
+FROM docker:cli
+
+LABEL maintainer="InnoSmith GmbH"
+LABEL description="TaskPilot Sandbox-Executor -- token-geschuetzte HTTP-API vor docker run"
+
+RUN apk add --no-cache python3 py3-pip curl
+
+WORKDIR /opt/executor
+
+COPY src/sandbox-executor/requirements.txt /opt/executor/requirements.txt
+# Build-Deps nur temporaer, falls fuer eine Abhaengigkeit kein musl-Wheel (aarch64)
+# existiert; danach wieder entfernen, um das Image schlank zu halten.
+RUN apk add --no-cache --virtual .build-deps gcc musl-dev python3-dev libffi-dev \
+    && pip install --no-cache-dir --break-system-packages -r /opt/executor/requirements.txt \
+    && apk del .build-deps
+
+COPY src/sandbox-executor/executor.py /opt/executor/executor.py
+COPY src/sandbox-executor/app.py /opt/executor/app.py
+# Striktes Seccomp-Profil mitliefern (opt-in via TP_SANDBOX_SECCOMP).
+COPY docker/sandbox/seccomp-profile.json /opt/sandbox/seccomp-profile.json
+
+EXPOSE 8090
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:8090/health || exit 1
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090"]

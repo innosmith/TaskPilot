@@ -23,6 +23,18 @@ class TestExtractTeachIntent:
         assert lesson is not None
         assert "BFH" in lesson
 
+    def test_merke_colon_bare(self):
+        # Blosse Kurzform "merke: ..." (ohne "dir") muss greifen.
+        lesson = extract_teach_intent(
+            "merke: eine Terminzusage braucht keine neue Aufgabe, nur Kategorie + Move"
+        )
+        assert lesson is not None
+        assert lesson.lower().startswith("eine terminzusage")
+
+    def test_merke_comma_is_not_teach(self):
+        # "ich merke, dass ..." ist Beobachtung, keine Lehr-Absicht (nur ":" triggert).
+        assert extract_teach_intent("Ich merke, dass das Projekt stockt") is None
+
     def test_kuenftig_trigger(self):
         lesson = extract_teach_intent(
             "Künftig sollst du Newsletter sofort archivieren"

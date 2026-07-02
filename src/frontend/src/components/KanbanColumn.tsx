@@ -90,6 +90,7 @@ export function KanbanColumn({
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const editRef = useRef<HTMLInputElement>(null);
 
@@ -107,6 +108,7 @@ export function KanbanColumn({
         setMenuOpen(false);
         setColorPickerOpen(false);
         setIconPickerOpen(false);
+        setConfirmDelete(false);
       }
     };
     document.addEventListener('mousedown', handleClick);
@@ -263,7 +265,7 @@ export function KanbanColumn({
           {(onUpdateColumn || onDeleteColumn) && (
             <div className="relative" ref={menuRef}>
               <button
-                onClick={() => { setMenuOpen(!menuOpen); setColorPickerOpen(false); setIconPickerOpen(false); }}
+                onClick={() => { setMenuOpen(!menuOpen); setColorPickerOpen(false); setIconPickerOpen(false); setConfirmDelete(false); }}
                 className={`rounded-lg p-1 transition-colors ${btnClasses}`}
                 title="Spalten-Einstellungen"
               >
@@ -321,17 +323,42 @@ export function KanbanColumn({
                     <CollapseIcon className="h-4 w-4" />
                     Spalte einklappen
                   </button>
-                  {onDeleteColumn && (
+                  {onDeleteColumn && !confirmDelete && (
                     <button
-                      onClick={async () => {
-                        if (onDeleteColumn) await onDeleteColumn(id);
-                        setMenuOpen(false);
-                      }}
+                      data-testid="column-delete-trigger"
+                      onClick={() => setConfirmDelete(true)}
                       className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
                     >
                       <TrashIcon className="h-4 w-4" />
                       Spalte löschen
                     </button>
+                  )}
+                  {onDeleteColumn && confirmDelete && (
+                    <div className="px-3 py-2">
+                      <p className="mb-2 text-xs text-red-600 dark:text-red-400">
+                        Spalte wirklich löschen? Enthaltene Aufgaben werden in eine andere Spalte verschoben.
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          data-testid="column-delete-confirm"
+                          onClick={async () => {
+                            if (onDeleteColumn) await onDeleteColumn(id);
+                            setConfirmDelete(false);
+                            setMenuOpen(false);
+                          }}
+                          className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                        >
+                          Löschen
+                        </button>
+                        <button
+                          data-testid="column-delete-cancel"
+                          onClick={() => setConfirmDelete(false)}
+                          className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                        >
+                          Abbrechen
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
               )}

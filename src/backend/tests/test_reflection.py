@@ -79,3 +79,27 @@ class TestBuildProposals:
             _fb("draft_edit", sender=None),
         ]
         assert _build_proposals(fb, min_occurrences=2) == []
+
+    def test_discarded_task_suggestions_create_triage_rule(self):
+        # Haeufigstes Realbetrieb-Signal: wiederholt verworfene Task-Vorschlaege
+        # desselben Absenders -> zurueckhaltende Triage-Leitregel.
+        fb = [
+            _fb("task_deleted", sender="alerts@system.ch"),
+            _fb("task_deleted", sender="alerts@system.ch"),
+            _fb("rejected", sender="alerts@system.ch"),
+        ]
+        proposals = _build_proposals(fb, min_occurrences=3)
+        assert len(proposals) == 1
+        scope, text, evidence, hint = proposals[0]
+        assert scope == "triage"
+        assert "fyi" in text.lower()
+        assert evidence["signal"] == "discarded_suggestions"
+        assert evidence["count"] == 3
+        assert hint == "L1"
+
+    def test_discarded_below_threshold_no_proposal(self):
+        fb = [
+            _fb("task_deleted", sender="alerts@system.ch"),
+            _fb("task_deleted", sender="alerts@system.ch"),
+        ]
+        assert _build_proposals(fb, min_occurrences=3) == []

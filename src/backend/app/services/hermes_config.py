@@ -174,6 +174,8 @@ _SETTINGS_KEYS: dict[str, str] = {
     "isi_user": "TP_ISI_USER",
     "isi_secret": "TP_ISI_SECRET",
     "openai_api_key": "TP_OPENAI_API_KEY",
+    "sandbox_executor_url": "TP_SANDBOX_EXECUTOR_URL",
+    "sandbox_executor_token": "TP_SANDBOX_EXECUTOR_TOKEN",
 }
 
 
@@ -190,9 +192,6 @@ async def populate_hermes_env() -> None:
             continue
         value = getattr(cfg, attr, "")
         os.environ[env_key] = str(value) if value not in (None, "") else ""
-
-    # Sandbox-Image (optional)
-    os.environ.setdefault("TP_SANDBOX_IMAGE", os.environ.get("TP_SANDBOX_IMAGE", ""))
 
     # DB-Settings des Owners haben für die Integrations-Tokens Vorrang.
     db_settings: dict = {}
@@ -281,8 +280,8 @@ def build_config_dict() -> dict:
             "TP_SCRIPTS_OUTPUT_DIR": "/tmp/taskpilot-scripts-output",
         }, extra_pythonpath=base),
         "sandbox": stdio("mcp-sandbox", {
-            "TP_SANDBOX_IMAGE": "${TP_SANDBOX_IMAGE}",
-            "TP_SANDBOX_OUTPUT_DIR": "/tmp/taskpilot-sandbox-output",
+            "TP_SANDBOX_EXECUTOR_URL": "${TP_SANDBOX_EXECUTOR_URL}",
+            "TP_SANDBOX_EXECUTOR_TOKEN": "${TP_SANDBOX_EXECUTOR_TOKEN}",
         }, extra_pythonpath=base),
         # Content-Converter (md -> docx/pptx). Binary nur im Docker-Image
         # vorhanden; in der Dev-Umgebung schlaegt die Discovery still fehl
@@ -312,12 +311,17 @@ def build_config_dict() -> dict:
         # die Built-in-Layer + die DB-gestuetzten Episoden/Regeln decken das ab.
         # Die *_char_limit-Werte sind Schreib-Budgets des memory-Tools, keine
         # harte Kuerzung beim Laden -- USER.md/MEMORY.md werden vollstaendig injiziert.
+        # Angehoben (2200->6000 / 1375->3000): Das alte, knappe Budget hat das
+        # memory-Tool beim Lernen blockiert ("Memory voll"). Durable Geschaefts-
+        # regeln gehoeren ohnehin in die DB (LearnedRule) -- MEMORY.md bleibt der
+        # schlanke Always-on-Layer; das groessere Budget ist nur Puffer, damit der
+        # Agent beim Notieren nicht mehr an die Wand laeuft.
         "memory": {
             "memory_enabled": True,
             "user_profile_enabled": True,
             "nudge_interval": 10,
-            "memory_char_limit": 2200,
-            "user_char_limit": 1375,
+            "memory_char_limit": 6000,
+            "user_char_limit": 3000,
             "provider": "",
         },
         # Skill-Selbstkuratierung: seltener zur Skill-Erstellung anstupsen,

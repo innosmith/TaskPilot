@@ -9,6 +9,10 @@ Regel beeinflusst den Triage-Prompt.
 Erkannte Muster:
 - **Triage-Reklassifikation**: derselbe Absender wird wiederholt von Klasse A
   nach B umklassifiziert -> Regel, kuenftig direkt als B zu triagieren.
+- **Verworfene Vorschlaege pro Absender**: Agent-Vorschlaege desselben Absenders
+  werden wiederholt verworfen/abgelehnt (``task_deleted``/``rejected``) -> Regel,
+  solche Mails zurueckhaltender (eher ``fyi``, kein Task) zu behandeln. Dies ist
+  im Realbetrieb das haeufigste Korrektursignal und wurde zuvor ignoriert.
 - **Draft-Edits pro Absender**: Antworten an denselben Kontakt werden wiederholt
   stilistisch angepasst -> Regel, den Stil-Anker konsequenter zu uebernehmen.
 
@@ -76,7 +80,34 @@ def _build_proposals(
             )
         )
 
-    # 2) Draft-Edits pro Absender
+    # 2) Verworfene Task-Vorschlaege / abgelehnte Entwuerfe pro Absender.
+    # Semantik: Der Agent hat wiederholt etwas vorgeschlagen, das der Berater
+    # weggeworfen hat -> kuenftig zurueckhaltender sein. Bleibt eine LLM-Leitregel
+    # (kein deterministisches fyi), weil ein reiner Absender-Filter zu grob waere
+    # (z. B. Self-Mails: nur bestimmte Betreffe sind Laerm).
+    discard: Counter[str] = Counter()
+    for fb in feedback:
+        if fb.feedback_type in ("task_deleted", "rejected") and fb.sender_email:
+            discard[fb.sender_email.lower()] += 1
+    for sender, count in discard.items():
+        if count < min_occurrences:
+            continue
+        rule_text = (
+            f"E-Mails von {sender} fuehrten wiederholt zu verworfenen Agent-Vorschlaegen "
+            f"({count}x abgelehnt/geloescht). Solche Mails zurueckhaltend behandeln: im "
+            f"Zweifel als 'fyi' einordnen und KEINEN Task erstellen, ausser es ist klar "
+            f"eine konkrete Handlung von Anthony noetig."
+        )
+        proposals.append(
+            (
+                "triage",
+                rule_text,
+                {"sender": sender, "signal": "discarded_suggestions", "count": count},
+                "L1",
+            )
+        )
+
+    # 3) Draft-Edits pro Absender
     edits: Counter[str] = Counter()
     for fb in feedback:
         if fb.feedback_type == "draft_edit" and fb.sender_email:

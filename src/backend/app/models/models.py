@@ -314,7 +314,14 @@ class AgentEpisode(Base):
 
 
 class LearnedRule(Base):
-    """Vom Agenten vorgeschlagene, vom Berater freigegebene Lern-Regel."""
+    """Vom Agenten vorgeschlagene oder manuell gepflegte Regel.
+
+    Zwei Typen:
+      - ``rule_type='llm'``: Freitext-Leitregel (``rule_text``), die je nach
+        ``scope`` (Skill/Kontext) in den passenden Prompt injiziert wird.
+      - ``rule_type='deterministic'``: ``match_conditions`` -> ``action`` wird im
+        Code vor dem LLM ausgeführt (z. B. Absender X -> fyi + Kategorie + Move).
+    """
 
     __tablename__ = "learned_rules"
 
@@ -324,6 +331,16 @@ class LearnedRule(Base):
     evidence: Mapped[dict] = mapped_column(JSONB, server_default="{}")
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="proposed")
     autonomy_hint: Mapped[str | None] = mapped_column(Text)
+    # Regel-Engine: Typ unterscheidet LLM-Leitregel von deterministischer Override.
+    rule_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="llm")
+    # Liste von Bedingungen ``[{field, op, value}, ...]`` (AND), nur deterministisch.
+    match_conditions: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    # Aktion ``{triage_class, category, folder}``, nur deterministisch.
+    action: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    # Reihenfolge bei deterministischen Regeln (kleiner = zuerst geprüft).
+    priority: Mapped[int] = mapped_column(Integer, server_default="100")
+    # Wie oft die Regel bereits angewandt wurde (Anzeige/Vertrauen).
+    applied_count: Mapped[int] = mapped_column(Integer, server_default="0")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     approved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 

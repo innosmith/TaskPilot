@@ -1224,7 +1224,22 @@ async def _run_agent_background(
         _check_cancel()
         if name and name not in _tools_used:
             _tools_used.append(str(name))
-        _trace_append({"type": "tool_start", "name": str(name)})
+        event = {"type": "tool_start", "name": str(name)}
+        # Bei Skill-Aufrufen den geladenen Skill-Namen miterfassen -- analog zum
+        # Worker (_on_tool_start), damit die Skill-Nutzungs-Analytics auch
+        # explizite skill_view-Loads aus dem Chat zaehlen kann.
+        if str(name) in ("skill_view", "skill_manage"):
+            skill = None
+            try:
+                if isinstance(args, dict):
+                    skill = args.get("name") or args.get("skill")
+                elif isinstance(args, str) and args.strip().startswith("{"):
+                    skill = (json.loads(args) or {}).get("name")
+            except Exception:  # noqa: BLE001 - Trace darf nie scheitern
+                skill = None
+            if skill:
+                event["skill"] = str(skill)
+        _trace_append(event)
         _emit("tool_start", str(name))
 
     def on_tool_complete(tc_id, name, args, result):

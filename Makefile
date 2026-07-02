@@ -5,7 +5,7 @@ COMPOSE_SHARED = docker compose -f docker/docker-compose.yml
 COMPOSE_INT    = $(COMPOSE_SHARED) -f docker/docker-compose.integration.yml --profile clamav
 COMPOSE_PROD   = docker compose -p taskpilot-prod --env-file .env.prod -f docker/docker-compose.prod.yml
 
-.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox test test-smoke test-contract test-e2e test-explore test-all reset-dev schema-int seed-int backup-prod backup-schedule backup-unschedule backup-status
+.PHONY: help dev int prod build down logs-int logs-prod status health vendor sandbox sandbox-executor test test-smoke test-contract test-e2e test-explore test-all reset-dev schema-int seed-int backup-prod backup-schedule backup-unschedule backup-status
 
 help: ## Zeigt diese Hilfe
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -59,7 +59,10 @@ vendor: ## Vendor-Verzeichnis vorbereiten (private Packages)
 sandbox: ## Sandbox-Image bauen
 	docker build -t taskpilot-sandbox:latest docker/sandbox/
 
-build: vendor ## Alle Images bauen (ohne Start)
+sandbox-executor: ## Sandbox-Executor-Image bauen (Sidecar mit docker.sock)
+	docker build -t taskpilot-sandbox-executor:latest -f docker/Dockerfile.sandbox-executor .
+
+build: vendor sandbox sandbox-executor ## Alle Images bauen (ohne Start)
 	$(COMPOSE_INT) build
 	$(COMPOSE_PROD) build
 	@echo "Alle Images gebaut."

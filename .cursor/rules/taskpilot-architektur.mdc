@@ -34,7 +34,8 @@ src/
   mcp-signa/         → MCP-Server für SIGNA Strategic Intelligence
   mcp-invoiceinsight/→ MCP-Server für InvoiceInsight Kreditoren-Analyse
   mcp-scripts/       → MCP-Server für Script-Orchestrierung (Docker)
-  mcp-sandbox/       → MCP-Server für Code-Sandbox (isolierte Ausführung)
+  mcp-sandbox/       → MCP-Server für Code-Sandbox (delegiert an Sandbox-Executor)
+  sandbox-executor/  → Sandbox-Executor-Sidecar (einziger docker.sock-Zugriff, HTTP-API)
   email-graph/       → Shared Graph API Client
   bexio/             → Shared Bexio API Client
   toggl/             → Shared Toggl API Client
@@ -50,10 +51,10 @@ docker/              → Dockerfiles, Compose (Dev + Prod), build.sh
 |-------|-------|-------------|
 | `/` | CockpitPage | Überblick: KPI, Freigaben, aktive Agenten, Fokus-Aufgaben |
 | `/agenda` | AgendaPage | Persönliche Zeithorizont-Pipeline (Fokus → Beyond) |
-| `/agenten` | AgentQueuePage | Agent-Jobs, Trace-Ansicht, Replay-Panel |
+| `/agenten` | AgentQueuePage | Agenten-Cockpit mit Tabs (`?tab=`): **Aufträge** (Jobs, Trace, Replay), **Regeln** (Leitregeln + deterministische Overrides, CRUD), **Skills** (SKILL.md-Markdown-Editor mit Backup), **Wissen** (Lernfortschritt, Triage-Statistik, Absenderprofile, Memory) |
 | `/project/:id` | ProjectBoardPage | Kanban-Board pro Projekt |
 | `/inbox` | InboxPage | E-Mail-Posteingang (Graph API) |
-| `/einstellungen` | SettingsPage | Profil, Triage-Config, Hintergrund |
+| `/einstellungen` | SettingsPage | Profil, Triage-Config, Hintergrund (Intelligenz ist ins Agenten-Cockpit umgezogen) |
 
 ## Agent-Job-Lifecycle
 
@@ -103,7 +104,7 @@ Endpoint: `GET /api/sse/events`
 - **Input-Sanitization:** bleach (Tasks), Pydantic-Schemas
 - **Upload-Scan:** ClamAV via aioclamd (`clamav/clamav-debian:unstable`, ARM64-kompatibel)
 - **Security-Headers:** X-Frame-Options, HSTS, CSP, Referrer-Policy
-- **Docker:** Non-root User, kein docker.sock in Prod, no-new-privileges
+- **Docker:** Non-root User; kein docker.sock im Backend. Docker-Zugriff ausschliesslich im `taskpilot-sandbox-executor`-Sidecar (token-geschützt, startet nur das gehärtete Sandbox-Image). `no-new-privileges` deaktiviert (Kernel 6.17-nvidia blockt exec)
 - **Audit-Log:** `audit_log`-Tabelle fuer sicherheitsrelevante Aktionen
 - **DB-Migrationen:** Alembic (autogenerate + manuelle Bereinigung)
 
@@ -112,6 +113,7 @@ Endpoint: `GET /api/sse/events`
 - MCP-Server/GraphClient: ohne Prefix (`GRAPH_TENANT_ID`, `TP_DB_HOST` etc.)
 - Pipedrive: `TP_PIPEDRIVE_API_TOKEN` (Backend), `PIPEDRIVE_API_TOKEN` (MCP-Server)
 - Unsplash: `TP_UNSPLASH_ACCESS_KEY` (Backend)
+- Sandbox: `TP_SANDBOX_EXECUTOR_URL` + `TP_SANDBOX_EXECUTOR_TOKEN` (Backend + Hermes-MCP); Executor-Token via `.env.sandbox` (Least Privilege)
 
 ## HITL-Autonomie (4 Stufen)
 - **L0 Block:** Verboten (Finanztransaktionen, Daten löschen)

@@ -10,10 +10,12 @@ alwaysApply: false
 | Datei | Inhalt |
 |-------|--------|
 | `src/backend/requirements.txt` | Alle Python-Dependencies (gepinnt mit Mindestversionen) |
+| `src/sandbox-executor/requirements.txt` | Executor-Deps (fastapi, uvicorn) |
 | `src/frontend/package.json` | Alle Node-Dependencies |
 | `docker/Dockerfile.backend` | Backend-Image (Python 3.12-slim + System-Deps) |
 | `docker/Dockerfile.frontend` | Frontend-Image (Node 20 → Nginx) |
-| `docker/docker-compose.yml` | Shared Infra: Postgres + LiteLLM + ClamAV (Dev/Int) |
+| `docker/Dockerfile.sandbox-executor` | Sandbox-Executor-Image (docker:cli + Python + FastAPI) |
+| `docker/docker-compose.yml` | Shared Infra: Postgres + LiteLLM + Sandbox-Executor + ClamAV (Dev/Int) |
 | `docker/docker-compose.integration.yml` | Integration: Backend + Frontend (Images) |
 | `docker/docker-compose.prod.yml` | Prod: Standalone (eigene DB + ClamAV) |
 
@@ -67,6 +69,7 @@ docker compose -f docker/docker-compose.prod.yml build
 |-----------|-------|-------|------|
 | `taskpilot-clamav-dev` | `clamav/clamav-debian:unstable` | Dev/Int Virenscanner | 127.0.0.1:3310 |
 | `taskpilot-clamav` | `clamav/clamav-debian:unstable` | Prod Virenscanner | intern |
+| `taskpilot-sandbox-executor` | `taskpilot-sandbox-executor:latest` | Code-Sandbox-Executor (einziger docker.sock-Zugriff) | 127.0.0.1:8090 (Dev), sonst intern |
 
 **Wichtig:** Das offizielle `clamav/clamav` Image unterstuetzt kein ARM64 (aarch64).
 Stattdessen `clamav/clamav-debian:unstable` verwenden (Multi-Arch: amd64 + arm64).
@@ -83,9 +86,28 @@ docker compose -f docker/docker-compose.yml --profile clamav up -d clamav
 
 ## Docker-Sicherheit (Produktion)
 - Backend laeuft als Non-root User (`taskpilot`)
-- Kein docker.sock-Mount in Prod/Int
-- `no-new-privileges` Security-Option auf Backend
+- **Kein docker.sock-Mount im Backend** (Prod/Int). Der Socket ist ausschliesslich
+  in den `taskpilot-sandbox-executor`-Sidecar gemountet -- ein Mini-Service mit genau
+  einem token-geschuetzten Endpoint (`POST /execute`), der nur das feste, gehaertete
+  Image `taskpilot-sandbox:latest` mit hartkodierten Flags starten kann.
+- `no-new-privileges` ist auf Backend/Sandbox **deaktiviert** (Kernel 6.17-nvidia blockt
+  jede exec mit diesem Flag). Sandbox-Isolation stattdessen via `--network none`,
+  `--cap-drop ALL`, Memory/CPU/PID-Limits, tmpfs, read-only Input + Docker-Default-Seccomp.
 - ClamAV im internen Netzwerk (nicht extern erreichbar in Prod)
+
+## Code-Sandbox / Sandbox-Executor
+
+Der Coding-Modus (`code_execute`) und das Hermes-Tool `execute_code` fuehren generierten
+Python-Code isoliert aus. Weil das Backend containerisiert laeuft und **keinen** Docker-Zugriff
+hat, delegiert es an den `taskpilot-sandbox-executor`:
+
+- Env-Variablen (Backend + Hermes): `TP_SANDBOX_EXECUTOR_URL`, `TP_SANDBOX_EXECUTOR_TOKEN`.
+  Dev: `http://127.0.0.1:8090`; Int/Prod: `http://taskpilot-sandbox-executor:8090`.
+- Executor-Env: `TP_SANDBOX_EXECUTOR_TOKEN` (via `.env.sandbox`, Least Privilege wie
+  `.env.litellm`), `TP_SANDBOX_OUTPUT_DIR` (unter `$HOME`, pfadgleich gemountet -- Snap-Docker),
+  `TP_SANDBOX_IMAGE`, optional `TP_SANDBOX_SECCOMP`.
+- **Wichtig:** Denselben Token in `.env.sandbox` UND in `.env.dev`/`.env.integration`/`.env.prod`
+  (`TP_SANDBOX_EXECUTOR_TOKEN`) setzen. Image bauen: `make sandbox` + `make sandbox-executor`.
 
 ## DB-Migrationen (Alembic)
 

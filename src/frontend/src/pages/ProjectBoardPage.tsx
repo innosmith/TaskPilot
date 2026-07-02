@@ -589,8 +589,17 @@ export function ProjectBoardPage() {
                     fetchBoard();
                   } : undefined}
                   onDeleteColumn={isOwner ? async (colId) => {
-                    await api.delete(`/api/projects/${id}/columns/${colId}`);
-                    fetchBoard();
+                    try {
+                      await api.delete(`/api/projects/${id}/columns/${colId}`);
+                      fetchBoard();
+                    } catch (err) {
+                      const e = err as { status?: number };
+                      if (e.status === 409) {
+                        alert('Die letzte Spalte eines Projekts kann nicht gelöscht werden.');
+                      } else {
+                        alert('Spalte konnte nicht gelöscht werden. Bitte versuche es erneut.');
+                      }
+                    }
                   } : undefined}
                   onArchiveTask={async (taskId) => {
                     await api.patch(`/api/tasks/${taskId}`, { is_completed: true });

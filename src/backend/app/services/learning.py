@@ -107,6 +107,9 @@ def compute_draft_diff(original_html: str | None, sent_html: str | None) -> tupl
 # Der Text NACH der Phrase wird als zu merkende Lektion extrahiert.
 _TEACH_PATTERNS = [
     r"\bmerk(?:e)?\s+dir(?:\s+bitte)?\b[:,]?\s*",
+    # Blosser Imperativ "merke:" / "merk:" mit Doppelpunkt (haeufige Kurzform).
+    # Bewusst nur ":" (nicht ","), damit "ich merke, dass ..." kein Fehltreffer ist.
+    r"\bmerk(?:e)?\s*:\s*",
     r"\bnotier(?:e)?\s+dir(?:\s+bitte)?\b[:,]?\s*",
     r"\bpräg(?:e)?\s+dir\b.*?\bein\b[:,]?\s*",
     r"\bvergiss\s+nicht[:,]?\s*",

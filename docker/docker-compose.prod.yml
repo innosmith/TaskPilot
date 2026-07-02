@@ -44,6 +44,9 @@ services:
       TP_INVOICEINSIGHT_URL: http://host.docker.internal:8055/mcp
       TP_CLAMAV_HOST: clamav
       TP_MCP_BASE_DIR: /app
+      # Code-Sandbox laeuft im Sandbox-Executor-Sidecar (taskpilot-shared-Netz).
+      # Der Token kommt aus ../.env.prod (TP_SANDBOX_EXECUTOR_TOKEN).
+      TP_SANDBOX_EXECUTOR_URL: http://taskpilot-sandbox-executor:8090
     volumes:
       - prod-uploads:/app/uploads
       - prod-exports:/tmp/taskpilot-exports

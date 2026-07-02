@@ -38,6 +38,14 @@ if [ -f "$SCRIPT_DIR/sandbox/Dockerfile" ]; then
     docker build -t taskpilot-sandbox:latest "$SCRIPT_DIR/sandbox/"
 fi
 
+# Sandbox-Executor-Image bauen (Sidecar mit docker.sock-Zugriff)
+if [ -f "$SCRIPT_DIR/Dockerfile.sandbox-executor" ]; then
+    echo ""
+    echo "==> Sandbox-Executor-Image bauen..."
+    docker build -t taskpilot-sandbox-executor:latest \
+        -f "$SCRIPT_DIR/Dockerfile.sandbox-executor" "$PROJECT_ROOT"
+fi
+
 if [ "${1:-}" = "--all" ]; then
     echo ""
     echo "==> Integration-Images bauen..."

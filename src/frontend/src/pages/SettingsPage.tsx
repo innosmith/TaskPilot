@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useOutletContext, useSearchParams } from 'react-router-dom';
+import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../api/client';
 import type { TaskDetailMode } from '../types';
@@ -63,117 +63,6 @@ interface TriageTestResult {
   triage_class: string | null;
 }
 
-interface MemoryFile {
-  name: string;
-  content: string;
-  size: number;
-}
-
-interface HeartbeatStatus {
-  content: string;
-  skills: string[];
-  agents_md: string;
-}
-
-interface SenderProfile {
-  email: string;
-  name: string | null;
-  total_emails: number;
-  auto_reply_count: number;
-  task_count: number;
-  fyi_count: number;
-  reply_rate: number;
-  last_seen: string | null;
-}
-
-interface TriageStatsData {
-  total: number;
-  auto_reply: number;
-  task: number;
-  fyi: number;
-  reply_expected_count: number;
-  avg_per_day: number;
-  period_days: number;
-}
-
-interface AgentSkillData {
-  name: string;
-  description: string;
-  content: string;
-  requires_toolsets?: string[];
-  size?: number;
-}
-
-interface SkillUsageItem {
-  name: string;
-  description: string;
-  requires_toolsets?: string[];
-  view_count: number;
-  last_used_at: string | null;
-  agent_created: boolean;
-}
-
-interface SkillUsageData {
-  items: SkillUsageItem[];
-  total_invocations: number;
-  jobs_scanned: number;
-  period_jobs: number;
-}
-
-interface LearningSignal {
-  feedback_type: string;
-  source: string;
-  sender_email: string | null;
-  reason: string | null;
-  created_at: string | null;
-}
-
-interface LearningOverview {
-  stats: {
-    period_days: number;
-    drafts_sent: number;
-    drafts_edited: number;
-    drafts_clean: number;
-    edit_rate: number;
-    triage_reclass: number;
-    rejected: number;
-    thumbs_up: number;
-    thumbs_down: number;
-    episodes_total: number;
-    episodes_corrected: number;
-    rules_proposed: number;
-    rules_active: number;
-  };
-  recent: LearningSignal[];
-}
-
-interface LearnedRule {
-  id: string;
-  scope: string;
-  rule_text: string;
-  evidence: Record<string, unknown>;
-  status: string;
-  autonomy_hint: string | null;
-  created_at: string | null;
-  approved_at: string | null;
-}
-
-const RULE_SCOPE_LABELS: Record<string, string> = {
-  triage: 'Triage',
-  draft: 'Entwurf',
-  general: 'Allgemein',
-};
-
-const LEARN_SIGNAL_LABELS: Record<string, string> = {
-  draft_edit: 'Entwurf editiert',
-  approved_clean: 'Ohne Edit freigegeben',
-  rejected: 'Entwurf abgelehnt',
-  triage_reclass: 'Reklassifiziert',
-  task_deleted: 'Aufgabe gelöscht',
-  task_moved: 'Aufgabe verschoben',
-  chat_teach: 'Im Chat gelernt',
-};
-
 type SettingsTab = 'profile' | 'display' | 'cockpit' | 'finance' | 'finance_analysis' | 'llm' | 'integrations' | 'triage' | 'team' | 'intelligence';
 
 export function SettingsPage() {
@@ -212,19 +101,6 @@ export function SettingsPage() {
   const [hiddenFolderInput, setHiddenFolderInput] = useState('');
   const [integrationsActiveEnv, setIntegrationsActiveEnv] = useState(true);
   const [appEnv, setAppEnv] = useState('prod');
-
-  const [memFiles, setMemFiles] = useState<MemoryFile[]>([]);
-  const [heartbeat, setHeartbeat] = useState<HeartbeatStatus | null>(null);
-  const [memExpanded, setMemExpanded] = useState<Set<string>>(new Set());
-  const [memLoading, setMemLoading] = useState(false);
-  const [senderProfiles, setSenderProfiles] = useState<SenderProfile[]>([]);
-  const [triageStats, setTriageStats] = useState<TriageStatsData | null>(null);
-  const [agentSkills, setAgentSkills] = useState<AgentSkillData[]>([]);
-  const [skillUsage, setSkillUsage] = useState<SkillUsageData | null>(null);
-  const [totalSenders, setTotalSenders] = useState(0);
-  const [learning, setLearning] = useState<LearningOverview | null>(null);
-  const [learnedRules, setLearnedRules] = useState<LearnedRule[]>([]);
-  const [ruleBusyId, setRuleBusyId] = useState<string | null>(null);
 
   const [pdToken, setPdToken] = useState('');
   const [pdDomain, setPdDomain] = useState('innosmith');
@@ -283,31 +159,6 @@ export function SettingsPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   useEffect(() => {
-    if (tab !== 'intelligence') return;
-    setMemLoading(true);
-    Promise.all([
-      api.get<HeartbeatStatus>('/api/memory/status/heartbeat').catch(() => null),
-      api.get<MemoryFile[]>('/api/memory').catch(() => []),
-      api.get<{ profiles: SenderProfile[]; total_senders: number }>('/api/intelligence/sender-profiles?limit=20').catch(() => ({ profiles: [], total_senders: 0 })),
-      api.get<TriageStatsData>('/api/intelligence/triage-stats?days=30').catch(() => null),
-      api.get<{ skills: AgentSkillData[] }>('/api/intelligence/skills').catch(() => ({ skills: [] })),
-      api.get<LearningOverview>('/api/intelligence/learning?days=7').catch(() => null),
-      api.get<{ rules: LearnedRule[] }>('/api/intelligence/rules?limit=50').catch(() => ({ rules: [] })),
-      api.get<SkillUsageData>('/api/intelligence/skill-usage?jobs_limit=500').catch(() => null),
-    ]).then(([hb, files, sp, ts, sk, lo, lr, su]) => {
-      setHeartbeat(hb);
-      setMemFiles(files ?? []);
-      setSenderProfiles(sp?.profiles ?? []);
-      setTotalSenders(sp?.total_senders ?? 0);
-      setTriageStats(ts);
-      setAgentSkills(sk?.skills ?? []);
-      setLearning(lo);
-      setLearnedRules(lr?.rules ?? []);
-      setSkillUsage(su);
-    }).finally(() => setMemLoading(false));
-  }, [tab]);
-
-  useEffect(() => {
     if (tab !== 'integrations') return;
     api.get<{ pipedrive_api_token: string | null; pipedrive_domain: string | null; toggl_api_token: string | null; toggl_workspace_id: number | null; bexio_api_token: string | null; integrations_active_env?: boolean; triage_enabled?: boolean; app_env?: string }>('/api/settings/integrations')
       .then((data) => {
@@ -328,27 +179,6 @@ export function SettingsPage() {
       })
       .catch(() => {});
   }, [tab]);
-
-  const handleRuleDecision = async (ruleId: string, decision: 'approve' | 'reject') => {
-    setRuleBusyId(ruleId);
-    try {
-      const updated = await api.post<LearnedRule>(`/api/intelligence/rules/${ruleId}/${decision}`);
-      setLearnedRules((prev) => prev.map((r) => (r.id === ruleId ? updated : r)));
-      setLearning((prev) =>
-        prev
-          ? {
-              ...prev,
-              stats: {
-                ...prev.stats,
-                rules_proposed: Math.max(0, prev.stats.rules_proposed - 1),
-                rules_active: prev.stats.rules_active + (decision === 'approve' ? 1 : 0),
-              },
-            }
-          : prev,
-      );
-    } catch { /* best-effort, UI bleibt unverändert */ }
-    finally { setRuleBusyId(null); }
-  };
 
   const saveProfile = async () => {
     if (!displayName.trim() || !profileEmail.trim()) return;
@@ -520,15 +350,6 @@ export function SettingsPage() {
     }
   };
 
-  const toggleMemFile = (name: string) => {
-    setMemExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  };
-
   const saveIntegrations = async () => {
     setPdMsg(null); setTogglMsg(null); setBexioMsg(null);
     try {
@@ -686,7 +507,6 @@ export function SettingsPage() {
         { id: 'integrations', label: 'Integrationen' },
         { id: 'triage', label: 'E-Mail-Triage' },
         { id: 'team', label: 'Team' },
-        { id: 'intelligence', label: 'Intelligenz' },
       ]
     : [{ id: 'profile', label: 'Profil' }];
 
@@ -1948,298 +1768,36 @@ export function SettingsPage() {
             <LlmSettingsTab />
           )}
 
-          {/* ── Intelligenz ── */}
+          {/* ── Intelligenz (umgezogen ins Agenten-Cockpit) ── */}
           {tab === 'intelligence' && (
             <section>
               <h2 className="mb-1 text-lg font-semibold text-gray-900 dark:text-white">Intelligenz</h2>
               <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-                Systemwissen — Triage-Statistiken, Agent-Skills, Memory und Absenderprofile
+                Regeln, Skills und das Wissen des Agenten sind ins Agenten-Cockpit umgezogen.
               </p>
-
-              {memLoading ? (
-                <div className="flex h-32 items-center justify-center">
-                  <div className="h-8 w-8 animate-spin rounded-full border-3 border-indigo-500 border-t-transparent" />
-                </div>
-              ) : (
-                <div className="space-y-2">
-
-                  {/* Lernfortschritt (Self-Learning) */}
-                  {learning && (
-                    <CollapsibleBlock
-                      id="learning-progress"
-                      title="Lernfortschritt"
-                      subtitle={`Letzte ${learning.stats.period_days} Tage · ${learning.stats.episodes_total} Episoden`}
-                      badge={<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Lernend</span>}
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                      defaultOpen
-                    >
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="learning-kpis">
-                        <div className="rounded-lg bg-emerald-50 p-3 text-center dark:bg-emerald-900/20">
-                          <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">{Math.round((1 - learning.stats.edit_rate) * 100)}%</div>
-                          <div className="text-xs text-emerald-600 dark:text-emerald-400">ohne Edit freigegeben</div>
-                        </div>
-                        <div className="rounded-lg bg-gray-50 p-3 text-center dark:bg-gray-800">
-                          <div className="text-2xl font-bold text-gray-900 dark:text-white">{learning.stats.drafts_sent}</div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">Entwürfe versendet</div>
-                        </div>
-                        <div className="rounded-lg bg-amber-50 p-3 text-center dark:bg-amber-900/20">
-                          <div className="text-2xl font-bold text-amber-700 dark:text-amber-300">{learning.stats.triage_reclass}</div>
-                          <div className="text-xs text-amber-600 dark:text-amber-400">Reklassifikationen</div>
-                        </div>
-                        <div className="rounded-lg bg-indigo-50 p-3 text-center dark:bg-indigo-900/20">
-                          <div className="text-2xl font-bold text-indigo-700 dark:text-indigo-300">{learning.stats.rules_active}</div>
-                          <div className="text-xs text-indigo-600 dark:text-indigo-400">aktive Regeln</div>
-                        </div>
-                      </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
-                        <span>{learning.stats.drafts_edited} editiert</span>
-                        <span>{learning.stats.episodes_corrected} korrigierte Episoden</span>
-                        {learning.stats.rules_proposed > 0 && <span>{learning.stats.rules_proposed} Regel-Vorschläge offen</span>}
-                      </div>
-                      {learning.recent.length > 0 && (
-                        <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
-                          {learning.recent.map((sig, i) => (
-                            <div key={`sig-${i}`} className="flex items-center gap-2 py-1.5 text-xs">
-                              <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">{LEARN_SIGNAL_LABELS[sig.feedback_type] ?? sig.feedback_type}</span>
-                              {sig.source === 'outlook' && <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">Outlook</span>}
-                              <span className="min-w-0 flex-1 truncate text-gray-500 dark:text-gray-400">{sig.reason || sig.sender_email || ''}</span>
-                              <span className="shrink-0 text-gray-400 dark:text-gray-500">{sig.created_at ? new Date(sig.created_at).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit' }) : ''}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </CollapsibleBlock>
-                  )}
-
-                  {/* Gelernte Regeln (HITL-Freigabe) */}
-                  {learnedRules.length > 0 && (
-                    <CollapsibleBlock
-                      id="learned-rules"
-                      title="Gelernte Regeln"
-                      subtitle={`${learnedRules.filter((r) => r.status === 'proposed').length} Vorschläge · ${learnedRules.filter((r) => r.status === 'active').length} aktiv`}
-                      badge={learnedRules.some((r) => r.status === 'proposed') ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Freigabe nötig</span> : undefined}
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                      defaultOpen
-                    >
-                      <div className="space-y-2" data-testid="learned-rules">
-                        {learnedRules.map((rule) => (
-                          <div key={rule.id} className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0 flex-1">
-                                <div className="mb-1 flex items-center gap-2">
-                                  <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">{RULE_SCOPE_LABELS[rule.scope] ?? rule.scope}</span>
-                                  {rule.status === 'active' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">aktiv</span>}
-                                  {rule.status === 'proposed' && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">Vorschlag</span>}
-                                  {rule.status === 'rejected' && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">verworfen</span>}
-                                </div>
-                                <p className="text-sm text-gray-700 dark:text-gray-200">{rule.rule_text}</p>
-                              </div>
-                              {rule.status === 'proposed' && (
-                                <div className="flex shrink-0 gap-1.5">
-                                  <button
-                                    type="button"
-                                    disabled={ruleBusyId === rule.id}
-                                    onClick={() => handleRuleDecision(rule.id, 'approve')}
-                                    className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                                  >
-                                    Freigeben
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={ruleBusyId === rule.id}
-                                    onClick={() => handleRuleDecision(rule.id, 'reject')}
-                                    className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-                                  >
-                                    Verwerfen
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </CollapsibleBlock>
-                  )}
-
-                  {/* Triage-Statistiken */}
-                  {triageStats && (
-                    <CollapsibleBlock
-                      id="triage-stats"
-                      title="Triage-Statistiken"
-                      subtitle={`Letzte ${triageStats.period_days} Tage · ${triageStats.total} E-Mails`}
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                      defaultOpen
-                    >
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                        <div className="rounded-lg bg-gray-50 p-3 text-center dark:bg-gray-800">
-                          <div className="text-2xl font-bold text-gray-900 dark:text-white">{triageStats.total}</div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">Gesamt</div>
-                        </div>
-                        <div className="rounded-lg bg-green-50 p-3 text-center dark:bg-green-900/20">
-                          <div className="text-2xl font-bold text-green-700 dark:text-green-300">{triageStats.auto_reply}</div>
-                          <div className="text-xs text-green-600 dark:text-green-400">Auto-Reply</div>
-                        </div>
-                        <div className="rounded-lg bg-blue-50 p-3 text-center dark:bg-blue-900/20">
-                          <div className="text-2xl font-bold text-blue-700 dark:text-blue-300">{triageStats.task}</div>
-                          <div className="text-xs text-blue-600 dark:text-blue-400">Aufgaben</div>
-                        </div>
-                        <div className="rounded-lg bg-gray-50 p-3 text-center dark:bg-gray-800">
-                          <div className="text-2xl font-bold text-gray-700 dark:text-gray-300">{triageStats.fyi}</div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">FYI</div>
-                        </div>
-                      </div>
-                      <div className="mt-3 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                        <span>⌀ {triageStats.avg_per_day} E-Mails/Tag</span>
-                        <span>{triageStats.reply_expected_count} mit erwarteter Antwort</span>
-                      </div>
-                    </CollapsibleBlock>
-                  )}
-
-                  {/* Skill-Nutzung (Show-Demo): wie oft der Agent Skills wirklich lädt */}
-                  {skillUsage && skillUsage.total_invocations > 0 && (
-                    <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 px-4 py-2.5 text-xs text-indigo-700 dark:border-indigo-900/40 dark:bg-indigo-900/20 dark:text-indigo-300">
-                      Der Agent hat in den letzten {skillUsage.jobs_scanned} Jobs{' '}
-                      <span className="font-semibold">{skillUsage.total_invocations}×</span> einen Skill aktiv geladen.
-                    </div>
-                  )}
-
-                  {/* Agent-Skills */}
-                  {agentSkills.length > 0 && agentSkills.map((skill) => {
-                    const usage = skillUsage?.items.find((i) => i.name === skill.name);
-                    const lastUsed = usage?.last_used_at
-                      ? new Date(usage.last_used_at).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit', year: 'numeric' })
-                      : null;
-                    return (
-                    <CollapsibleBlock
-                      key={`skill-${skill.name}`}
-                      id={`skill-${skill.name}`}
-                      title={skill.name}
-                      subtitle={skill.description}
-                      badge={
-                        <span className="flex items-center gap-1.5">
-                          {usage && usage.view_count > 0 && (
-                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title={lastUsed ? `Zuletzt genutzt: ${lastUsed}` : undefined}>
-                              {usage.view_count}× genutzt
-                            </span>
-                          )}
-                          <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">Skill</span>
-                        </span>
-                      }
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                    >
-                      {usage && (usage.view_count > 0 || lastUsed) && (
-                        <div className="mb-3 text-[11px] text-gray-400 dark:text-gray-500">
-                          {usage.view_count > 0
-                            ? <>Vom Agenten {usage.view_count}× geladen{lastUsed ? ` · zuletzt am ${lastUsed}` : ''}.</>
-                            : 'Noch nicht aktiv geladen.'}
-                        </div>
-                      )}
-                      {skill.requires_toolsets && skill.requires_toolsets.length > 0 && (
-                        <div className="mb-3 flex flex-wrap items-center gap-1.5">
-                          <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500">Tools:</span>
-                          {skill.requires_toolsets.map((ts) => (
-                            <span key={ts} className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-                              {ts}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <div className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-4 text-sm leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200">
-                        {skill.content || <span className="italic text-gray-400">Kein Inhalt</span>}
-                      </div>
-                    </CollapsibleBlock>
-                    );
-                  })}
-
-                  {/* Memory-Dateien */}
-                  {memFiles.map((file) => (
-                    <CollapsibleBlock
-                      key={`mem-${file.name}`}
-                      id={`mem-${file.name}`}
-                      title={file.name}
-                      subtitle=""
-                      badge={
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                          {file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`}
-                        </span>
-                      }
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                    >
-                      <div className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
-                        {file.content || <span className="italic text-gray-400">Leer</span>}
-                      </div>
-                    </CollapsibleBlock>
-                  ))}
-
-                  {/* Absenderprofile */}
-                  {senderProfiles.length > 0 && (
-                    <CollapsibleBlock
-                      id="sender-profiles"
-                      title="Absenderprofile"
-                      subtitle={`${totalSenders} Absender bekannt`}
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                    >
-                      <div className="divide-y divide-gray-100 dark:divide-gray-800">
-                        {senderProfiles.map((sp) => (
-                          <div key={sp.email} className="flex items-center gap-3 py-2.5">
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300">
-                              {(sp.name || sp.email).charAt(0).toUpperCase()}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
-                                {sp.name || sp.email}
-                              </p>
-                              <p className="truncate text-xs text-gray-400 dark:text-gray-500">{sp.email}</p>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-2">
-                              <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">{sp.auto_reply_count}</span>
-                              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">{sp.task_count}</span>
-                              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">{sp.fyi_count}</span>
-                              <span className="text-xs text-gray-400 dark:text-gray-500">{sp.total_emails}×</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </CollapsibleBlock>
-                  )}
-
-                  {/* Heartbeat */}
-                  {heartbeat && (
-                    <CollapsibleBlock
-                      id="heartbeat"
-                      title="Heartbeat"
-                      subtitle=""
-                      badge={
-                        <span className="flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300">
-                          <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
-                          Aktiv
-                        </span>
-                      }
-                      expanded={memExpanded}
-                      toggle={toggleMemFile}
-                    >
-                      <div className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
-                        {heartbeat.content}
-                      </div>
-                      {heartbeat.skills.length > 0 && (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {heartbeat.skills.map((skill) => (
-                            <span key={skill} className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-                              {skill}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </CollapsibleBlock>
-                  )}
-                </div>
-              )}
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Link
+                  to="/agenten?tab=regeln"
+                  className="group rounded-xl border border-gray-200 bg-white p-4 transition-colors hover:border-indigo-300 hover:bg-indigo-50/40 dark:border-gray-700 dark:bg-gray-800/50 dark:hover:border-indigo-500/50 dark:hover:bg-indigo-900/10"
+                >
+                  <div className="text-sm font-semibold text-gray-900 group-hover:text-indigo-700 dark:text-white dark:group-hover:text-indigo-300">Regeln</div>
+                  <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">Leitregeln & deterministische Overrides pflegen und freigeben.</div>
+                </Link>
+                <Link
+                  to="/agenten?tab=skills"
+                  className="group rounded-xl border border-gray-200 bg-white p-4 transition-colors hover:border-indigo-300 hover:bg-indigo-50/40 dark:border-gray-700 dark:bg-gray-800/50 dark:hover:border-indigo-500/50 dark:hover:bg-indigo-900/10"
+                >
+                  <div className="text-sm font-semibold text-gray-900 group-hover:text-indigo-700 dark:text-white dark:group-hover:text-indigo-300">Skills</div>
+                  <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">Fähigkeiten des Agenten als Markdown direkt bearbeiten.</div>
+                </Link>
+                <Link
+                  to="/agenten?tab=wissen"
+                  className="group rounded-xl border border-gray-200 bg-white p-4 transition-colors hover:border-indigo-300 hover:bg-indigo-50/40 dark:border-gray-700 dark:bg-gray-800/50 dark:hover:border-indigo-500/50 dark:hover:bg-indigo-900/10"
+                >
+                  <div className="text-sm font-semibold text-gray-900 group-hover:text-indigo-700 dark:text-white dark:group-hover:text-indigo-300">Wissen</div>
+                  <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">Lernfortschritt, Triage-Statistik, Absenderprofile & Memory.</div>
+                </Link>
+              </div>
             </section>
           )}
 
@@ -2599,54 +2157,6 @@ function LlmSettingsTab() {
   );
 }
 
-function CollapsibleBlock({
-  id,
-  title,
-  subtitle,
-  badge,
-  expanded,
-  toggle,
-  defaultOpen,
-  children,
-}: {
-  id: string;
-  title: string;
-  subtitle?: string;
-  badge?: React.ReactNode;
-  expanded: Set<string>;
-  toggle: (id: string) => void;
-  defaultOpen?: boolean;
-  children: React.ReactNode;
-}) {
-  const isOpen = defaultOpen ? !expanded.has(id) : expanded.has(id);
-  const handleToggle = () => toggle(id);
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
-      <button
-        onClick={handleToggle}
-        className="flex w-full items-center justify-between px-4 py-3 text-left"
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <ChevronIcon className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
-          <span className="truncate text-sm font-semibold text-gray-900 dark:text-white">{title}</span>
-          {badge}
-        </div>
-        {subtitle && (
-          <span className="ml-3 shrink-0 truncate text-xs text-gray-400 dark:text-gray-500 max-w-[40%]">
-            {subtitle}
-          </span>
-        )}
-      </button>
-      {isOpen && (
-        <div className="border-t border-gray-100 px-4 py-4 dark:border-gray-800">
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
 const SIDEBAR_PALETTE = [
   { key: 'default', label: 'Standard', swatch: 'bg-white dark:bg-gray-950' },
   { key: 'slate', label: 'Slate', swatch: 'bg-slate-200 dark:bg-slate-800' },
@@ -2663,14 +2173,6 @@ function CameraIcon({ className }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Z" />
-    </svg>
-  );
-}
-
-function ChevronIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
     </svg>
   );
 }

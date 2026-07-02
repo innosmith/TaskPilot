@@ -21,7 +21,11 @@ alwaysApply: false
 4. Kein Domainwissen oder Recherche nötig
 5. Formelhafter Antworttyp (Bestätigung, Dank, einfache Rückfrage)
 
-**Leitprinzip: Im Zweifel IMMER `task`.**
+**Leitprinzip (fail-closed): Im Zweifel KEIN `task` und KEIN `auto_reply`.**
+Lieber `fyi` und die E-Mail ungelesen in der Inbox lassen — der Mensch sieht sie
+dort ohnehin und ordnet sie bei Bedarf selbst ein. Ein fälschlich erstellter Task
+(z. B. aus einer blossen Terminzusage) ist teurer und nerviger als eine sichtbare
+Mail. Nur klassifizieren, wenn die Klasse wirklich passt.
 
 ### task mit reply_expected-Flag
 - `reply_expected: true` — Aufgabe endet mit E-Mail-Antwort (Kundenanfrage, Offerte)
@@ -44,4 +48,6 @@ alwaysApply: false
 - Schweizer `.ch`-Domains → höhere Relevanz
 - Selbst-E-Mails (anthony@...) → `task`
 - Terminanfragen → Kalender via `list_calendar_events` / `find_free_slots` prüfen
-- Im Zweifel → `task`
+- Terminzusagen/-absagen (Meeting-Antworten: angenommen/abgelehnt/vorläufig) → `fyi`
+  (nur Kategorie + Move, KEIN Task) — das ist eine reine Info, kein Handlungsbedarf
+- Im Zweifel → `fyi` (ungelesen in der Inbox lassen, kein Auto-Task)

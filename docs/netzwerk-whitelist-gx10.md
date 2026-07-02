@@ -51,7 +51,7 @@ TaskPilot zieht folgende Images (siehe `docker/docker-compose*.yml`, `docker/Doc
 
 | Host / Muster | Images / Zweck | Priorität |
 |---------------|----------------|-----------|
-| `registry-1.docker.io` | `python:3.12-slim`, `node:20-slim`, `nginx:alpine`, `pgvector/pgvector:pg16`, `clamav/clamav-debian:unstable` | Pflicht (Pull) |
+| `registry-1.docker.io` | `python:3.12-slim`, `node:20-slim`, `nginx:alpine`, `pgvector/pgvector:pg16`, `clamav/clamav-debian:unstable`, `docker:cli` (Sandbox-Executor-Basis) | Pflicht (Pull) |
 | `auth.docker.io` | Docker-Hub-Authentifizierung | Pflicht (Pull) |
 | `production.cloudflare.docker.com` | Docker-Hub CDN-Layer | Pflicht (Pull) |
 | `ghcr.io` | `ghcr.io/berriai/litellm:main-latest` (LiteLLM-Proxy) | Pflicht |
@@ -277,7 +277,8 @@ Diese Komponenten kommunizieren nur innerhalb des Hosts / Docker-Netzes:
 | InvoiceInsight MCP | `127.0.0.1:8055` |
 | Hermes-Config / Skills | `~/.hermes/` (Dateisystem) |
 | MCP-Server | Subprocess stdio (kein TCP nach aussen) |
-| Sandbox-Container | Lokales Docker-Image (`docker/sandbox/Dockerfile`) |
+| Sandbox-Executor | `127.0.0.1:8090` (Dev) / internes Docker-Netz (Int/Prod) — token-geschützt, kein Internet |
+| Sandbox-Container | Lokales Docker-Image (`docker/sandbox/Dockerfile`), `--network none` |
 
 ---
 

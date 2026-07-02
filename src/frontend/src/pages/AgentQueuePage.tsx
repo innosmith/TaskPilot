@@ -1,16 +1,28 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ListChecks, ScrollText, FileText, BrainCircuit } from 'lucide-react';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { FormattedOutput } from '../components/FormattedOutput';
 import { ReplayPanel } from '../components/ReplayPanel';
 import { TracePanel } from '../components/TracePanel';
 import { ApprovalCard } from '../components/agent/ApprovalCard';
+import { RulesManager } from '../components/agent/RulesManager';
+import { SkillsPanel } from '../components/agent/SkillsPanel';
+import { KnowledgePanel } from '../components/agent/KnowledgePanel';
 import { useSSE } from '../hooks/useSSE';
 import type { AgentJob } from '../types';
 
 type FilterStatus = 'all' | 'active' | 'completed' | 'failed';
 type FilterType = 'all' | 'chat_agent' | 'chat_triage' | 'email_triage' | 'send_email' | 'other';
+type AgentTab = 'auftraege' | 'regeln' | 'skills' | 'wissen';
+
+const AGENT_TABS: { id: AgentTab; label: string; icon: typeof ListChecks }[] = [
+  { id: 'auftraege', label: 'Aufträge', icon: ListChecks },
+  { id: 'regeln', label: 'Regeln', icon: ScrollText },
+  { id: 'skills', label: 'Skills', icon: FileText },
+  { id: 'wissen', label: 'Wissen', icon: BrainCircuit },
+];
 
 const STATUS_CONFIG: Record<
   AgentJob['status'],
@@ -36,6 +48,10 @@ const TYPE_FILTERS: { id: FilterType; label: string }[] = [
 
 export function AgentQueuePage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = (searchParams.get('tab') as AgentTab) || 'auftraege';
+  const setTab = (t: AgentTab) =>
+    setSearchParams(t === 'auftraege' ? {} : { tab: t }, { replace: true });
   const [jobs, setJobs] = useState<AgentJob[]>([]);
   const [filter, setFilter] = useState<FilterStatus>('all');
   const [typeFilter, setTypeFilter] = useState<FilterType>('all');
@@ -152,14 +168,6 @@ export function AgentQueuePage() {
       ? { backgroundImage: `url(${bgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
       : undefined;
 
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="h-10 w-10 animate-spin rounded-full border-3 border-indigo-500 border-t-transparent" />
-      </div>
-    );
-  }
-
   return (
     <div className="relative flex h-full flex-col" style={!hasBg ? undefined : bgStyle}>
       {!hasBg && <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-indigo-50/30 dark:from-gray-950 dark:via-gray-900 dark:to-indigo-950/20" />}
@@ -182,7 +190,7 @@ export function AgentQueuePage() {
               )}
             </div>
             <p className={`mt-0.5 text-sm ${hasBg ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
-              Alle Agent-Aufträge und deren Status
+              Aufträge, Regeln, Skills und Wissen des Agenten
             </p>
           </div>
           <button
@@ -197,6 +205,32 @@ export function AgentQueuePage() {
         </div>
       </div>
 
+      {/* Haupt-Tabs */}
+      <div className={`relative z-10 border-b px-4 sm:px-6 backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-white/40 bg-white/50 dark:border-gray-800 dark:bg-gray-900/50'}`}>
+        <div className="flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {AGENT_TABS.map((t) => {
+            const active = tab === t.id;
+            const Icon = t.icon;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors ${
+                  active
+                    ? hasBg ? 'border-white text-white' : 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                    : hasBg
+                      ? 'border-transparent text-white/70 hover:text-white'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                <Icon className="h-4 w-4" /> {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {tab === 'auftraege' && (
       <div className={`relative z-10 border-b px-4 py-3 sm:px-6 backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-white/40 bg-white/50 dark:border-gray-800 dark:bg-gray-900/50'}`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -368,8 +402,16 @@ export function AgentQueuePage() {
           </div>
         )}
       </div>
+      )}
 
+      {tab === 'auftraege' && (
       <div className="relative z-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
+        {loading ? (
+          <div className="flex h-48 items-center justify-center">
+            <div className="h-10 w-10 animate-spin rounded-full border-3 border-indigo-500 border-t-transparent" />
+          </div>
+        ) : (
+        <>
         {/* Replay-Panel */}
         <div className="mb-4">
           <ReplayPanel onJobCreated={fetchJobs} />
@@ -508,7 +550,26 @@ export function AgentQueuePage() {
             })}
           </div>
         )}
+        </>
+        )}
       </div>
+      )}
+
+      {tab === 'regeln' && (
+        <div className="relative z-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
+          <RulesManager />
+        </div>
+      )}
+      {tab === 'skills' && (
+        <div className="relative z-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
+          <SkillsPanel />
+        </div>
+      )}
+      {tab === 'wissen' && (
+        <div className="relative z-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
+          <KnowledgePanel />
+        </div>
+      )}
       </div>
 
       <BackgroundPicker

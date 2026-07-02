@@ -32,8 +32,18 @@ from graph_client import GraphClient, GraphConfig  # noqa: E402
 
 logger = logging.getLogger("taskpilot.triage")
 
-MAX_EMAILS_PER_CYCLE = 20
-COLD_START_CUTOFF_HOURS = 24
+# Coverage-Robustheit: Statt eines fixen "nur neueste N"-Fensters wird der
+# Posteingang seitenweise durchlaufen (Pagination via ``$skip``), bis eine Mail
+# aelter als der Cutoff auftaucht (Reihenfolge ist ``receivedDateTime desc``) oder
+# das Seitenlimit erreicht ist. So gehen bei Bursts (z. B. 100+ Fehler-Mails in
+# kurzer Zeit) keine Mails mehr verloren, die frueher unter Position 20 rutschten.
+INBOX_PAGE_SIZE = 50
+MAX_INBOX_PAGES = 20  # Sicherheitsdeckel: bis zu 1000 Mails pro Zyklus scannen.
+MAX_NEW_EMAILS_PER_CYCLE = 200  # Rest wird im naechsten Zyklus nachgezogen.
+# Kaltstart-Fenster: Mails aelter als dieser Wert werden nicht mehr aufgegriffen
+# (verhindert, dass nach laengerer Downtime der ganze Posteingang neu triagiert
+# wird). Grosszuegig genug, um kurze Ausfaelle zu ueberbruecken.
+COLD_START_CUTOFF_HOURS = 72
 
 
 async def _is_triage_enabled_in_db() -> bool:
@@ -70,6 +80,55 @@ async def _get_known_message_ids(db: AsyncSession) -> set[str]:
     return {row[0] for row in result.all()}
 
 
+async def _fetch_new_inbox_emails(
+    client: GraphClient, known_ids: set[str], cutoff: datetime
+) -> list[dict]:
+    """Blaettert den Posteingang seitenweise durch und sammelt neue Mails.
+
+    Robuster Ersatz fuer das fruehere fixe ``top=20``-Fenster: Da der Posteingang
+    nach ``receivedDateTime desc`` sortiert ist, wird solange paginiert, bis eine
+    Mail aelter als ``cutoff`` auftaucht (danach sind alle aelter -> Stopp), eine
+    Teilseite kommt (Ende des Ordners) oder das Seiten-/Mengenlimit greift. Damit
+    werden auch Bursts von >20 Mails pro Zyklus vollstaendig erfasst.
+    """
+    new_emails: list[dict] = []
+    seen_ids: set[str] = set()
+    for page in range(MAX_INBOX_PAGES):
+        data = await client.list_emails(
+            folder="inbox", top=INBOX_PAGE_SIZE, skip=page * INBOX_PAGE_SIZE
+        )
+        msgs = data.get("value", [])
+        if not msgs:
+            break
+        reached_old = False
+        for msg in msgs:
+            mid = msg.get("id")
+            if not mid or mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            received = msg.get("receivedDateTime")
+            if received:
+                try:
+                    if isoparse(received) < cutoff:
+                        reached_old = True
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            if mid in known_ids:
+                continue
+            new_emails.append(msg)
+        # Aeltere-als-Cutoff erreicht oder letzte (Teil-)Seite -> fertig.
+        if reached_old or len(msgs) < INBOX_PAGE_SIZE:
+            break
+        if len(new_emails) >= MAX_NEW_EMAILS_PER_CYCLE:
+            logger.info(
+                "Triage: Mengenlimit (%d) erreicht -- Rest wird im naechsten Zyklus nachgezogen",
+                MAX_NEW_EMAILS_PER_CYCLE,
+            )
+            break
+    return new_emails
+
+
 def _parse_received_at(raw: str | None) -> datetime | None:
     if not raw:
         return None
@@ -85,6 +144,220 @@ OWNER_EMAIL_ADDRESSES = {
     "anthony.thomas.smith@gmail.com",
     "anthony.smith@bfh.ch",
 }
+
+
+# Graph ``meetingMessageType``-Werte, die reine ANTWORTEN auf eine Einladung sind
+# (Zusage/Absage/mit-Vorbehalt). Das sind reine Infos ohne Handlungsbedarf -> sie
+# werden deterministisch (ohne LLM) als ``fyi`` behandelt + nach ``Kalender``
+# verschoben. NICHT enthalten: ``meetingRequest`` (echte Einladung, ggf. Kalender-
+# pruefung/Antwort noetig) und ``meetingCancelled`` (kann zeitkritisch sein) -- die
+# laufen weiter durch den normalen LLM-Pfad.
+MEETING_RESPONSE_TYPES = {
+    "meetingAccepted",
+    "meetingTentativelyAccepted",
+    "meetingDeclined",
+}
+
+
+def is_meeting_response(email_data: dict) -> bool:
+    """True, wenn die E-Mail eine reine Meeting-Antwort (Zusage/Absage) ist.
+
+    Liest das strukturierte Graph-Feld ``meetingMessageType`` -- das ist KEINE
+    Fuzzy-Entscheidung, sondern ein deterministisches Signal von Exchange. Damit
+    wird der haeufigste Fehlgriff (Terminzusage -> Aufgabe) an der Wurzel verhindert,
+    ohne das LLM zu bemuehen.
+    """
+    return (email_data.get("meetingMessageType") or "") in MEETING_RESPONSE_TYPES
+
+
+async def _handle_meeting_response(db: AsyncSession, client: GraphClient, email_data: dict) -> None:
+    """Deterministische Behandlung einer Meeting-Antwort: fyi + Kategorie + Move.
+
+    Erstellt einen ``EmailTriage``-Audit-Record (``triage_class='fyi'``,
+    ``status='acted'``) und verschiebt die Mail best-effort nach ``Kalender``.
+    KEIN AgentJob / kein LLM -- das ist eine Regel, keine Ermessensfrage.
+    """
+    from_info = email_data.get("from", {}).get("emailAddress", {})
+    from_addr = from_info.get("address", "")
+    subject = email_data.get("subject", "")
+    mmt = email_data.get("meetingMessageType") or ""
+    message_id = email_data["id"]
+
+    triage_record = EmailTriage(
+        message_id=message_id,
+        subject=subject,
+        from_address=from_addr,
+        from_name=from_info.get("name"),
+        received_at=_parse_received_at(email_data.get("receivedDateTime")),
+        inference_class=email_data.get("inferenceClassification", ""),
+        triage_class="fyi",
+        reply_expected=False,
+        confidence=1.0,
+        suggested_action={
+            "label": "Kalender",
+            "triage_class": "fyi",
+            "deterministic_override": "meeting_response",
+            "meeting_message_type": mmt,
+            "rationale": (
+                f"Meeting-Antwort ({mmt}) -- deterministisch als fyi eingeordnet "
+                "(Kategorie Kalender + Verschiebung), kein Task, kein LLM."
+            ),
+        },
+        status="acted",
+    )
+    db.add(triage_record)
+    await db.flush()
+
+    # Graph-Aktionen best-effort: Kategorie setzen, dann nach Kalender verschieben.
+    # set_categories kippt isRead -> true; fuer reine Infos ist "gelesen + aus der
+    # Inbox" gewuenscht (kein Unread-Clutter). Reihenfolge: Kategorie -> Move.
+    try:
+        await client.set_categories(message_id, ["Kalender"])
+    except Exception:  # noqa: BLE001 - Finalisierung darf den Zyklus nie stoppen
+        logger.warning("Meeting-Response: Kategorie setzen fehlgeschlagen (mid=%s)", message_id[:30])
+    try:
+        await client.move_to_folder(message_id, "Kalender")
+    except Exception:  # noqa: BLE001
+        logger.info("Meeting-Response: Move nach 'Kalender' nicht moeglich (Ordner fehlt?)")
+
+    logger.info(
+        "Meeting-Response deterministisch behandelt: %s von %s (%s) -> fyi+Kalender, kein Task",
+        subject[:60], from_addr, mmt,
+    )
+
+
+async def _load_active_deterministic_rules(db: AsyncSession) -> list:
+    """Lädt aktive deterministische Regeln, sortiert nach Priorität (klein zuerst)."""
+    from app.models import LearnedRule
+
+    result = await db.execute(
+        select(LearnedRule)
+        .where(
+            LearnedRule.status == "active",
+            LearnedRule.rule_type == "deterministic",
+        )
+        .order_by(LearnedRule.priority, LearnedRule.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def apply_deterministic_rules(
+    db: AsyncSession,
+    client: GraphClient,
+    email_data: dict,
+    rules: list | None = None,
+) -> bool:
+    """Wendet die erste passende deterministische Regel auf eine E-Mail an.
+
+    Generalisierung der Meeting-Override: prüft die ``match_conditions`` der aktiven
+    deterministischen Regeln gegen die E-Mail und führt bei erstem Treffer die
+    Aktion aus (EmailTriage-Record + Kategorie + Move, optional Task) -- ohne
+    AgentJob/LLM. Gibt ``True`` zurück, wenn eine Regel gegriffen hat. ``rules`` kann
+    vorab geladen übergeben werden, um pro Zyklus nur einmal zu laden.
+    """
+    from app.services.rules import evaluate_conditions
+
+    if rules is None:
+        rules = await _load_active_deterministic_rules(db)
+    if not rules:
+        return False
+    for rule in rules:
+        conditions = rule.match_conditions if isinstance(rule.match_conditions, list) else []
+        if not evaluate_conditions(conditions, email_data):
+            continue
+        await _execute_deterministic_action(db, client, email_data, rule)
+        return True
+    return False
+
+
+async def _execute_deterministic_action(
+    db: AsyncSession, client: GraphClient, email_data: dict, rule
+) -> None:
+    """Führt die Aktion einer deterministischen Regel aus (fyi/task + Kategorie + Move)."""
+    from app.models import LearnedRule
+
+    action = rule.action if isinstance(rule.action, dict) else {}
+    triage_class = action.get("triage_class") or "fyi"
+    category = action.get("category")
+    folder = action.get("folder")
+
+    from_info = email_data.get("from", {}).get("emailAddress", {})
+    from_addr = from_info.get("address", "")
+    subject = email_data.get("subject", "")
+    message_id = email_data["id"]
+
+    triage_record = EmailTriage(
+        message_id=message_id,
+        subject=subject,
+        from_address=from_addr,
+        from_name=from_info.get("name"),
+        received_at=_parse_received_at(email_data.get("receivedDateTime")),
+        inference_class=email_data.get("inferenceClassification", ""),
+        triage_class=triage_class,
+        reply_expected=False,
+        confidence=1.0,
+        suggested_action={
+            "label": category or triage_class,
+            "triage_class": triage_class,
+            "deterministic_override": str(rule.id),
+            "rule_text": rule.rule_text,
+            "rationale": (
+                f"Deterministische Regel angewandt (kein LLM): {rule.rule_text}"
+            ),
+        },
+        status="acted",
+    )
+    db.add(triage_record)
+    await db.flush()
+
+    # Task-Aktion (Fortgeschrittenen-Option): bestehende E-Mail-Task-Logik nutzen.
+    if triage_class == "task":
+        try:
+            from app.services.hermes_worker import _create_email_task
+
+            meta = {
+                "email_message_id": message_id,
+                "subject": subject,
+                "from_address": from_addr,
+                "from_name": from_info.get("name", ""),
+                "conversation_id": email_data.get("conversationId", ""),
+            }
+            await _create_email_task(
+                db,
+                None,
+                meta,
+                task_title=subject or "Aufgabe aus E-Mail",
+                task_description=f"Automatisch erstellt durch deterministische Regel: {rule.rule_text}",
+                suggested_project=None,
+                deadline=None,
+                reply_expected=False,
+            )
+        except Exception:  # noqa: BLE001 - Task-Fehler darf den Zyklus nie stoppen
+            logger.exception("Deterministische Task-Erstellung fehlgeschlagen (Regel %s)", rule.id)
+
+    # Graph-Aktionen best-effort: erst Kategorie, dann Move (analog Meeting-Override).
+    if category:
+        try:
+            await client.set_categories(message_id, [category])
+        except Exception:  # noqa: BLE001
+            logger.warning("Det. Regel: Kategorie '%s' setzen fehlgeschlagen (mid=%s)", category, message_id[:30])
+    if folder:
+        try:
+            await client.move_to_folder(message_id, folder)
+        except Exception:  # noqa: BLE001
+            logger.info("Det. Regel: Move nach '%s' nicht möglich (Ordner fehlt?)", folder)
+
+    # Anwendungszähler erhöhen (Anzeige/Vertrauen im Cockpit).
+    await db.execute(
+        update(LearnedRule)
+        .where(LearnedRule.id == rule.id)
+        .values(applied_count=LearnedRule.applied_count + 1)
+    )
+
+    logger.info(
+        "Deterministische Regel angewandt: '%s' -> %s (Regel=%s) für '%s' von %s",
+        rule.rule_text[:40], triage_class, rule.id, subject[:50], from_addr,
+    )
 
 
 def _determine_recipient_type(email_data: dict) -> str:
@@ -168,22 +441,21 @@ async def _triage_cycle() -> int:
         async with async_session() as db:
             known_ids = await _get_known_message_ids(db)
 
-            data = await client.list_emails(folder="inbox", top=MAX_EMAILS_PER_CYCLE)
-            new_emails = []
-            for msg in data.get("value", []):
-                if not msg.get("id") or msg["id"] in known_ids:
-                    continue
-                received = msg.get("receivedDateTime")
-                if received:
-                    try:
-                        if isoparse(received) < cutoff:
-                            continue
-                    except (ValueError, TypeError):
-                        pass
-                new_emails.append(msg)
+            new_emails = await _fetch_new_inbox_emails(client, known_ids, cutoff)
+
+            # Deterministische Regeln einmal pro Zyklus laden (klein, kein Per-Mail-Query).
+            det_rules = await _load_active_deterministic_rules(db)
 
             for email_data in new_emails:
-                await _create_triage_job(db, email_data)
+                # Deterministische Override-Schicht VOR dem LLM: erst reine Meeting-
+                # Antworten (built-in), dann gepflegte deterministische Regeln. Beides
+                # ohne AgentJob/LLM (verhindert z. B. "Terminzusage -> Aufgabe").
+                if is_meeting_response(email_data):
+                    await _handle_meeting_response(db, client, email_data)
+                elif await apply_deterministic_rules(db, client, email_data, det_rules):
+                    pass
+                else:
+                    await _create_triage_job(db, email_data)
                 processed += 1
 
             await db.commit()
@@ -206,18 +478,22 @@ async def run_triage_now(top: int = 50) -> int:
         return 0
 
     processed = 0
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=COLD_START_CUTOFF_HOURS)
     try:
         async with async_session() as db:
             known_ids = await _get_known_message_ids(db)
 
-            data = await client.list_emails(folder="inbox", top=top)
-            new_emails = [
-                msg for msg in data.get("value", [])
-                if msg.get("id") and msg["id"] not in known_ids
-            ]
+            new_emails = await _fetch_new_inbox_emails(client, known_ids, cutoff)
+
+            det_rules = await _load_active_deterministic_rules(db)
 
             for email_data in new_emails:
-                await _create_triage_job(db, email_data)
+                if is_meeting_response(email_data):
+                    await _handle_meeting_response(db, client, email_data)
+                elif await apply_deterministic_rules(db, client, email_data, det_rules):
+                    pass
+                else:
+                    await _create_triage_job(db, email_data)
                 processed += 1
 
             await db.commit()
@@ -496,10 +772,18 @@ async def _chat_triage_cycle() -> int:
                     continue
                 chat_type = chat.get("chatType")
 
+                # Meeting-Chats (Teams-Besprechungs-Threads) liefern via Graph keine
+                # regulaeren Nachrichten und verursachten pro Zyklus Dauer-Warnungen
+                # (~2000 im Log). Sie sind fuer die Triage irrelevant -> ueberspringen.
+                if chat_type == "meeting" or chat_id.startswith("19:meeting_"):
+                    continue
+
                 try:
                     msgs = await client.list_chat_messages(chat_id=chat_id, top=10)
                 except Exception:
-                    logger.warning("Chat-Nachrichten für %s nicht ladbar", chat_id[:20])
+                    # Kein Dauer-Alarm mehr: nur auf DEBUG, da einzelne Chats
+                    # (Berechtigung/Typ) systembedingt nicht ladbar sind.
+                    logger.debug("Chat-Nachrichten für %s nicht ladbar", chat_id[:20])
                     continue
 
                 for msg in msgs:

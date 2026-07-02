@@ -29,6 +29,7 @@ make health     # Health-Checks aller Umgebungen
 make build      # Alle Images bauen (ohne Start)
 make vendor     # Vendor-Verzeichnis vorbereiten
 make sandbox    # Sandbox-Image bauen
+make sandbox-executor  # Sandbox-Executor-Image bauen (Sidecar mit docker.sock)
 make reset-dev     # DEV-DB komplett zuruecksetzen (DROP + Schema + Seed + Alembic)
 make migrate-int   # Schema auf Int-DB anwenden
 make migrate-prod  # Schema auf Prod-DB anwenden
@@ -46,6 +47,19 @@ make migrate-prod  # Schema auf Prod-DB anwenden
 
 Docker ist als **Snap** installiert. Snap-Docker kann nur auf Pfade unter `$HOME` zugreifen.
 Postgres-Volumes liegen daher unter `~/.local/share/taskpilot/postgres/{shared,prod}/`.
+Die Code-Sandbox schreibt aus demselben Grund nach `~/.local/share/taskpilot/sandbox-output/`
+(pfadgleich in den Executor gemountet). Der Docker-Socket selbst ist mountbar (getestet).
+
+## Code-Sandbox / Sandbox-Executor
+
+Der `taskpilot-sandbox-executor` ist Teil der Shared Infra (`make infra`) und der EINZIGE
+Dienst mit docker.sock-Zugriff. Der Coding-Modus + Hermes `execute_code` rufen ihn per HTTP.
+
+- Token setzen: `openssl rand -hex 32` → in `.env.sandbox` (`TP_SANDBOX_EXECUTOR_TOKEN`)
+  UND in `.env.dev`/`.env.integration`/`.env.prod` (gleicher Wert).
+- Image bauen: `make sandbox` (Sandbox) + `make sandbox-executor` (Executor).
+- Aenderungen an `src/sandbox-executor/` erfordern Rebuild des Executor-Images + `make infra`
+  neu starten (`docker compose -f docker/docker-compose.yml up -d --build sandbox-executor`).
 
 ## Port-Uebersicht
 
@@ -55,6 +69,7 @@ Postgres-Volumes liegen daher unter `~/.local/share/taskpilot/postgres/{shared,p
 | Backend | :8000 (uvicorn --reload) | :8100 | :8200 |
 | PostgreSQL | :5435 (shared) | :5435 (shared) | :5437 (eigener Container) |
 | LiteLLM | :4000 (shared) | :4000 (shared) | :4000 (shared) |
+| Sandbox-Executor | :8090 (shared) | intern (Container-Name) | intern (Container-Name) |
 | Ollama | :11434 (systemd) | :11434 | :11434 |
 
 ## Startreihenfolge

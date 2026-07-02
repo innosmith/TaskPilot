@@ -43,6 +43,37 @@ services:
       - taskpilot-shared
     restart: unless-stopped
 
+  # Sandbox-Executor: der EINZIGE Dienst mit docker.sock-Zugriff. Startet nur das
+  # gehaertete Image taskpilot-sandbox:latest mit fest verdrahteten Flags. Backend
+  # (dev bare-metal via 127.0.0.1:8090, int/prod via Container-Name im
+  # taskpilot-shared-Netz) ruft ihn token-geschuetzt per HTTP.
+  sandbox-executor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sandbox-executor
+    image: taskpilot-sandbox-executor:latest
+    container_name: taskpilot-sandbox-executor
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      TP_SANDBOX_IMAGE: taskpilot-sandbox:latest
+      # Snap-Docker: Arbeitsverzeichnis unter $HOME und PFADGLEICH gemountet,
+      # damit die an `docker run -v` uebergebenen Pfade auf dem Host existieren.
+      TP_SANDBOX_OUTPUT_DIR: ${HOME}/.local/share/taskpilot/sandbox-output
+      # Strikte(re)s Seccomp-Profil optional aktivieren (leer = Docker-Default):
+      # TP_SANDBOX_SECCOMP: /opt/sandbox/seccomp-profile.json
+    env_file:
+      # Nur der Bearer-Token gelangt in den Executor (Least Privilege, wie .env.litellm).
+      - path: ../.env.sandbox
+        required: false
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.local/share/taskpilot/sandbox-output:${HOME}/.local/share/taskpilot/sandbox-output
+    networks:
+      - default
+      - taskpilot-shared
+    restart: unless-stopped
+
   clamav:
     image: clamav/clamav-debian:unstable
     container_name: taskpilot-clamav-dev

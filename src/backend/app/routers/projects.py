@@ -3,7 +3,7 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -249,6 +249,37 @@ async def delete_column(
     col = result.scalar_one_or_none()
     if col is None:
         raise HTTPException(status_code=404, detail="Column not found")
+
+    # Ziel-Spalte bestimmen: erste verbleibende Spalte des Projekts nach Position.
+    target_result = await db.execute(
+        select(BoardColumn)
+        .where(BoardColumn.project_id == project_id, BoardColumn.id != col_id)
+        .order_by(BoardColumn.position)
+        .limit(1)
+    )
+    target = target_result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Die letzte Spalte eines Projekts kann nicht gelöscht werden.",
+        )
+
+    # Alle Tasks der Spalte (inkl. ausgeblendete erledigte/wiederkehrende) in die Ziel-Spalte
+    # umhängen. board_position mit Offset anheben, damit keine Kollisionen entstehen und die
+    # bisherige Reihenfolge erhalten bleibt. Sonst blockiert der NOT-NULL-FK das Löschen.
+    max_pos_result = await db.execute(
+        select(func.max(Task.board_position)).where(Task.board_column_id == target.id)
+    )
+    offset = (max_pos_result.scalar_one_or_none() or 0.0) + 1.0
+    await db.execute(
+        update(Task)
+        .where(Task.board_column_id == col_id)
+        .values(
+            board_column_id=target.id,
+            board_position=Task.board_position + offset,
+        )
+    )
+
     await db.delete(col)
 
 

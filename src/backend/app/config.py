@@ -152,6 +152,13 @@ class Settings(BaseSettings):
     clamav_host: str = "localhost"
     clamav_port: int = 3310
 
+    # Sandbox-Executor (Code-Sandbox via Sidecar)
+    # Der einzige Dienst mit docker.sock-Zugriff. Backend + Hermes rufen ihn per
+    # token-geschuetzter HTTP-API. Dev (bare-metal Backend): 127.0.0.1:8090;
+    # Int/Prod: http://taskpilot-sandbox-executor:8090 (internes Netz).
+    sandbox_executor_url: str = "http://127.0.0.1:8090"
+    sandbox_executor_token: str = ""
+
     # Document Export & Content-Services (contentConverter)
     contentconverter_path: str = "/home/innosmith/dev/github/contentConverter"
     contentconverter_cconv_bin: str = "/home/innosmith/dev/github/TaskPilot/.venv/bin/cconv"

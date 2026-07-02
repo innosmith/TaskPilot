@@ -187,6 +187,7 @@ const chatMdComponents: Partial<Components> = {
 // damit das UI sofort einen dezenten Lern-Hinweis anzeigen kann.
 const TEACH_TRIGGERS = [
   /\bmerk(?:e)?\s+dir\b/i,
+  /\bmerk(?:e)?\s*:\s*/i,
   /\bnotier(?:e)?\s+dir\b/i,
   /\bpräg(?:e)?\s+dir\b.*?\bein\b/i,
   /\bvergiss\s+nicht\b/i,

@@ -10,11 +10,10 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 import uuid
-from pathlib import Path
 
+import httpx
 import litellm
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -32,8 +31,6 @@ litellm.drop_params = True
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/code", tags=["code-execute"])
-
-SANDBOX_SCRIPT = Path(__file__).parent.parent.parent.parent / "mcp-sandbox" / "server.py"
 
 CODE_GENERATION_SYSTEM_PROMPT = """Du bist ein Python-Code-Generator für Datenanalyse und Automation.
 Deine Aufgabe ist es, sauberen, ausführbaren Python-Code zu generieren.
@@ -178,30 +175,61 @@ async def _generate_code_streaming(
 
 
 async def _execute_in_sandbox(code: str, input_files: dict | None = None, timeout: int = 300) -> dict:
-    """Code in Docker-Sandbox ausführen (importiert Logik aus mcp-sandbox)."""
-    try:
-        result = await asyncio.create_subprocess_exec(
-            "docker", "image", "inspect", "taskpilot-sandbox:latest",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        )
-        await result.wait()
-        if result.returncode != 0:
-            return {
-                "success": False,
-                "stdout": "",
-                "stderr": "Docker-Image 'taskpilot-sandbox:latest' nicht gefunden. Bitte bauen: docker build -t taskpilot-sandbox:latest -f docker/sandbox/Dockerfile docker/sandbox/",
-                "run_id": None,
-            }
-    except Exception:
+    """Code in der Docker-Sandbox ausführen — via Sandbox-Executor-Sidecar.
+
+    Das Backend hat bewusst KEINEN Docker-Zugriff. Die Ausführung läuft über den
+    token-geschützten Sandbox-Executor (``TP_SANDBOX_EXECUTOR_URL``), der als
+    einziger Dienst den Docker-Socket sieht.
+    """
+    settings = get_settings()
+    base_url = (settings.sandbox_executor_url or "").rstrip("/")
+    token = settings.sandbox_executor_token
+
+    if not base_url:
         return {
-            "success": False, "stdout": "", "stderr": "Docker nicht verfügbar", "run_id": None,
+            "success": False, "stdout": "",
+            "stderr": "Sandbox-Executor nicht konfiguriert (TP_SANDBOX_EXECUTOR_URL fehlt).",
+            "generated_files": [], "run_id": None,
+        }
+    if not token:
+        return {
+            "success": False, "stdout": "",
+            "stderr": "Sandbox-Executor nicht konfiguriert (TP_SANDBOX_EXECUTOR_TOKEN fehlt).",
+            "generated_files": [], "run_id": None,
         }
 
-    sys.path.insert(0, str(SANDBOX_SCRIPT.parent))
-    from server import _execute_in_sandbox as sandbox_exec
-    sys.path.pop(0)
+    payload = {
+        "code": code,
+        "input_files": input_files,
+        "timeout_seconds": timeout,
+    }
+    # HTTP-Timeout etwas über dem Sandbox-Timeout, damit der Executor selbst
+    # sauber (via docker kill) abbrechen kann, bevor der Client aufgibt.
+    http_timeout = httpx.Timeout(timeout + 30, connect=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
+            resp = await client.post(
+                f"{base_url}/execute",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.HTTPError as e:
+        logger.exception("Sandbox-Executor nicht erreichbar (%s)", base_url)
+        return {
+            "success": False, "stdout": "",
+            "stderr": f"Sandbox-Executor nicht erreichbar unter {base_url}: {e}",
+            "generated_files": [], "run_id": None,
+        }
 
-    return await sandbox_exec(code, input_files, timeout)
+    if resp.status_code != 200:
+        detail = resp.text[:500]
+        return {
+            "success": False, "stdout": "",
+            "stderr": f"Sandbox-Executor Fehler (HTTP {resp.status_code}): {detail}",
+            "generated_files": [], "run_id": None,
+        }
+
+    return resp.json()
 
 
 @router.post("/conversations/{conversation_id}/generate")

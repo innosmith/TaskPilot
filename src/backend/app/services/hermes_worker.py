@@ -37,12 +37,21 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.database import async_session
-from app.models import AgentJob, BoardColumn, EmailTriage, Project, Task, User
+from app.models import (
+    AgentJob,
+    BoardColumn,
+    ChatTriage,
+    ChecklistItem,
+    EmailTriage,
+    Project,
+    Task,
+    User,
+)
 from app.services.hermes_config import (
     get_hermes_home,
     populate_hermes_env,
@@ -514,12 +523,26 @@ def _compute_self_grade(
     }
 
 
-async def _build_active_rules_block() -> str:
-    """Vom Berater freigegebene gelernte Regeln (Saeule 5) in den Prompt einspeisen.
+# Skill/Kontext, in dem eine Leitregel wirkt. 'general' wirkt immer mit.
+_DEFAULT_RULE_CONTEXT = "triage"
+# Alte scope-Werte auf die aktiven Kontexte abbilden (Rueckwaertskompatibilitaet).
+_SCOPE_CONTEXT_ALIASES: dict[str, str] = {
+    "email-triage": "triage",
+    "email-style": "draft",
+}
 
-    Nur ``status='active'``-Regeln wirken -- Vorschlaege (``proposed``) bleiben bis
-    zur HITL-Freigabe folgenlos. Best-effort.
+
+async def _build_rules_block(*contexts: str) -> str:
+    """Freigegebene LLM-Leitregeln der passenden Kontexte in den Prompt einspeisen.
+
+    Nur ``status='active'`` und ``rule_type='llm'`` wirken; Vorschlaege (``proposed``)
+    bleiben bis zur HITL-Freigabe folgenlos, deterministische Regeln laufen separat
+    in ``triage.py``. Es greifen Regeln, deren ``scope`` zu einem der ``contexts``
+    passt, plus ``general`` (kontextuebergreifend). So wirken Regeln genau dort, wo
+    der Kontext aktiv ist -- Triage, Entwurf oder Chat. Best-effort.
     """
+    wanted = {_SCOPE_CONTEXT_ALIASES.get(c, c) for c in contexts} or {_DEFAULT_RULE_CONTEXT}
+    wanted.add("general")
     try:
         from app.models import LearnedRule
 
@@ -528,7 +551,8 @@ async def _build_active_rules_block() -> str:
                 select(LearnedRule)
                 .where(
                     LearnedRule.status == "active",
-                    LearnedRule.scope.in_(("triage", "draft", "general")),
+                    LearnedRule.rule_type == "llm",
+                    LearnedRule.scope.in_(tuple(wanted)),
                 )
                 .order_by(LearnedRule.approved_at.desc())
                 .limit(20)
@@ -543,7 +567,7 @@ async def _build_active_rules_block() -> str:
             "freigegeben. Befolge sie:\n" + "\n".join(lines) + "\n"
         )
     except Exception:  # noqa: BLE001 - best-effort
-        logger.warning("Aktive-Regeln-Block konnte nicht erzeugt werden")
+        logger.warning("Aktive-Regeln-Block (%s) konnte nicht erzeugt werden", ",".join(sorted(wanted)))
         return ""
 
 
@@ -586,6 +610,11 @@ async def _build_sender_style_block(from_addr: str) -> str:
             lines.append(f"- Gelernte Tonmerkmale: {lt}")
         notes = (p.style_notes or "").strip()
         if notes:
+            # Begrenzen: style_notes ist die einzige unbegrenzte, ueber Korrekturen
+            # wachsende Textquelle im Prompt -- Cap haelt den Klassifikations-Prompt
+            # schlank (lokale Modelle reagieren empfindlich auf Prompt-Laenge).
+            if len(notes) > 600:
+                notes = notes[:600].rstrip() + " […]"
             lines.append("- Stil-Notizen aus frueheren Korrekturen:\n" + notes)
         if p.correction_count:
             lines.append(
@@ -641,7 +670,8 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     forced_class = meta.get("forced_class")
     correction_reason = meta.get("correction_reason") or ""
     recall_block = await _build_recall_block(meta)
-    rules_block = await _build_active_rules_block()
+    # Triage + Draft laufen im selben Agenten-Loop -> beide Kontexte einspeisen.
+    rules_block = await _build_rules_block("triage", "draft")
     sender_style_block = await _build_sender_style_block(from_addr)
 
     correction_block = ""
@@ -766,17 +796,19 @@ async def _build_chat_triage_prompt(job: AgentJob) -> str:
     meta = job.metadata_json or {}
     chat_id = meta.get("chat_id", "")
     message_id = meta.get("chat_message_id", "")
-    sender = meta.get("sender_name", "")
+    sender = meta.get("from_name", "")
     preview = meta.get("body_preview", "")
 
     projects_context = await _load_projects_context()
+    rules_block = await _build_rules_block("triage", "chat")
 
     return f"""## CHAT-TRIAGE JOB
 
 Du hast eine neue Microsoft Teams Chat-Nachricht erhalten. Analysiere und klassifiziere sie.
+Sprache: Schweizer Hochdeutsch (ss statt scharfem S, korrekte Umlaute ä/ö/ü).
 
 {projects_context}
-
+{rules_block}
 **Job-ID:** {job.id}
 **Chat-ID:** {chat_id}
 **Nachricht-ID:** {message_id}
@@ -785,13 +817,72 @@ Du hast eine neue Microsoft Teams Chat-Nachricht erhalten. Analysiere und klassi
 
 ## VORGEHEN
 
-1. Lies die vollständige Nachricht mit den verfügbaren MCP-Tools
-2. Klassifiziere: Ist die Nachricht eine Aufgabe (task), eine reine Information (fyi), oder eine Meeting-Transkript-Benachrichtigung?
-3. Bei task: Erstelle einen TaskPilot-Task mit Kontext-Briefing und passendem Projekt
-4. Bei fyi: Nur zur Kenntnis nehmen
+1. Lies die vollständige Nachricht mit den verfügbaren MCP-Tools.
+2. Klassifiziere zurückhaltend (fail-closed): `task` nur, wenn klar eine konkrete
+   Handlung von Anthony nötig ist. Reine Infos, Bestätigungen, Small Talk -> `fyi`.
+3. Bei `task`: Erstelle einen TaskPilot-Task mit Kontext-Briefing und passendem Projekt.
+4. Bei `fyi`: Nur zur Kenntnis nehmen.
+
+## PFLICHT: JSON-Block am Ende
+
+Gib als Letztes einen JSON-Block aus (ohne ihn kann das Backend die Einordnung nicht speichern):
+
+```json
+{{"triage_class": "task|fyi", "confidence": 0.0, "rationale": "kurze Begründung"}}
+```
 
 Status und Output werden automatisch aus deiner finalen Antwort gespeichert -- rufe update_agent_job NICHT selbst auf.
 """
+
+
+async def _post_process_chat_triage(job_id, content: str) -> str:
+    """Schreibt die Chat-Klassifikation nach dem LLM-Lauf in ``chat_triage`` zurueck.
+
+    Analog zur E-Mail-Triage: ohne diesen Schritt blieb ``chat_triage.triage_class``
+    dauerhaft NULL (Jobs wurden zwar abgeschlossen, aber die Einordnung nie
+    persistiert). Fail-closed: ohne verwertbaren JSON-Block wird ``fyi`` gesetzt.
+    """
+    parsed = _extract_json_block(content)
+    triage_class = None
+    rationale = None
+    confidence = None
+    if parsed is not None:
+        triage_class = parsed.get("triage_class")
+        if triage_class == "quick_response":
+            triage_class = "auto_reply"
+        rationale = parsed.get("rationale")
+        confidence = parsed.get("confidence")
+        try:
+            confidence = float(confidence) if confidence is not None else None
+            if confidence is not None:
+                if confidence > 1:
+                    confidence = confidence / 100.0
+                confidence = max(0.0, min(1.0, confidence))
+        except (TypeError, ValueError):
+            confidence = None
+
+    if triage_class not in ("task", "fyi", "auto_reply"):
+        triage_class = "fyi"
+
+    async with async_session() as db:
+        await db.execute(
+            update(ChatTriage)
+            .where(ChatTriage.agent_job_id == job_id)
+            .values(
+                triage_class=triage_class,
+                confidence=confidence,
+                suggested_action={
+                    "triage_class": triage_class,
+                    "rationale": rationale,
+                    "confidence": confidence,
+                    "fallback": parsed is None,
+                },
+                status="acted",
+            )
+        )
+        await db.commit()
+    logger.info("Job %s: Chat-Triage -> %s (confidence=%s)", job_id, triage_class, confidence)
+    return "completed"
 
 
 def _format_task_context(task: Task) -> str:
@@ -968,10 +1059,18 @@ async def _build_generic_prompt(job: AgentJob) -> str:
     if not description:
         description = str(meta)
 
+    # Leitregeln je nach Job-Typ: Chat-Agent -> 'chat', E-Mail-Versand -> 'draft'.
+    # Andere generische Jobs erhalten nur die kontextuebergreifenden 'general'-Regeln.
+    _rule_contexts = {
+        "chat_agent": ("chat",),
+        "send_email": ("draft",),
+    }.get(job.job_type or "", ())
+    rules_block = await _build_rules_block(*_rule_contexts)
+
     return f"""## AGENT-JOB
 
 {projects_context}
-{skill_hint}{style_hint}
+{skill_hint}{style_hint}{rules_block}
 
 **Job-ID:** {job.id}
 **Job-Typ:** {job.job_type or 'generic'}
@@ -1398,6 +1497,90 @@ def _email_reference_block(meta: dict) -> str:
     return "\n\n---\nQuell-E-Mail:\n" + "\n".join(lines)
 
 
+_SUBJECT_PREFIX_RE = re.compile(r"^(?:\s*(?:re|aw|fw|wg|fwd|antw| w)\s*:\s*)+", re.IGNORECASE)
+
+
+def _normalize_subject(subject: str | None) -> str:
+    """Normalisiert einen Betreff fuer den Duplikat-Vergleich.
+
+    Entfernt wiederholte Antwort-/Weiterleitungs-Praefixe (RE:/AW:/FW:/WG: ...)
+    und kollabiert Whitespace -- damit praktisch identische Betreffzeilen
+    (z. B. wiederkehrende Fehler-Mails) als gleich erkannt werden.
+    """
+    s = subject or ""
+    prev = None
+    while prev != s:
+        prev = s
+        s = _SUBJECT_PREFIX_RE.sub("", s.strip())
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+async def _find_duplicate_open_task(db, meta: dict) -> Task | None:
+    """Sucht einen bereits offenen Task zur selben Sache (Konversation oder Absender+Betreff).
+
+    Verhindert, dass aus vielen praktisch identischen E-Mails (z. B. wiederkehrende
+    System-Fehlermeldungen) immer wieder neue, redundante Tasks entstehen. Gibt den
+    aeltesten passenden **offenen** (nicht erledigten) Task zurueck oder ``None``.
+    """
+    conv = meta.get("conversation_id")
+    from_addr = (meta.get("from_address") or "").strip().lower()
+    norm_subject = _normalize_subject(meta.get("subject"))
+
+    # Schneller Pfad: gleicher Thread hat bereits einen offenen Task.
+    if conv:
+        res = await db.execute(
+            select(Task)
+            .where(Task.email_conversation_id == conv, Task.is_completed.is_(False))
+            .order_by(Task.created_at)
+            .limit(1)
+        )
+        dup = res.scalar_one_or_none()
+        if dup is not None:
+            return dup
+
+    # Absender + normalisierter Betreff: faengt wiederkehrende, praktisch
+    # identische Mails, die je eine eigene Konversation haben (z. B. n8n-Alerts).
+    if from_addr and norm_subject:
+        res = await db.execute(
+            select(Task, EmailTriage.subject)
+            .join(EmailTriage, EmailTriage.message_id == Task.email_message_id)
+            .where(
+                Task.is_completed.is_(False),
+                Task.email_message_id.isnot(None),
+                func.lower(EmailTriage.from_address) == from_addr,
+            )
+            .order_by(Task.created_at)
+            .limit(100)
+        )
+        for task, subj in res.all():
+            if _normalize_subject(subj) == norm_subject:
+                return task
+    return None
+
+
+async def _append_duplicate_note(db, task: Task, meta: dict) -> None:
+    """Dockt eine weitere Meldung als Checklisten-Eintrag an einen offenen Task an."""
+    subj = meta.get("subject") or "(kein Betreff)"
+    when = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+    pos_res = await db.execute(
+        select(ChecklistItem.position)
+        .where(ChecklistItem.task_id == task.id)
+        .order_by(ChecklistItem.position.desc())
+        .limit(1)
+    )
+    next_pos = (pos_res.scalar_one_or_none() or 0) + 1
+    db.add(
+        ChecklistItem(
+            task_id=task.id,
+            text=f"Weitere Meldung am {when}: {subj}"[:500],
+            is_checked=False,
+            position=next_pos,
+        )
+    )
+    task.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+
+
 async def _create_email_task(
     db,
     job_id,
@@ -1415,7 +1598,41 @@ async def _create_email_task(
     Pipeline-Spalte nach Deadline. Verknuepft ``email_message_id`` /
     ``email_conversation_id`` und setzt ``needs_review=True``. Gibt die Task
     zurueck oder None, wenn kein Projekt/keine Spalte existiert.
+
+    Duplikat-Schutz: Existiert bereits ein offener Task zur selben Sache (gleiche
+    Konversation oder Absender+Betreff), wird KEIN neuer Task erstellt. Stattdessen
+    wird die neue Meldung als Checklisten-Eintrag angedockt und die zugehoerige
+    ``email_triage`` als dedupliziert (fyi) markiert.
     """
+    dup = await _find_duplicate_open_task(db, meta)
+    if dup is not None:
+        await _append_duplicate_note(db, dup, meta)
+        if job_id is not None:
+            await db.execute(
+                update(EmailTriage)
+                .where(EmailTriage.agent_job_id == job_id)
+                .values(
+                    triage_class="fyi",
+                    reply_expected=False,
+                    suggested_action={
+                        "label": "Duplikat",
+                        "triage_class": "fyi",
+                        "deduplicated": True,
+                        "duplicate_of": str(dup.id),
+                        "rationale": (
+                            f"Bereits als offene Aufgabe erfasst ('{(dup.title or '')[:60]}'). "
+                            "Als weitere Meldung angedockt -- kein neuer Task."
+                        ),
+                    },
+                    status="acted",
+                )
+            )
+        logger.info(
+            "Job %s: Duplikat erkannt -> an offenen Task %s angedockt (kein neuer Task)",
+            job_id, dup.id,
+        )
+        return dup
+
     proj_result = await db.execute(
         select(Project).where(Project.status != "archived").order_by(Project.name)
     )
@@ -1491,47 +1708,42 @@ async def _create_email_task(
 async def _fallback_unparsed_triage(job_id, meta: dict, moved_id: str | None = None) -> str:
     """Sicherheitsnetz, wenn der LLM keinen verwertbaren Triage-Block lieferte.
 
-    Statt die E-Mail still auf ``triage_class = NULL`` / ``pending`` zu lassen
-    (frueheres Verhalten -> ~11% verschluckt), wird sie deterministisch als
-    ``task`` mit ``needs_review`` eingeordnet, damit sie sichtbar im Cockpit
-    landet und manuell behandelt werden kann.
+    Fail-closed (Best Practice): Bei Unsicherheit wird NICHT gehandelt. Die E-Mail
+    wird als ``fyi`` mit ``needs_review``-Marker eingeordnet und bleibt -- via
+    ``_finalize_email_state`` -- ungelesen in der Inbox sichtbar. Es wird KEIN
+    Auto-Task mehr erstellt: ein faelschlich angelegter Task (z. B. aus einer
+    blossen Terminzusage) ist teurer und nerviger als eine sichtbare Mail, die
+    der Mensch in der Inbox ohnehin sieht und bei Bedarf manuell einordnet.
     """
-    logger.warning("Job %s: Kein verwertbarer JSON-Block -- Fallback auf task/needs_review", job_id)
+    logger.warning(
+        "Job %s: Kein verwertbarer JSON-Block -- fail-closed auf fyi/needs_review (kein Auto-Task)",
+        job_id,
+    )
     async with async_session() as db:
         await db.execute(
             update(EmailTriage)
             .where(EmailTriage.agent_job_id == job_id)
             .values(
-                triage_class="task",
+                triage_class="fyi",
                 reply_expected=False,
                 confidence=None,
                 suggested_action={
-                    "label": "Unklassifiziert",
-                    "triage_class": "task",
+                    "label": "Unklar",
+                    "triage_class": "fyi",
+                    "needs_review": True,
                     "rationale": (
-                        "Agent lieferte keinen strukturierten Triage-Block. Zur manuellen "
-                        "Pruefung als Aufgabe angelegt (Sicherheitsnetz)."
+                        "Agent lieferte keinen strukturierten Triage-Block. Die E-Mail "
+                        "bleibt zur manuellen Sichtung ungelesen in der Inbox -- kein Auto-Task."
                     ),
                     "fallback": True,
                 },
                 status="acted",
             )
         )
-        await _create_email_task(
-            db,
-            job_id,
-            meta,
-            task_title=meta.get("subject") or "E-Mail (unklassifiziert)",
-            task_description=(
-                "Die automatische Triage lieferte keinen strukturierten Entscheid. "
-                "Bitte die E-Mail manuell sichten und einordnen."
-            ),
-            suggested_project=None,
-            deadline=None,
-        )
         await db.commit()
-    # Auch im Fallback deterministisch finalisieren: Kategorie (Unklassifiziert ->
-    # kein Setzen) ueberspringen, aber Mail trotzdem auf ungelesen zuruecksetzen.
+    # Auch im Fallback deterministisch finalisieren: Sentinel "Unklassifiziert"
+    # ueberspringt das Kategorie-Setzen (kein Raten einer Outlook-Kategorie),
+    # die Mail wird aber auf ungelesen zurueckgesetzt und bleibt sichtbar.
     await _finalize_email_state(meta, "Unklassifiziert", moved_id)
     return "completed"
 
@@ -1617,10 +1829,12 @@ async def _post_process_triage(
         triage_class = "auto_reply"
 
     if triage_class == "auto_reply" and not draft_id:
-        logger.warning("Job %s: auto_reply ohne draft_id, Fallback auf task", job_id)
-        triage_class = "task"
-        if not task_title:
-            task_title = meta.get("subject", "E-Mail Triage")
+        # Fail-closed (Best Practice): ohne echten Entwurf wird NICHT als Task
+        # gehandelt, sondern als fyi belassen. Die Mail bleibt via
+        # _finalize_email_state ungelesen in der Inbox sichtbar -- ein
+        # faelschlich erstellter Task ist teurer als eine sichtbare Mail.
+        logger.warning("Job %s: auto_reply ohne draft_id -> fyi (fail-closed, kein Auto-Task)", job_id)
+        triage_class = "fyi"
 
     # Kontext-Gate (NICHT-destruktiv): Ein bereits ERSTELLTER Entwurf wird NIE
     # mehr verworfen. Frueher wurde bei fehlendem Pflicht-Kontext auf 'task'
@@ -2103,6 +2317,11 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
     _job_tool_names.clear()
     disable_thinking = _thinking_disabled(job_type, meta.get("skill"))
 
+    # Token-Verbrauch pro Job messen: der persistente Agent zaehlt kumulativ
+    # (session_total_tokens) -- die Differenz vor/nach dem Lauf ist der Verbrauch
+    # dieses Jobs. Grundlage fuer Kosten-/Kontext-Observability im Cockpit.
+    tokens_before = int(getattr(agent, "session_total_tokens", 0) or 0)
+
     try:
         content = await asyncio.to_thread(_run_agent_sync, agent, prompt, disable_thinking)
         # Echte Draft-ID aus dem Tool-Ergebnis (ground truth) an das Post-Processing
@@ -2129,6 +2348,10 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
             status = await _post_process_triage(
                 job_id, content, meta, captured_draft_id, tools_used, captured_moved_id
             )
+        elif job_type == "chat_triage":
+            trace = list(_job_trace)
+            tools_used = sorted(_job_tool_names)
+            status = await _post_process_chat_triage(job_id, content)
         else:
             trace = list(_job_trace)
             tools_used = sorted(_job_tool_names)
@@ -2159,15 +2382,20 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
                         "Job %s Self-Grade %.2f, fehlende Pflicht-Kontexte: %s",
                         job_id, grade["score"], grade["missing"],
                     )
+            tokens_after = int(getattr(agent, "session_total_tokens", 0) or 0)
+            tokens_used = tokens_after - tokens_before
+            job_values = {
+                "status": status,
+                "output": content[:16000],
+                "metadata_json": new_meta,
+                "completed_at": datetime.now(timezone.utc),
+            }
+            if tokens_used > 0:
+                job_values["tokens_used"] = tokens_used
+                # Lokale Ollama-Modelle verursachen keine API-Kosten.
+                job_values["cost_usd"] = 0
             await db.execute(
-                update(AgentJob)
-                .where(AgentJob.id == job_id)
-                .values(
-                    status=status,
-                    output=content[:16000],
-                    metadata_json=new_meta,
-                    completed_at=datetime.now(timezone.utc),
-                )
+                update(AgentJob).where(AgentJob.id == job_id).values(**job_values)
             )
             await db.commit()
 
@@ -2188,6 +2416,12 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
                     update(EmailTriage)
                     .where(EmailTriage.agent_job_id == job_id)
                     .values(status="dismissed")
+                )
+            elif job_type == "chat_triage":
+                await db.execute(
+                    update(ChatTriage)
+                    .where(ChatTriage.agent_job_id == job_id)
+                    .values(triage_class="fyi", status="dismissed")
                 )
             await db.commit()
 

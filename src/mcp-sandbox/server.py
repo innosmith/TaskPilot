@@ -5,14 +5,11 @@ ausgeführt. Security-First: Kein Netzwerk, keine Secrets, begrenzter Speicher/C
 """
 
 import asyncio
-import json
 import logging
 import os
 import sys
-import tempfile
-import uuid
-from pathlib import Path
 
+import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -24,11 +21,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mcp_sandbox")
 
-SANDBOX_IMAGE = os.environ.get("TP_SANDBOX_IMAGE", "taskpilot-sandbox:latest")
-OUTPUT_BASE = Path(os.environ.get("TP_SANDBOX_OUTPUT_DIR", "/tmp/taskpilot-sandbox-output"))
-SECCOMP_PROFILE = Path(__file__).parent.parent.parent / "docker" / "sandbox" / "seccomp-profile.json"
+# Der eigentliche `docker run` passiert im Sandbox-Executor-Sidecar. Dieser
+# MCP-Server (läuft im Backend-Container OHNE docker.sock) ruft ihn nur per
+# token-geschützter HTTP-API auf.
+EXECUTOR_URL = os.environ.get("TP_SANDBOX_EXECUTOR_URL", "http://127.0.0.1:8090").rstrip("/")
+EXECUTOR_TOKEN = os.environ.get("TP_SANDBOX_EXECUTOR_TOKEN", "")
 MAX_CODE_LENGTH = 50_000
-MAX_OUTPUT_SIZE = 500 * 1024 * 1024  # 500 MB
 
 BLOCKED_IMPORTS = [
     "subprocess", "os.system", "shutil.rmtree",
@@ -57,98 +55,52 @@ async def _execute_in_sandbox(
     input_files: dict[str, str] | None = None,
     timeout_seconds: int = 300,
 ) -> dict:
-    """Code in isoliertem Docker-Container ausführen."""
-    run_id = str(uuid.uuid4())[:8]
-    container_name = f"tp-sandbox-{run_id}"
+    """Code in isolierter Docker-Sandbox ausführen — via Sandbox-Executor-Sidecar.
 
-    work_dir = OUTPUT_BASE / run_id
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    script_path = work_dir / "_script.py"
-    script_path.write_text(code, encoding="utf-8")
-
-    input_dir = work_dir / "input"
-    input_dir.mkdir(exist_ok=True)
-    if input_files:
-        for filename, content in input_files.items():
-            safe_name = Path(filename).name
-            (input_dir / safe_name).write_text(content, encoding="utf-8")
-
-    output_dir = work_dir / "output"
-    output_dir.mkdir(exist_ok=True)
-    os.chmod(output_dir, 0o777)
-
-    docker_args = [
-        "docker", "run",
-        "--rm", "-i",
-        "--name", container_name,
-        "--user", "0:0",
-        "--network", "none",
-        "--memory", "2g",
-        "--cpus", "2",
-        "--pids-limit", "50",
-        "--tmpfs", "/tmp:size=256m",
-        "-v", f"{input_dir}:/input:ro",
-        "-v", f"{output_dir}:/workspace:rw",
-        "--entrypoint", "python",
-        SANDBOX_IMAGE, "-",
-    ]
-
-    logger.info("Sandbox-Ausführung gestartet: run_id=%s, timeout=%ds", run_id, timeout_seconds)
-
-    start_time = asyncio.get_event_loop().time()
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *docker_args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=code.encode("utf-8")), timeout=timeout_seconds
-        )
-    except asyncio.TimeoutError:
-        logger.error("Sandbox Timeout nach %ds (run_id=%s)", timeout_seconds, run_id)
-        try:
-            await asyncio.create_subprocess_exec("docker", "kill", container_name)
-        except Exception:
-            pass
+    Dieser Prozess hat KEINEN Docker-Zugriff. Die Ausführung delegiert an den
+    token-geschützten Executor (``TP_SANDBOX_EXECUTOR_URL``).
+    """
+    if not EXECUTOR_TOKEN:
         return {
             "success": False,
-            "error": f"Timeout: Code-Ausführung nach {timeout_seconds}s abgebrochen",
-            "run_id": run_id,
-            "duration_seconds": timeout_seconds,
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"Container-Fehler: {str(e)}",
-            "run_id": run_id,
-            "duration_seconds": 0,
+            "error": "Sandbox-Executor nicht konfiguriert (TP_SANDBOX_EXECUTOR_TOKEN fehlt)",
+            "stdout": "", "stderr": "", "generated_files": [],
+            "run_id": None, "duration_seconds": 0,
         }
 
-    duration = asyncio.get_event_loop().time() - start_time
-
-    generated_files = []
-    if output_dir.exists():
-        for f in output_dir.iterdir():
-            if f.is_file() and f.name != "_script.py":
-                generated_files.append({
-                    "name": f.name,
-                    "size_bytes": f.stat().st_size,
-                    "path": str(f),
-                })
-
-    return {
-        "success": proc.returncode == 0,
-        "exit_code": proc.returncode,
-        "stdout": stdout.decode("utf-8", errors="replace")[-10000:],
-        "stderr": stderr.decode("utf-8", errors="replace")[-5000:] if stderr else "",
-        "generated_files": generated_files,
-        "output_dir": str(output_dir),
-        "run_id": run_id,
-        "duration_seconds": round(duration, 2),
+    payload = {
+        "code": code,
+        "input_files": input_files,
+        "timeout_seconds": timeout_seconds,
     }
+    http_timeout = httpx.Timeout(timeout_seconds + 30, connect=10.0)
+    logger.info("Sandbox-Ausführung delegiert an Executor: %s (timeout=%ds)", EXECUTOR_URL, timeout_seconds)
+
+    try:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
+            resp = await client.post(
+                f"{EXECUTOR_URL}/execute",
+                json=payload,
+                headers={"Authorization": f"Bearer {EXECUTOR_TOKEN}"},
+            )
+    except httpx.HTTPError as e:
+        logger.exception("Sandbox-Executor nicht erreichbar (%s)", EXECUTOR_URL)
+        return {
+            "success": False,
+            "error": f"Sandbox-Executor nicht erreichbar unter {EXECUTOR_URL}: {e}",
+            "stdout": "", "stderr": "", "generated_files": [],
+            "run_id": None, "duration_seconds": 0,
+        }
+
+    if resp.status_code != 200:
+        return {
+            "success": False,
+            "error": f"Sandbox-Executor Fehler (HTTP {resp.status_code}): {resp.text[:500]}",
+            "stdout": "", "stderr": "", "generated_files": [],
+            "run_id": None, "duration_seconds": 0,
+        }
+
+    return resp.json()
 
 
 TOOLS = [
@@ -266,7 +218,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 async def main():
-    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 

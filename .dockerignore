@@ -27,6 +27,8 @@ src/frontend/dist
 
 # Docker (vermeidet rekursiven Kontext)
 docker/sandbox/
+# Ausnahme: Seccomp-Profil wird vom Sandbox-Executor-Image benoetigt.
+!docker/sandbox/seccomp-profile.json
 
 # Dokumentation
 docs/

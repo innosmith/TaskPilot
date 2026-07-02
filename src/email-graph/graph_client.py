@@ -205,9 +205,14 @@ class GraphClient:
             "$top": str(top),
             "$skip": str(skip),
             "$orderby": "receivedDateTime desc",
+            # ``meetingMessageType`` gehoert zum abgeleiteten Typ ``eventMessage`` und
+            # muss per OData-Cast selektiert werden -- ein direktes Select auf der
+            # ``message``-Collection liefert sonst 400 (Property nicht auf message).
+            # Kommt im Ergebnis trotzdem als Schluessel ``meetingMessageType`` zurueck.
             "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,"
                        "bodyPreview,categories,inferenceClassification,hasAttachments,"
-                       "importance,conversationId,flag",
+                       "importance,conversationId,flag,"
+                       "microsoft.graph.eventMessage/meetingMessageType",
         }
         if filter_str:
             params["$filter"] = filter_str
@@ -547,36 +552,20 @@ class GraphClient:
         select = (
             "id,subject,toRecipients,sentDateTime,bodyPreview,body,conversationId"
         )
-        try:
-            data = await self._get(
-                f"{self._user_path}/mailFolders/sentitems/messages",
-                {
-                    "$filter": (
-                        "toRecipients/any(r:r/emailAddress/address eq "
-                        f"'{recipient_email}')"
-                    ),
-                    "$top": str(top),
-                    "$select": select,
-                },
-            )
-            msgs = data.get("value", [])
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 400:
-                logger.warning(
-                    "search_my_replies_to $filter fehlgeschlagen (400), "
-                    "Fallback auf $search"
-                )
-                data = await self._get(
-                    f"{self._user_path}/mailFolders/sentitems/messages",
-                    {
-                        "$search": f'"to:{recipient_email}"',
-                        "$top": str(top),
-                        "$select": select,
-                    },
-                )
-                msgs = data.get("value", [])
-            else:
-                raise
+        # $search ist der Primaerweg: Der frueher zuerst versuchte
+        # ``toRecipients/any(...)``-$filter wird von Graph auf der messages-
+        # Collection nicht unterstuetzt und scheiterte deshalb praktisch immer mit
+        # 400 (tausende Warnungen + doppelte Requests). Direkt $search spart den
+        # nutzlosen Erst-Request.
+        data = await self._get(
+            f"{self._user_path}/mailFolders/sentitems/messages",
+            {
+                "$search": f'"to:{recipient_email}"',
+                "$top": str(top),
+                "$select": select,
+            },
+        )
+        msgs = data.get("value", [])
         msgs.sort(key=lambda m: m.get("sentDateTime", ""), reverse=True)
         return msgs
 
