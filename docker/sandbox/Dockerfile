@@ -19,6 +19,12 @@ COPY seccomp-profile.json /opt/sandbox/seccomp-profile.json
 COPY entrypoint.sh /opt/sandbox/entrypoint.sh
 RUN chmod +x /opt/sandbox/entrypoint.sh
 
+# Fuer read-only Root-FS + non-root Betrieb: Caches/Config in beschreibbare Pfade
+# (der Executor mountet /tmp als tmpfs und ueberschreibt HOME zusaetzlich per -e).
+ENV MPLCONFIGDIR=/tmp \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/tmp
+
 USER sandbox
 WORKDIR /workspace
 

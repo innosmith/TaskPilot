@@ -159,8 +159,10 @@ DRAFT_INSTRUCTION = (
     "Du schreibst im Namen von Anthony Smith (InnoSmith GmbH, Schweiz) einen kurzen "
     "Antwort-Entwurf auf die folgende E-Mail.\n"
     "Sprache: Schweizer Hochdeutsch. Verbindlich 'ss' statt 'ß' und 'ä/ö/ü' statt "
-    "'ae/oe/ue'. Ton: freundlich, klar, direkt, nicht forsch. Anrede passend zum "
-    "Geschlecht (Lieber/Liebe). Kurz und konkret, keine KI-Floskeln.\n"
+    "'ae/oe/ue'. Ton: freundlich, klar, direkt, nicht forsch. Spiegle das Register "
+    "des Absenders (Du/Sie und Grussform: 'Hallo' -> 'Hallo', nicht automatisch "
+    "'Lieber/Liebe'); Anrede passend zum Geschlecht. Schreibe natuerlich und "
+    "fluessig, kurz und konkret, keine KI-Floskeln.\n"
     "Gib NUR den Antworttext aus (keine Erklaerung)."
 )
 
@@ -178,16 +180,42 @@ def build_email_block(ex: dict) -> str:
 # ── Ollama-Aufruf ────────────────────────────────────────────────────────────
 
 
-def ollama_chat(base_url: str, model: str, system: str, user: str, timeout: int) -> tuple[str, float]:
-    payload = {
+# JSON-Schema fuer schema-constrained Decoding (Ollama native ``format``). Spiegelt
+# das Schema aus hermes_worker._structured_triage_reask (rationale ZUERST).
+TRIAGE_FORMAT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rationale": {"type": "string"},
+        "label": {"type": "string"},
+        "triage_class": {"type": "string", "enum": ["auto_reply", "task", "fyi"]},
+        "reply_expected": {"type": "boolean"},
+        "confidence": {"type": "number"},
+    },
+    "required": ["rationale", "triage_class", "reply_expected"],
+}
+
+
+def ollama_chat(base_url: str, model: str, system: str, user: str, timeout: int,
+                fmt: dict | None = None, think: bool | None = None,
+                options: dict | None = None) -> tuple[str, float]:
+    opts: dict = {"temperature": 0.2}
+    if options:
+        opts.update(options)
+    payload: dict = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "stream": False,
-        "options": {"temperature": 0.2},
+        "options": opts,
     }
+    # Schema-constrained Decoding (parse-garantiert) und/oder Thinking-Schalter --
+    # exakt die zwei Hebel, die wir in Prod evaluieren.
+    if fmt is not None:
+        payload["format"] = fmt
+    if think is not None:
+        payload["think"] = think
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{base_url.rstrip('/')}/api/chat", data=data,
@@ -204,8 +232,18 @@ def ollama_chat(base_url: str, model: str, system: str, user: str, timeout: int)
 
 
 def eval_model(base_url: str, model: str, examples: list[dict], do_drafts: bool,
-               timeout: int) -> dict:
+               timeout: int, structured: bool = False, no_think: bool = False,
+               draft_sampling: bool = False) -> dict:
     from collections import defaultdict
+
+    triage_fmt = TRIAGE_FORMAT_SCHEMA if structured else None
+    think_flag = False if no_think else None
+    # Prosa-Sampling fuer den Draft-Pass (Qwen-3.6-Instruct-Empfehlung) -- spiegelt
+    # config.draft_* / _draft_sampling_overrides aus dem Prod-Zwei-Pass-Schreiber.
+    draft_opts = (
+        {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
+        if draft_sampling else None
+    )
 
     n = 0
     contract_ok = 0
@@ -223,7 +261,8 @@ def eval_model(base_url: str, model: str, examples: list[dict], do_drafts: bool,
         email = build_email_block(ex)
         # 1) Triage
         try:
-            raw, dt = ollama_chat(base_url, model, TRIAGE_INSTRUCTION, email, timeout)
+            raw, dt = ollama_chat(base_url, model, TRIAGE_INSTRUCTION, email, timeout,
+                                   fmt=triage_fmt, think=think_flag)
         except Exception as exc:  # noqa: BLE001
             errors += 1
             print(f"  [{model}] Fehler bei Triage: {exc}")
@@ -247,7 +286,8 @@ def eval_model(base_url: str, model: str, examples: list[dict], do_drafts: bool,
         # 2) Draft (nur wenn Referenz-Antwort vorhanden)
         if do_drafts and ex.get("gold_reply_html"):
             try:
-                draft_raw, _ = ollama_chat(base_url, model, DRAFT_INSTRUCTION, email, timeout)
+                draft_raw, _ = ollama_chat(base_url, model, DRAFT_INSTRUCTION, email, timeout,
+                                           think=think_flag, options=draft_opts)
             except Exception:  # noqa: BLE001
                 continue
             draft = strip_thinking(draft_raw)
@@ -334,6 +374,12 @@ def main() -> None:
     parser.add_argument("--ollama-url", default="http://localhost:11434")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--no-drafts", action="store_true", help="Draft-Generierung ueberspringen")
+    parser.add_argument("--structured", action="store_true",
+                        help="Triage mit schema-constrained Decoding (Ollama format) -- zeigt den contract_rate-Gewinn")
+    parser.add_argument("--no-think", action="store_true",
+                        help="Thinking deaktivieren (think=false) -- zeigt class_accuracy-/Latenz-Delta")
+    parser.add_argument("--draft-sampling", action="store_true",
+                        help="Draft-Pass mit Prosa-Sampling (temp0.7/top_p0.8/top_k20/presence1.5) statt temp0.2 -- Prod-Zwei-Pass-Schreiber")
     args = parser.parse_args()
 
     golden = Path(args.golden)
@@ -358,11 +404,21 @@ def main() -> None:
         examples = all_examples[: args.limit]
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    print(f"Eval gegen {len(examples)} Datensaetze, {len(models)} Modelle.\n")
+    mode = []
+    if args.structured:
+        mode.append("schema-constrained")
+    if args.no_think:
+        mode.append("no-think")
+    if args.draft_sampling:
+        mode.append("draft-sampling")
+    mode_str = f" [Modus: {', '.join(mode)}]" if mode else ""
+    print(f"Eval gegen {len(examples)} Datensaetze, {len(models)} Modelle.{mode_str}\n")
     results = []
     for model in models:
         print(f"== {model} ==")
-        results.append(eval_model(args.ollama_url, model, examples, not args.no_drafts, args.timeout))
+        results.append(eval_model(args.ollama_url, model, examples, not args.no_drafts,
+                                  args.timeout, structured=args.structured, no_think=args.no_think,
+                                  draft_sampling=args.draft_sampling))
 
     write_scoreboard(results, Path(args.out_dir))
 

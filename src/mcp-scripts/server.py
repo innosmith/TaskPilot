@@ -1,7 +1,10 @@
 """MCP-Server für Script-Orchestrierung (Schicht 1).
 
-Verwaltet registrierte Scripts und führt sie in isolierten Docker-Containern aus.
-Security-First: Nur deklarierte Scripts, nur deklarierte Secrets, nur deklarierte Netzwerk-Hosts.
+Verwaltet registrierte Scripts und führt sie über den Sandbox-Executor aus.
+Dieser Prozess läuft im Backend-Container OHNE docker.sock und delegiert die
+eigentliche Ausführung an den token-geschützten Executor, der die Registry
+besitzt und als einziger Dienst Docker starten darf.
+Security-First: Nur deklarierte Scripts, Bild/Flags/Secrets kommen aus der Registry.
 """
 
 import asyncio
@@ -9,11 +12,9 @@ import json
 import logging
 import os
 import sys
-import tempfile
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -26,120 +27,57 @@ logging.basicConfig(
 logger = logging.getLogger("mcp_scripts")
 
 REGISTRY_PATH = Path(__file__).parent / "scripts.json"
-SECRETS_DIR = Path(os.environ.get("TP_SECRETS_DIR", "/run/secrets"))
-OUTPUT_BASE = Path(os.environ.get("TP_SCRIPTS_OUTPUT_DIR", "/tmp/taskpilot-scripts-output"))
+EXECUTOR_URL = os.environ.get("TP_SANDBOX_EXECUTOR_URL", "http://127.0.0.1:8090").rstrip("/")
+EXECUTOR_TOKEN = os.environ.get("TP_SANDBOX_EXECUTOR_TOKEN", "")
 
 
 def _load_registry() -> dict:
-    """Script-Registry aus JSON laden."""
+    """Script-Registry aus JSON laden (für list/info; Ausführung validiert der Executor erneut)."""
     with open(REGISTRY_PATH) as f:
         return json.load(f)
 
 
-def _get_secret(name: str) -> str | None:
-    """Secret aus Umgebungsvariable oder Secrets-Verzeichnis laden."""
-    val = os.environ.get(name)
-    if val:
-        return val
-    secret_file = SECRETS_DIR / name.lower()
-    if secret_file.exists():
-        return secret_file.read_text().strip()
-    return None
-
-
-async def _run_docker_container(
-    script_config: dict,
+async def _run_script_via_executor(
+    script_id: str,
     params: dict,
-    input_dir: Path | None = None,
+    input_files: dict[str, str] | None = None,
 ) -> dict:
-    """Script in Docker-Container ausführen mit Security-Constraints."""
-    security = script_config["security"]
-    run_id = str(uuid.uuid4())[:8]
-    container_name = f"tp-script-{script_config['id']}-{run_id}"
+    """Script-Ausführung an den Sandbox-Executor delegieren (HTTP, token-geschützt)."""
+    if not EXECUTOR_TOKEN:
+        return {
+            "success": False,
+            "error": "Sandbox-Executor nicht konfiguriert (TP_SANDBOX_EXECUTOR_TOKEN fehlt)",
+            "stdout": "", "stderr": "", "generated_files": [], "run_id": None,
+        }
 
-    output_dir = OUTPUT_BASE / run_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    docker_args = [
-        "docker", "run",
-        "--rm",
-        "--name", container_name,
-        "--no-new-privileges",
-        "--security-opt", "no-new-privileges",
-        "--cap-drop", "ALL",
-        "--read-only",
-        "--tmpfs", "/tmp:size=256m",
-        "--memory", f"{security['memory_limit_mb']}m",
-        "--cpus", str(security['cpu_cores']),
-        "--pids-limit", "100",
-        "-v", f"{output_dir}:/output:rw",
-    ]
-
-    if input_dir and input_dir.exists():
-        docker_args.extend(["-v", f"{input_dir}:/input:ro"])
-
-    network_allow = security.get("network_allow", [])
-    llm_allow = security.get("llm_endpoints_allow", [])
-    if not network_allow and not llm_allow:
-        docker_args.extend(["--network", "none"])
-
-    for secret_name in security.get("secrets_required", []):
-        secret_val = _get_secret(secret_name)
-        if secret_val:
-            docker_args.extend(["-e", f"{secret_name}={secret_val}"])
-        else:
-            logger.warning("Secret %s nicht verfügbar für Script %s", secret_name, script_config["id"])
-
-    for key, value in params.items():
-        docker_args.extend(["-e", f"PARAM_{key.upper()}={value}"])
-
-    docker_args.append(script_config["image"])
-
-    timeout = security.get("max_timeout_seconds", 900)
-
-    logger.info(
-        "Starte Script %s (Container: %s, Timeout: %ds)",
-        script_config["id"], container_name, timeout,
-    )
+    payload = {"script_id": script_id, "params": params, "input_files": input_files}
+    # Grosszügiger HTTP-Timeout (Scripts dürfen bis 900s laufen).
+    http_timeout = httpx.Timeout(960, connect=10.0)
+    logger.info("Script '%s' an Executor delegiert: %s", script_id, EXECUTOR_URL)
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *docker_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout
-        )
-    except asyncio.TimeoutError:
-        logger.error("Script %s Timeout nach %ds", script_config["id"], timeout)
-        await asyncio.create_subprocess_exec("docker", "kill", container_name)
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
+            resp = await client.post(
+                f"{EXECUTOR_URL}/run-script",
+                json=payload,
+                headers={"Authorization": f"Bearer {EXECUTOR_TOKEN}"},
+            )
+    except httpx.HTTPError as e:
+        logger.exception("Sandbox-Executor nicht erreichbar (%s)", EXECUTOR_URL)
         return {
             "success": False,
-            "error": f"Timeout nach {timeout} Sekunden",
-            "run_id": run_id,
+            "error": f"Sandbox-Executor nicht erreichbar unter {EXECUTOR_URL}: {e}",
+            "stdout": "", "stderr": "", "generated_files": [], "run_id": None,
         }
-    except Exception as e:
+
+    if resp.status_code != 200:
         return {
             "success": False,
-            "error": f"Docker-Fehler: {str(e)}",
-            "run_id": run_id,
+            "error": f"Sandbox-Executor Fehler (HTTP {resp.status_code}): {resp.text[:500]}",
+            "stdout": "", "stderr": "", "generated_files": [], "run_id": None,
         }
 
-    output_files = []
-    if output_dir.exists():
-        output_files = [f.name for f in output_dir.iterdir() if f.is_file()]
-
-    return {
-        "success": proc.returncode == 0,
-        "exit_code": proc.returncode,
-        "stdout": stdout.decode("utf-8", errors="replace")[-10000:],
-        "stderr": stderr.decode("utf-8", errors="replace")[-5000:] if stderr else "",
-        "output_files": output_files,
-        "output_dir": str(output_dir),
-        "run_id": run_id,
-        "duration_hint": "Script wurde ausgeführt",
-    }
+    return resp.json()
 
 
 TOOLS = [
@@ -162,9 +100,10 @@ TOOLS = [
                     "type": "object",
                     "description": "Parameter als Key-Value-Paare gemäss Script-Definition",
                 },
-                "input_dir": {
-                    "type": "string",
-                    "description": "Optional: Pfad zu Input-Dateien die dem Script als /input gemountet werden",
+                "input_files": {
+                    "type": "object",
+                    "description": "Optional: Dict von {filename: content}, die dem Script als /input/filename (read-only) bereitgestellt werden",
+                    "additionalProperties": {"type": "string"},
                 },
             },
             "required": ["script_id"],
@@ -240,22 +179,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     text=f"Pflicht-Parameter '{p_def['name']}' fehlt ({p_def['description']})",
                 )]
 
-        input_dir = None
-        if arguments.get("input_dir"):
-            input_dir = Path(arguments["input_dir"])
-            if not input_dir.exists():
-                return [TextContent(type="text", text=f"Input-Verzeichnis existiert nicht: {input_dir}")]
+        input_files = arguments.get("input_files")
 
         logger.info("Script-Ausführung gestartet: %s mit params=%s", script_id, params)
-        result = await _run_docker_container(script, params, input_dir)
+        result = await _run_script_via_executor(script_id, params, input_files)
 
-        if result["success"]:
+        if result.get("success"):
             output_text = f"Script '{script['name']}' erfolgreich ausgeführt.\n\n"
-            if result["stdout"]:
+            if result.get("stdout"):
                 output_text += f"**Output:**\n```\n{result['stdout']}\n```\n\n"
-            if result["output_files"]:
-                output_text += f"**Erzeugte Dateien:** {', '.join(result['output_files'])}\n"
-                output_text += f"**Output-Verzeichnis:** {result['output_dir']}\n"
+            files = result.get("generated_files", [])
+            if files:
+                names = ", ".join(f["name"] for f in files)
+                output_text += f"**Erzeugte Dateien (im Workspace):** {names}\n"
+                output_text += f"**Scope:** `{result.get('scope')}` (Abruf via Executor `/artifacts/<scope>/<name>`)\n"
+            if result.get("warning"):
+                output_text += f"**Hinweis:** {result['warning']}\n"
         else:
             output_text = f"Script '{script['name']}' fehlgeschlagen.\n\n"
             output_text += f"**Fehler:** {result.get('error', 'Unbekannt')}\n"
@@ -270,7 +209,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 async def main():
-    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 

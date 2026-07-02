@@ -20,7 +20,7 @@ pydantic-settings>=2.14
 
 # ── HTTP & Networking ──
 httpx>=0.28
-# hermes-agent 0.17.0 pinnt websockets==15.0.1 (hart); untere Grenze entsprechend
+# hermes-agent 0.18.0 pinnt websockets==15.0.1 (hart); untere Grenze entsprechend
 # gelockert (vorher >=16.0), damit pip beide Constraints erfuellen kann. uvicorn
 # [standard] & Co. laufen problemlos mit 15.x.
 websockets>=15.0,<16
@@ -35,11 +35,14 @@ openai>=2.24
 anthropic>=0.97
 tiktoken>=0.12
 # EXAKT gepinnt (nicht >=): reproduzierbare Builds, kein unbemerkter Versions-
-# sprung beim naechsten docker build. 0.17.0 bringt das atomare Memory-Batch-Tool
-# (add/replace/remove gegen das finale Char-Budget in EINEM Call) -- behebt genau
-# unser "Memory voll / Schreiben schlaegt mitten im Edit fehl"-Problem. Upgrade
-# bewusst + getestet erhoehen (Eval-Suite), nie automatisch.
-hermes-agent==0.17.0
+# sprung beim naechsten docker build. 0.18.0 ("The Judgment Release") schliesst
+# 100% aller P0/P1 inkl. des interrupt-protected-compression sibling-fork-Bugs
+# (#56391/#56416) -- passt zu unseren beobachteten "cancel scope"-RuntimeErrors --
+# und macht den Self-Improvement-Fork guenstiger/klueger (weniger Memory-/Skill-
+# Drift). API-Oberflaeche (AIAgent-Init, run_conversation->final_response,
+# session_total_tokens, request_overrides, skill_view) gegen 0.18.0 verifiziert.
+# Upgrade bewusst + getestet erhoehen (Eval-Suite), nie automatisch.
+hermes-agent==0.18.0
 
 # ── MCP (Model Context Protocol) ──
 mcp>=1.27

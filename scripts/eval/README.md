@@ -36,6 +36,42 @@ python scripts/eval/run_llm_eval.py \
 # Ergebnis: scripts/eval/results/scoreboard_<ts>.md + .csv
 ```
 
+## A/B-Schalter: Structured Output und Thinking
+
+Zwei Flags quantifizieren die beiden Prod-Hebel daten- statt bauchbasiert:
+
+```bash
+# Schema-constrained Decoding (Ollama `format`) -- erwarteter Effekt: contract_rate -> ~1.0
+python scripts/eval/run_llm_eval.py --models "qwen3.6:latest" --limit 80 --structured
+
+# Thinking aus (think=false) -- erwarteter Effekt: tiefere avg_latency_s,
+# class_accuracy im Idealfall gleich/besser
+python scripts/eval/run_llm_eval.py --models "qwen3.6:latest" --limit 80 --no-think
+
+# Prosa-Sampling fuer den Draft-Pass (temp0.7/top_p0.8/top_k20/presence1.5 statt
+# temp0.2) -- spiegelt den Prod-Zwei-Pass-Schreiber; Effekt auf avg_draft_similarity
+# und draft_swiss_viol_per_mail beobachten (natuerlicheres Deutsch vs. Referenz)
+python scripts/eval/run_llm_eval.py --models "qwen3.6:latest" --limit 80 --draft-sampling
+```
+
+Vorgehen: einmal ohne Flags (Baseline), dann je einzeln laufen lassen und die
+Deltas in `contract_rate` / `class_accuracy` / `avg_latency_s` /
+`avg_draft_similarity` vergleichen.
+
+**Zum Draft-Sampling:** `avg_draft_similarity` misst die Aehnlichkeit zur *einen*
+real versendeten Antwort. Natuerlicheres, frei formuliertes Deutsch kann diese
+String-Aehnlichkeit sogar leicht senken, obwohl die Qualitaet steigt -- die
+Metrik ist ein grobes Regressionsnetz, kein Qualitaetsurteil. Entscheidend fuer
+den Prod-Zwei-Pass ist die menschliche HITL-Freigabe.
+
+**Caveat (wichtig):** Diese Suite ruft Ollama direkt auf und misst nur den
+rohen Klassifikations-/Draft-Pfad. Sie bildet NICHT die agentische Tool-
+Zuverlaessigkeit ab (Mails verschieben/kategorisieren via MCP). `--no-think`
+kann die Klassifikation verbessern und trotzdem die Tool-Wahl kleiner Modelle im
+echten Agenten-Loop verschlechtern -- deshalb bleibt `triage_disable_thinking`
+im Backend Default aus und wird erst nach einem bewussten Prod-Test aktiviert.
+`--structured` entspricht dem Backend-Fallback `triage_structured_fallback`.
+
 Empfohlene Kandidaten (Stand der lokalen Maschine, Thinking-faehig priorisieren):
 `qwen3.6:latest` (Baseline), `deepseek-r1:70b` (Reasoning), `gemma4:31b`
 (DE-Qualitaet), `gpt-oss:20b`, ggf. `apertus:70b` (Schweizer Modell).

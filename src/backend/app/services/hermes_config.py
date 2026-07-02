@@ -229,6 +229,17 @@ def build_config_dict() -> dict:
     # Ollama /v1 (OpenAI-kompatibel) als custom-Provider — Spike-validiert.
     ollama_v1 = f"{cfg.ollama_base_url.rstrip('/')}/v1"
 
+    def _local_aux() -> dict:
+        """Frisches Aux-Slot-Dict auf dem lokalen Modell (keine YAML-Alias-Anker)."""
+        return {
+            "provider": "custom",
+            "base_url": ollama_v1,
+            "api_key": "ollama",
+            "api_mode": "chat_completions",
+            "model": cfg.triage_model.removeprefix("ollama/"),
+            "context_length": 131072,
+        }
+
     def stdio(server_subdir: str, env: dict, extra_pythonpath: str | None = None) -> dict:
         pp = pythonpath if extra_pythonpath is None else extra_pythonpath
         return {
@@ -275,9 +286,11 @@ def build_config_dict() -> dict:
             "TP_INVOICEINSIGHT_URL": "${TP_INVOICEINSIGHT_URL}",
             "TP_INVOICEINSIGHT_API_KEY": "${TP_INVOICEINSIGHT_API_KEY}",
         }, extra_pythonpath=base),
+        # mcp-scripts delegiert (wie mcp-sandbox) an den Sandbox-Executor; Registry,
+        # Secrets und docker.sock liegen dort. Der MCP-Prozess braucht nur URL + Token.
         "scripts": stdio("mcp-scripts", {
-            "TP_SECRETS_DIR": os.environ.get("TP_SECRETS_DIR", os.path.expanduser("~/.secrets/taskpilot")),
-            "TP_SCRIPTS_OUTPUT_DIR": "/tmp/taskpilot-scripts-output",
+            "TP_SANDBOX_EXECUTOR_URL": "${TP_SANDBOX_EXECUTOR_URL}",
+            "TP_SANDBOX_EXECUTOR_TOKEN": "${TP_SANDBOX_EXECUTOR_TOKEN}",
         }, extra_pythonpath=base),
         "sandbox": stdio("mcp-sandbox", {
             "TP_SANDBOX_EXECUTOR_URL": "${TP_SANDBOX_EXECUTOR_URL}",
@@ -326,8 +339,26 @@ def build_config_dict() -> dict:
         },
         # Skill-Selbstkuratierung: seltener zur Skill-Erstellung anstupsen,
         # damit Fachjobs (Triage) nicht durch Meta-Hinweise gestoert werden.
+        # write_approval=True gated ALLE skill_manage-Writes (create/edit/patch/
+        # delete) -- auch die des post-turn background_review-Forks: Aenderungen
+        # werden nur noch gestaged statt still committet. Das stoppt den frueheren
+        # stillen Skill-Drift (Self-Patching). skill_view (Lesen, Triage-Pfad)
+        # bleibt unberuehrt; unsere eigene Skill-Editor-UI schreibt direkt via
+        # Backend-File-API und umgeht diesen Tool-Gate bewusst.
         "skills": {
             "creation_nudge_interval": 25,
+            "write_approval": True,
+        },
+        # Gateway-Skill-Curator (periodisches Pruning/Archivieren) defensiv AUS:
+        # er laeuft ohnehin nur ueber den Hermes-Gateway, den wir nicht fahren.
+        # enabled=false verhindert, dass ein manuelles `hermes curator run` je
+        # unsere kritischen Skills (email-triage/email-style) archiviert;
+        # prune_builtins=false + consolidate=false als zusaetzliche Sicherung
+        # (kein Built-in-Pruning, keine aux-modell-teure Konsolidierung).
+        "curator": {
+            "enabled": False,
+            "prune_builtins": False,
+            "consolidate": False,
         },
         # Kontext-Kompression: lange Threads/Chats werden ab 70 % des Kontext-
         # fensters zusammengefasst (die letzten 20 Turns bleiben unangetastet).
@@ -344,23 +375,17 @@ def build_config_dict() -> dict:
         # Daten lokal. Explizit gesetzt (provider=custom + base_url), damit der
         # Endpoint inkl. Kontextfenster eindeutig ist und die Kompressions-
         # Feasibility-Pruefung beim Sessionstart nicht warnt.
+        # ALLE Aux-Slots explizit auf das lokale Modell gepinnt (nicht "auto"),
+        # damit kein Nebenaufgaben-Task (Kompression, Vision, Titel, Kuratierung
+        # und der post-turn background_review-Fork) unbemerkt ein nicht-lokales
+        # Modell waehlt -- Datenschutz-Souveraenitaet. background_review auf dem
+        # Hauptmodell bleibt cache-warm (kein Routing, voller Replay).
         "auxiliary": {
-            "compression": {
-                "provider": "custom",
-                "base_url": ollama_v1,
-                "api_key": "ollama",
-                "api_mode": "chat_completions",
-                "model": cfg.triage_model.removeprefix("ollama/"),
-                "context_length": 131072,
-            },
-            "vision": {
-                "provider": "custom",
-                "base_url": ollama_v1,
-                "api_key": "ollama",
-                "api_mode": "chat_completions",
-                "model": cfg.triage_model.removeprefix("ollama/"),
-                "context_length": 131072,
-            },
+            "compression": _local_aux(),
+            "vision": _local_aux(),
+            "background_review": _local_aux(),
+            "title": _local_aux(),
+            "curator": _local_aux(),
         },
         # Tool-Loop-Guardrails: schuetzen vor Endlosschleifen/Token-Verbrennung.
         # Warnungen frueh, harte Stopps nach mehrfach identischem Fehlversuch bzw.

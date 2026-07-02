@@ -54,6 +54,8 @@ async def _execute_in_sandbox(
     code: str,
     input_files: dict[str, str] | None = None,
     timeout_seconds: int = 300,
+    stdin_data: str | None = None,
+    workspace_key: str | None = None,
 ) -> dict:
     """Code in isolierter Docker-Sandbox ausführen — via Sandbox-Executor-Sidecar.
 
@@ -72,6 +74,8 @@ async def _execute_in_sandbox(
         "code": code,
         "input_files": input_files,
         "timeout_seconds": timeout_seconds,
+        "stdin_data": stdin_data,
+        "workspace_key": workspace_key,
     }
     http_timeout = httpx.Timeout(timeout_seconds + 30, connect=10.0)
     logger.info("Sandbox-Ausführung delegiert an Executor: %s (timeout=%ds)", EXECUTOR_URL, timeout_seconds)
@@ -108,7 +112,10 @@ TOOLS = [
         name="execute_code",
         description=(
             "Python-Code in einer isolierten Sandbox ausführen. "
-            "Die Sandbox hat KEIN Netzwerk, KEINE Secrets und begrenzte Ressourcen. "
+            "Die Sandbox ist HEADLESS (kein Terminal, kein Fenster, keine Echtzeit-Tastatur), "
+            "hat KEIN Netzwerk, KEINE Secrets und begrenzte Ressourcen. "
+            "Kein input() ohne bereitgestellte stdin_data. Für interaktive/grafische Aufgaben "
+            "(Spiele, UIs) ein eigenständiges HTML-Artefakt nach /workspace/ schreiben. "
             "Verfügbare Packages: pandas, numpy, matplotlib, seaborn, openpyxl, scipy, pyyaml, jinja2, tabulate. "
             "Input-Dateien werden in /input/ bereitgestellt (read-only). "
             "Output-Dateien in /workspace/ schreiben."
@@ -124,6 +131,14 @@ TOOLS = [
                     "type": "object",
                     "description": "Optional: Dict von {filename: content} die als /input/filename verfügbar gemacht werden",
                     "additionalProperties": {"type": "string"},
+                },
+                "stdin_data": {
+                    "type": "string",
+                    "description": "Optional: Standard-Eingabe (stdin), die dem Programm zugeführt wird (für input()/sys.stdin)",
+                },
+                "workspace_key": {
+                    "type": "string",
+                    "description": "Optional: stabiler Schlüssel für einen persistenten Workspace über mehrere Aufrufe (z. B. Task-ID)",
                 },
                 "timeout_seconds": {
                     "type": "integer",
@@ -184,11 +199,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         timeout = min(arguments.get("timeout_seconds", 300), 900)
         input_files = arguments.get("input_files")
+        stdin_data = arguments.get("stdin_data")
+        workspace_key = arguments.get("workspace_key")
         description = arguments.get("description", "Keine Beschreibung")
 
         logger.info("Sandbox execute_code: description='%s', code_length=%d", description, len(code))
 
-        result = await _execute_in_sandbox(code, input_files, timeout)
+        result = await _execute_in_sandbox(
+            code, input_files, timeout, stdin_data=stdin_data, workspace_key=workspace_key
+        )
 
         output_text = ""
         if warnings:
@@ -198,11 +217,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             output_text += f"**Ausführung erfolgreich** (Dauer: {result['duration_seconds']}s)\n\n"
             if result["stdout"]:
                 output_text += f"**Output:**\n```\n{result['stdout']}\n```\n\n"
+            if result.get("warning"):
+                output_text += f"**Hinweis:** {result['warning']}\n\n"
             if result["generated_files"]:
-                output_text += "**Erzeugte Dateien:**\n"
+                output_text += "**Erzeugte Dateien (im Workspace):**\n"
                 for f in result["generated_files"]:
-                    size_kb = f["size_bytes"] / 1024
-                    output_text += f"- {f['name']} ({size_kb:.1f} KB) → `{f['path']}`\n"
+                    size_kb = f.get("size_bytes", 0) / 1024
+                    output_text += f"- {f['name']} ({size_kb:.1f} KB)\n"
         else:
             output_text += f"**Ausführung fehlgeschlagen** (Exit-Code: {result.get('exit_code', '?')})\n\n"
             if result.get("error"):

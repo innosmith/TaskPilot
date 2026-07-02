@@ -105,6 +105,8 @@ Endpoint: `GET /api/sse/events`
 - **Upload-Scan:** ClamAV via aioclamd (`clamav/clamav-debian:unstable`, ARM64-kompatibel)
 - **Security-Headers:** X-Frame-Options, HSTS, CSP, Referrer-Policy
 - **Docker:** Non-root User; kein docker.sock im Backend. Docker-Zugriff ausschliesslich im `taskpilot-sandbox-executor`-Sidecar (token-geschützt, startet nur das gehärtete Sandbox-Image). `no-new-privileges` deaktiviert (Kernel 6.17-nvidia blockt exec)
+- **Sandbox-Container:** non-root (uid 999), `--read-only` Root-FS, `--network none`, `--cap-drop ALL`, `--tmpfs /tmp`, Mem/CPU/PID-Limits; Code `/code:ro`, Inputs `/input:ro`, einziger Schreibpfad `/workspace`. Executor erzwingt Parallel-Limit, Workspace-Grössenlimit und TTL-Cleanup
+- **`mcp-scripts` (Schicht 1):** delegiert wie `mcp-sandbox` an den Executor (`POST /run-script`). Der Executor besitzt die Registry (`scripts.json`) und startet nur deklarierte Images/Flags/Secrets; Script-Secrets liegen in `.env.sandbox` (nur Executor). Kein docker.sock im Backend mehr
 - **Audit-Log:** `audit_log`-Tabelle fuer sicherheitsrelevante Aktionen
 - **DB-Migrationen:** Alembic (autogenerate + manuelle Bereinigung)
 

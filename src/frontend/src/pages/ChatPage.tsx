@@ -156,6 +156,102 @@ function CodeCopyButton({ text }: { text: string }) {
   );
 }
 
+// Marker aus code_execute-Ergebnissen: <!--tp-artifacts:conv-<uuid>:name1|name2-->
+const ARTIFACT_MARKER_RE = /\n*<!--tp-artifacts:conv-([0-9a-fA-F-]+):([^>]*)-->/;
+
+function parseArtifacts(content: string): { convId: string | null; names: string[]; cleaned: string } {
+  const m = content.match(ARTIFACT_MARKER_RE);
+  if (!m) return { convId: null, names: [], cleaned: content };
+  const convId = m[1];
+  const names = m[2].split('|').map(s => s.trim()).filter(Boolean);
+  const cleaned = content.replace(m[0], '').trimEnd();
+  return { convId, names, cleaned };
+}
+
+const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
+const HTML_EXT = ['html', 'htm'];
+
+function ext(name: string): string {
+  const i = name.lastIndexOf('.');
+  return i >= 0 ? name.slice(i + 1).toLowerCase() : '';
+}
+
+/** Rendert im Sandbox-Workspace erzeugte Artefakte: Bilder inline, HTML als
+ * spielbare/interaktive Vorschau in einem sandboxed <iframe> (Null-Origin via
+ * Blob-URL), alles andere als Download. Auth läuft per Bearer-Header, daher
+ * werden die Dateien als Blob geladen (kein direkter <img src>/<iframe src>). */
+function ArtifactViewer({ convId, names }: { convId: string; names: string[] }) {
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const created: string[] = [];
+    (async () => {
+      for (const name of names) {
+        try {
+          const blob = await api.blob(`/api/code/conversations/${convId}/artifacts/${encodeURIComponent(name)}`);
+          if (cancelled) return;
+          const url = URL.createObjectURL(blob);
+          created.push(url);
+          setUrls(prev => ({ ...prev, [name]: url }));
+        } catch (e) {
+          if (!cancelled) setErrors(prev => ({ ...prev, [name]: (e as Error).message || 'Fehler' }));
+        }
+      }
+    })();
+    return () => { cancelled = true; created.forEach(u => URL.revokeObjectURL(u)); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convId, names.join('|')]);
+
+  if (!names.length) return null;
+
+  return (
+    <div className="mt-3 space-y-3">
+      {names.map(name => {
+        const url = urls[name];
+        const err = errors[name];
+        const e = ext(name);
+        return (
+          <div key={name} className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-300">
+              <span className="flex items-center gap-1.5 truncate"><FileIcon className="h-3.5 w-3.5 shrink-0" />{name}</span>
+              {url && (
+                <div className="flex shrink-0 items-center gap-2">
+                  {HTML_EXT.includes(e) && (
+                    <a href={url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline dark:text-indigo-400">Neu öffnen</a>
+                  )}
+                  <a href={url} download={name} className="text-indigo-600 hover:underline dark:text-indigo-400">Download</a>
+                </div>
+              )}
+            </div>
+            <div className="bg-white p-2 dark:bg-gray-900">
+              {err ? (
+                <p className="px-2 py-3 text-xs text-red-500">Artefakt konnte nicht geladen werden: {err}</p>
+              ) : !url ? (
+                <p className="px-2 py-3 text-xs text-gray-400">Lädt…</p>
+              ) : IMAGE_EXT.includes(e) ? (
+                <img src={url} alt={name} className="mx-auto max-h-[520px] max-w-full rounded" />
+              ) : HTML_EXT.includes(e) ? (
+                <iframe
+                  src={url}
+                  title={name}
+                  sandbox="allow-scripts allow-modals allow-popups allow-pointer-lock allow-downloads"
+                  className="h-[520px] w-full rounded border-0 bg-white"
+                />
+              ) : (
+                <p className="px-2 py-3 text-xs text-gray-500 dark:text-gray-400">
+                  Keine Inline-Vorschau — bitte herunterladen.
+                </p>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const chatMdComponents: Partial<Components> = {
   a: ({ href, children }) => (
     <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
@@ -238,6 +334,9 @@ export function ChatPage() {
   const [temperature, setTemperature] = useState(0.7);
   const [mode, setMode] = useState<ChatMode>('agent');
   const [input, setInput] = useState('');
+  // Optionale Standard-Eingabe (stdin) für den Code-Modus.
+  const [codeStdin, setCodeStdin] = useState('');
+  const [codeStdinOpen, setCodeStdinOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const isChatMobile = useMediaQuery('(max-width: 1023px)');
   const [showSidebar, setShowSidebar] = useState(false);
@@ -564,7 +663,11 @@ export function ChatPage() {
       const resp = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ content: taskDescription, model: selectedModel }),
+        body: JSON.stringify({
+          content: taskDescription,
+          model: selectedModel,
+          ...(codeStdin.trim() ? { stdin_data: codeStdin } : {}),
+        }),
         signal: controller.signal,
       });
       console.log('[code-execute] fetch response', { status: resp.status, ok: resp.ok });
@@ -629,6 +732,13 @@ export function ChatPage() {
               if (data.stdout) content += `\`\`\`\n${data.stdout}\n\`\`\`\n`;
               if (data.generated_files?.length > 0) {
                 content += `\n**Erzeugte Dateien:** ${data.generated_files.map((f: any) => f.name).join(', ')}`;
+              }
+              if (data.warning) content += `\n\n_Hinweis: ${data.warning}_`;
+              // Marker anhängen, damit die Artefakt-Vorschau (identisch zu neu geladenen
+              // Nachrichten) gerendert werden kann.
+              if (data.scope && data.generated_files?.length > 0) {
+                const names = data.generated_files.map((f: any) => f.name).join('|');
+                content += `\n\n<!--tp-artifacts:${data.scope}:${names}-->`;
               }
             } else {
               content += `**Fehler:**\n\`\`\`\n${data.stderr || data.error || 'Unbekannter Fehler'}\n\`\`\``;
@@ -1467,6 +1577,22 @@ export function ChatPage() {
                   rows={4}
                   className="max-h-48 min-h-[96px] w-full resize-none border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
                 />
+                {mode === 'code_execute' && (
+                  <div className="px-3 pb-1">
+                    <button type="button" onClick={() => setCodeStdinOpen(o => !o)} className="text-[11px] font-medium text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400">
+                      {codeStdinOpen ? '− Eingabedaten (stdin)' : '+ Eingabedaten (stdin)'}
+                    </button>
+                    {codeStdinOpen && (
+                      <textarea
+                        value={codeStdin}
+                        onChange={e => setCodeStdin(e.target.value)}
+                        placeholder="Optionale Standard-Eingabe, die dem Programm zugeführt wird (input()/sys.stdin)…"
+                        rows={3}
+                        className="mt-1 max-h-40 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs outline-none focus:border-indigo-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-100"
+                      />
+                    )}
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5">
                   <div className="flex shrink-0 rounded-lg bg-gray-100 p-0.5 dark:bg-gray-700">
                     {MODES.map(m => (
@@ -1603,9 +1729,15 @@ export function ChatPage() {
                     )}
 
                     {msg.role === 'assistant' ? (
-                      <div className="chat-prose prose prose-sm dark:prose-invert max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeHighlight]} components={chatMdComponents}>{msg.content}</ReactMarkdown>
-                      </div>
+                      (() => {
+                        const { convId: artConvId, names: artNames, cleaned } = parseArtifacts(msg.content);
+                        return (
+                          <div className="chat-prose prose prose-sm dark:prose-invert max-w-none">
+                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeHighlight]} components={chatMdComponents}>{cleaned}</ReactMarkdown>
+                            {artConvId && artNames.length > 0 && <ArtifactViewer convId={artConvId} names={artNames} />}
+                          </div>
+                        );
+                      })()
                     ) : (
                       <div className="whitespace-pre-wrap" style={{ fontSize: '0.9375rem', lineHeight: 1.7 }}>{msg.content}</div>
                     )}
@@ -1866,6 +1998,23 @@ export function ChatPage() {
                 rows={1}
                 className="max-h-36 min-h-[44px] w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
               />
+
+              {mode === 'code_execute' && (
+                <div className="px-3 pb-1">
+                  <button type="button" onClick={() => setCodeStdinOpen(o => !o)} className="text-[11px] font-medium text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400">
+                    {codeStdinOpen ? '− Eingabedaten (stdin)' : '+ Eingabedaten (stdin)'}
+                  </button>
+                  {codeStdinOpen && (
+                    <textarea
+                      value={codeStdin}
+                      onChange={e => setCodeStdin(e.target.value)}
+                      placeholder="Optionale Standard-Eingabe, die dem Programm zugeführt wird (input()/sys.stdin)…"
+                      rows={3}
+                      className="mt-1 max-h-40 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs outline-none focus:border-indigo-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-100"
+                    />
+                  )}
+                </div>
+              )}
 
               {/* Untere Toolbar: Modi + Modell + Temperatur + Buttons */}
               <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5">

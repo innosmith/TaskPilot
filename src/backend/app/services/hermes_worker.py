@@ -43,6 +43,7 @@ from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.database import async_session
 from app.models import (
+    AgentFeedback,
     AgentJob,
     BoardColumn,
     ChatTriage,
@@ -199,10 +200,24 @@ def _install_trajectory_path_shim() -> None:
 # Live-Verifikation gegen die Ollama-Version befuellen.
 _THINKING_DISABLED_JOB_TYPES: set[str] = set()
 
+# Triage-Jobtypen: fuer diese greift zusaetzlich der Config-Schalter
+# ``triage_disable_thinking`` (Eval-gesteuert, Default aus).
+_TRIAGE_JOB_TYPES: set[str] = {"email_triage", "chat_triage"}
+
 
 def _thinking_disabled(job_type: str | None, skill: str | None) -> bool:
-    """True, wenn Thinking fuer diesen Job deaktiviert werden soll (Default: nie)."""
-    return bool(job_type and job_type in _THINKING_DISABLED_JOB_TYPES)
+    """True, wenn Thinking fuer diesen Job deaktiviert werden soll (Default: nie).
+
+    Zwei Quellen: die statische Liste ``_THINKING_DISABLED_JOB_TYPES`` (mechanisch)
+    und der Config-Schalter ``triage_disable_thinking`` fuer Triage-Jobs. Letzterer
+    ist Eval-gesteuert (siehe scripts/eval/ --no-think) und standardmaessig aus,
+    weil unsere Triage agentisch mit Tool-Use laeuft.
+    """
+    if job_type and job_type in _THINKING_DISABLED_JOB_TYPES:
+        return True
+    if job_type in _TRIAGE_JOB_TYPES and get_settings().triage_disable_thinking:
+        return True
+    return False
 
 
 # ── Trace-Callbacks (Transparenz) ────────────────────────
@@ -634,6 +649,86 @@ async def _build_sender_style_block(from_addr: str) -> str:
         return ""
 
 
+async def _build_project_routing_hint(from_addr: str) -> str:
+    """Gelerntes Projekt-Routing als weichen Prompt-Hinweis ("korrekte Zuweisung").
+
+    Wertet die impliziten Korrektursignale (``task_moved``) dieses Absenders aus:
+    Wenn agent-erzeugte Tasks dieses Kontakts wiederholt ins selbe Projekt
+    verschoben wurden, bevorzugt der Agent kuenftig dieses Projekt fuer
+    ``suggested_project``. Bewusst nicht-destruktiv -- die Task bleibt
+    ``needs_review``, der Agent darf inhaltlich abweichen. Best-effort: ohne
+    genuegend Signale (Schwelle: ``agent_reflection_min_occurrences``) faellt der
+    Block ersatzlos weg.
+    """
+    if not from_addr:
+        return ""
+    try:
+        import uuid as _uuid
+        from collections import Counter as _Counter
+
+        threshold = max(2, get_settings().agent_reflection_min_occurrences)
+        async with async_session() as db:
+            rows = await db.execute(
+                select(AgentFeedback.corrected).where(
+                    AgentFeedback.feedback_type == "task_moved",
+                    func.lower(AgentFeedback.sender_email) == from_addr.lower(),
+                )
+            )
+            targets: _Counter = _Counter()
+            for (corrected,) in rows.all():
+                pid = (corrected or {}).get("project_id")
+                if pid:
+                    targets[str(pid)] += 1
+            if not targets:
+                return ""
+            top_pid, top_count = targets.most_common(1)[0]
+            if top_count < threshold:
+                return ""
+            try:
+                proj = await db.get(Project, _uuid.UUID(top_pid))
+            except (ValueError, TypeError):
+                return ""
+        if proj is None or getattr(proj, "status", None) == "archived":
+            return ""
+        return (
+            "\n---\n\n## GELERNTES PROJEKT-ROUTING (weicher Hinweis)\n"
+            f"Aufgaben von {from_addr} hat der Berater bereits {top_count}x ins "
+            f'Projekt "{proj.name}" verschoben. Bevorzuge dieses Projekt fuer '
+            "suggested_project, sofern der Inhalt nicht klar zu einem anderen "
+            "Projekt gehoert.\n"
+        )
+    except Exception:  # noqa: BLE001 - best-effort, darf den Prompt-Bau nie stoppen
+        logger.warning("Projekt-Routing-Hinweis konnte nicht erzeugt werden")
+        return ""
+
+
+async def _build_thread_task_hint(meta: dict) -> str:
+    """Weicher Thread-/Konsistenz-Hinweis: existiert bereits ein offener Task zur
+    selben Sache (gleicher Thread oder Absender+Betreff), wird der Agent darauf
+    hingewiesen, KEINEN doppelten Task zu erzeugen. Die harte Garantie liegt
+    weiterhin in der Dedup-Logik des Post-Processings (``_find_duplicate_open_task``);
+    dieser Hinweis reduziert das Rauschen bereits im Prompt und haelt die
+    Klassifikation ueber einen Thread hinweg konsistent. Best-effort.
+    """
+    try:
+        async with async_session() as db:
+            dup = await _find_duplicate_open_task(db, meta)
+            if dup is None:
+                return ""
+            proj = await db.get(Project, dup.project_id) if dup.project_id else None
+        proj_txt = f' (Projekt "{proj.name}")' if proj is not None else ""
+        return (
+            "\n---\n\n## BEREITS OFFENER TASK ZU DIESER SACHE (KONSISTENZ)\n"
+            f'Es existiert bereits ein offener Task: "{dup.title}"{proj_txt}. '
+            "Erstelle KEINEN doppelten Task. Handelt es sich um dieselbe Sache, "
+            "genuegt fyi -- das Backend dockt die neue Meldung automatisch als "
+            "Checklisten-Eintrag an den bestehenden Task an.\n"
+        )
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("Thread-Task-Hinweis konnte nicht erzeugt werden")
+        return ""
+
+
 async def _build_triage_prompt(job: AgentJob) -> str:
     """Baut den Prompt für einen email_triage Job aus Metadata.
 
@@ -670,9 +765,13 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     forced_class = meta.get("forced_class")
     correction_reason = meta.get("correction_reason") or ""
     recall_block = await _build_recall_block(meta)
-    # Triage + Draft laufen im selben Agenten-Loop -> beide Kontexte einspeisen.
-    rules_block = await _build_rules_block("triage", "draft")
+    two_pass = get_settings().two_pass_draft
+    # Im Zwei-Pass-Modus schreibt ein separater Lauf den Entwurf -> hier nur der
+    # Triage-Regel-Kontext. Im Einpass-Modus laufen Triage + Draft zusammen.
+    rules_block = await _build_rules_block("triage") if two_pass else await _build_rules_block("triage", "draft")
     sender_style_block = await _build_sender_style_block(from_addr)
+    routing_hint = await _build_project_routing_hint(from_addr)
+    thread_task_hint = await _build_thread_task_hint(meta)
 
     correction_block = ""
     if forced_class:
@@ -722,7 +821,11 @@ async def _build_triage_prompt(job: AgentJob) -> str:
         skill_section = f"## TRIAGE-INSTRUKTIONEN (STRIKT befolgen!)\n\n{skill_text}"
 
     # Schreibstil-Sektion: nativ via skill_view (Default) oder Datei-Fallback.
-    if style_native:
+    # Im Zwei-Pass-Modus entfaellt sie hier -- der separate Schreib-Pass laedt den
+    # Stil-Kanon mit vollem Budget; die Klassifikation bleibt schlank.
+    if two_pass:
+        style_section = ""
+    elif style_native:
         style_section = (
             "\n---\n\n## SCHREIBSTIL (bei jedem Antwort-Entwurf)\n\n"
             "Bevor du einen auto_reply-Draft formulierst, lade den persönlichen "
@@ -739,12 +842,37 @@ async def _build_triage_prompt(job: AgentJob) -> str:
     else:
         style_section = ""
 
+    # Draft-Schritt: im Zwei-Pass-Modus erstellt der Klassifikations-Lauf KEINEN
+    # Entwurf (das uebernimmt der separate Schreib-Pass), sonst im selben Loop.
+    if two_pass:
+        draft_step = (
+            "7. Erstelle KEINEN Antwort-Entwurf. Klassifiziere nur -- bei auto_reply "
+            "schreibt das Backend den Entwurf anschliessend in einem separaten, "
+            "fokussierten Schreib-Pass. Das Backend erzwingt die Thread-Zugehörigkeit "
+            "und erstellt bei task die Aufgabe automatisch."
+        )
+    else:
+        draft_step = (
+            "7. Erstelle Draft falls auto_reply. WICHTIG: Rufe VORHER "
+            f'search_my_replies("{from_addr}") auf und nutze die letzten von Anthony '
+            "gesendeten Antworten an diesen Kontakt als Ton-/Register-Kalibrierung "
+            "(orientiere dich an Ton, Länge, Anrede und Schlussformel, schreibe aber "
+            "natürlich neu, kopiere nicht wörtlich). PFLICHT: Übergib bei create_draft "
+            f'IMMER reply_to_id="{email_id}", damit die Antwort als "Allen antworten" '
+            "im selben Thread landet (NIEMALS einen neuen Thread starten). Empfänger "
+            "NICHT manuell überschreiben — die Antwort übernimmt die korrekten "
+            "Empfänger (To + CC der Diskussion) automatisch. (Hinweis: Das Backend "
+            "erzwingt die Thread-Zugehörigkeit ohnehin deterministisch; ein neuer "
+            "Thread wird automatisch korrigiert. Bei task übernimmt das Backend die "
+            "Task-Erstellung automatisch.)"
+        )
+
     return f"""{correction_block}{skill_section}
 
 ---
 
 {projects_context}
-{recall_block}{rules_block}
+{routing_hint}{thread_task_hint}{recall_block}{rules_block}
 ---
 
 ## AKTUELLER JOB
@@ -783,12 +911,80 @@ Führe jetzt den Triage-Ablauf durch:
 4. Klassifiziere gemäss der Prioritätsreihenfolge
 5. Setze die Outlook-Kategorie
 6. Verschiebe bei Bedarf (System/Newsletter/Junk/Kalender)
-7. Erstelle Draft falls auto_reply. WICHTIG: Rufe VORHER search_my_replies("{from_addr}") auf und nutze die letzten von Anthony gesendeten Antworten an diesen Kontakt als VERBATIM Stil-Anker (imitiere Ton, Länge, Anrede und Schlussformel). PFLICHT: Übergib bei create_draft IMMER reply_to_id="{email_id}", damit die Antwort als "Allen antworten" im selben Thread landet (NIEMALS einen neuen Thread starten). Empfänger NICHT manuell überschreiben — die Antwort übernimmt die korrekten Empfänger (To + CC der Diskussion) automatisch. (Hinweis: Das Backend erzwingt die Thread-Zugehörigkeit ohnehin deterministisch; ein neuer Thread wird automatisch korrigiert. Bei task übernimmt das Backend die Task-Erstellung automatisch.)
+{draft_step}
 8. Gib den PFLICHT-JSON-Block aus (Schema im Skill bzw. references/triage-rules.md)
 9. Aktualisiere das Absender-Profil mit update_sender_profile (siehe Skill)
 
 Status und Output werden automatisch aus deiner finalen Antwort gespeichert -- rufe update_agent_job NICHT selbst auf.
 """ + (f"\n\n## ZUSÄTZLICHE BENUTZER-REGELN (haben Vorrang!)\n{custom_triage_prompt}" if custom_triage_prompt else "")
+
+
+async def _build_draft_prompt(meta: dict) -> str:
+    """Baut den fokussierten Schreib-Prompt fuer den Zwei-Pass-Draft.
+
+    Einzige Aufgabe: den besten Antwort-Entwurf in Anthonys Stimme schreiben --
+    getrennt von der Klassifikation, ohne JSON-/Move-/Task-Druck. Der Lauf laedt
+    den Stil-Kanon, den Thread und die letzten eigenen Antworten (Kalibrierung) und
+    erstellt den Entwurf mit erzwungenem ``reply_to_id`` im selben Thread.
+    """
+    email_id = meta.get("email_message_id", "")
+    from_addr = meta.get("from_address", "")
+    from_name = meta.get("from_name", "")
+    subject = meta.get("subject", "")
+    conversation_id = meta.get("conversation_id", "")
+    preview = (meta.get("body_preview") or "")[:300]
+
+    style_native = _style_skill_available()
+    if style_native:
+        style_section = (
+            "## SCHREIBSTIL (ZUERST laden und strikt befolgen)\n"
+            "→ **skill_view(name='email-style')** -- natürliche Stimme, Anrede-/"
+            "Register-Spiegelung, Tonalitätsstufen, Self-Review.\n"
+        )
+    else:
+        style_text = _load_style_profile()
+        style_section = (
+            "## SCHREIBSTIL (VERBINDLICH)\n\n"
+            f"{style_text}\n" if style_text else ""
+        )
+    sender_style_block = await _build_sender_style_block(from_addr)
+    rules_block = await _build_rules_block("draft")
+
+    thread_load = (
+        f'→ **get_thread("{conversation_id}")** -- vollständiger Thread-Kontext.\n'
+        if conversation_id else ""
+    )
+
+    return f"""{style_section}{sender_style_block}{rules_block}
+---
+
+## AUFGABE: ANTWORT-ENTWURF SCHREIBEN
+
+Diese E-Mail wurde als **auto_reply** eingestuft. Schreibe jetzt den bestmöglichen
+Antwort-Entwurf im persönlichen Stil von Anthony Smith. Klassifiziere NICHT neu,
+verschiebe nichts, erstelle keinen Task -- schreibe nur den Entwurf.
+
+**E-Mail Message-ID:** {email_id}
+**Betreff:** {subject}
+**Von:** {from_name} <{from_addr}>
+**Vorschau:** {preview}
+
+### Vorgehen
+1. **get_email("{email_id}")** -- lies die vollständige E-Mail (nicht nur die Vorschau).
+{thread_load}2. **search_my_replies("{from_addr}")** -- nimm die letzten eigenen Antworten an
+   diesen Kontakt als Ton-/Register-Kalibrierung (Anrede, Länge, Schlussformel).
+   Orientiere dich daran, **kopiere aber nicht wörtlich** -- schreibe passend zum
+   aktuellen Inhalt neu.
+3. **Spiegle das Register** des Absenders (Du/Sie und Grussform, siehe Schreibstil).
+   Schreibt er «Hallo Anthony», antworte «Hallo [Vorname]», nicht «Lieber/Liebe».
+4. Formuliere natürlich und flüssig, halte dich an den Self-Review im email-style-Skill.
+5. **create_draft** mit **reply_to_id="{email_id}"** (Antwort im selben Thread,
+   NIE ein neuer Thread). Empfänger NICHT manuell überschreiben -- To + CC der
+   Diskussion werden automatisch übernommen. Das Backend erzwingt die Thread-
+   Zugehörigkeit ohnehin deterministisch.
+
+Gib nach dem create_draft-Aufruf eine kurze Bestätigung aus (kein JSON nötig).
+"""
 
 
 async def _build_chat_triage_prompt(job: AgentJob) -> str:
@@ -1705,6 +1901,111 @@ async def _create_email_task(
     return new_task
 
 
+async def _structured_triage_reask(meta: dict, content: str) -> dict | None:
+    """Tool-freier, parse-garantierter Klassifikations-Call (Structured Output).
+
+    Rettungspfad, wenn der agentische Triage-Loop keinen verwertbaren JSON-Block
+    lieferte: EIN direkter Ollama-Call mit ``response_format={"type":"json_object"}``
+    (parse-garantiert) leitet die finale Klassifikation aus Betreff/Absender/Vorschau
+    plus der bisherigen Agenten-Analyse ab. Bewusst OHNE Agent/Tools -- so gibt es
+    keine Kollision mit dem Tool-Calling (``request_overrides`` wuerde sonst jeden
+    Turn erzwingen und Tool-Aufrufe brechen).
+
+    Best-effort: gibt None zurueck, wenn deaktiviert, das Triage-Modell nicht lokal
+    ist oder der Call scheitert -- der Aufrufer faellt dann fail-closed zurueck.
+    """
+    cfg = get_settings()
+    if not cfg.triage_structured_fallback or not _is_local_model(cfg.triage_model):
+        return None
+    subject = meta.get("subject", "")
+    from_addr = meta.get("from_address", "")
+    preview = (meta.get("body_preview") or "")[:500]
+    analysis = (content or "")[-1500:]
+    schema_hint = (
+        '{"rationale": "kurz", "label": "kurzes Label", '
+        '"triage_class": "task|auto_reply|fyi", "reply_expected": true|false, '
+        '"confidence": 0.0}'
+    )
+    system_msg = (
+        "Du bist ein E-Mail-Triage-Klassifikator. Gib AUSSCHLIESSLICH ein JSON-Objekt "
+        f"nach diesem Schema zurueck: {schema_hint}. Begruende ZUERST (rationale), dann "
+        "klassifiziere. triage_class ist genau eines von task, auto_reply, fyi. "
+        "Terminzusagen/reine Infos sind fyi. Im Zweifel fyi."
+    )
+    user_msg = (
+        f"Betreff: {subject}\nVon: {from_addr}\nVorschau: {preview}\n\n"
+        f"Bisherige (ggf. unstrukturierte) Analyse des Agenten:\n{analysis}\n\n"
+        "Leite daraus die finale Klassifikation als JSON ab."
+    )
+    model = cfg.triage_model.removeprefix("ollama/")
+    url = f"{cfg.ollama_base_url.rstrip('/')}/v1/chat/completions"
+    base_payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ],
+        "temperature": 0,
+        "stream": False,
+    }
+
+    async def _call(response_format: dict) -> dict | None:
+        payload = {**base_payload, "response_format": response_format}
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                url, json=payload, headers={"Authorization": "Bearer ollama"}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        msg = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
+        parsed = _loads_lenient(msg)
+        if isinstance(parsed, dict) and parsed.get("triage_class") in ("task", "auto_reply", "fyi"):
+            return parsed
+        return None
+
+    # 1) Schema-constrained Decoding (Best Practice): erzwingt gueltiges JSON mit
+    #    triage_class-Enum. Das rationale-Feld steht ZUERST -> das Modell committet
+    #    erst die Begruendung, dann die Klasse ("reasoning before answer").
+    json_schema_rf = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "email_triage",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "rationale": {"type": "string"},
+                    "label": {"type": "string"},
+                    "triage_class": {
+                        "type": "string",
+                        "enum": ["task", "auto_reply", "fyi"],
+                    },
+                    "reply_expected": {"type": "boolean"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["rationale", "triage_class", "reply_expected"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    try:
+        parsed = await _call(json_schema_rf)
+        if parsed is not None:
+            return parsed
+    except Exception:  # noqa: BLE001 - z.B. 400 bei aelterer Ollama-Version ohne json_schema
+        logger.info(
+            "Structured-Reask: json_schema nicht unterstuetzt, Graceful-Fallback json_object"
+        )
+
+    # 2) Graceful-Fallback auf das schwaechere json_object-Mode (aeltere Ollama-
+    #    Versionen), damit ein fehlendes json_schema-Feature keinen Hard-Break gibt.
+    try:
+        return await _call({"type": "json_object"})
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.warning("Structured-Triage-Reask fehlgeschlagen")
+    return None
+
+
 async def _fallback_unparsed_triage(job_id, meta: dict, moved_id: str | None = None) -> str:
     """Sicherheitsnetz, wenn der LLM keinen verwertbaren Triage-Block lieferte.
 
@@ -1770,7 +2071,18 @@ async def _post_process_triage(
     """
     parsed = _extract_json_block(content)
     if parsed is None:
-        return await _fallback_unparsed_triage(job_id, meta, moved_id)
+        # Rettung vor dem Fail-Closed: EIN tool-freier, parse-garantierter
+        # Klassifikations-Call (nur wenn aktiviert + lokales Modell).
+        parsed = await _structured_triage_reask(meta, content)
+        if parsed is not None:
+            logger.info(
+                "Job %s: Klassifikation via Structured-Fallback gerettet (%s)",
+                job_id,
+                parsed.get("triage_class"),
+            )
+            parsed.setdefault("task_title", meta.get("subject"))
+        else:
+            return await _fallback_unparsed_triage(job_id, meta, moved_id)
 
     triage_class = parsed.get("triage_class")
     label = parsed.get("label")
@@ -1828,6 +2140,24 @@ async def _post_process_triage(
         logger.warning("Job %s: draft_id vorhanden aber triage_class=%s, korrigiere zu auto_reply", job_id, triage_class)
         triage_class = "auto_reply"
 
+    # Zwei-Pass-Entwurf: Der Klassifikations-Lauf hat (per Design) keinen Entwurf
+    # erstellt. Sobald auto_reply feststeht, schreibt jetzt ein separater,
+    # fokussierter Schreib-Pass den Draft mit Prosa-Sampling. Scheitert er, greift
+    # unten der Fail-closed-Pfad. forced_class='task' bleibt unberührt.
+    if (
+        triage_class == "auto_reply"
+        and not draft_id
+        and get_settings().two_pass_draft
+    ):
+        draft_id = await _generate_reply_draft(meta)
+        if draft_id:
+            # Tools des Schreib-Passes fürs Kontext-Gate mitzählen (get_email/
+            # get_thread/search_my_replies liefen erst jetzt).
+            tools_used = sorted(_job_tool_names)
+            logger.info("Job %s: Zwei-Pass-Draft erstellt (draft_id=%s)", job_id, draft_id)
+        else:
+            logger.warning("Job %s: Zwei-Pass-Draft lieferte keinen Entwurf", job_id)
+
     if triage_class == "auto_reply" and not draft_id:
         # Fail-closed (Best Practice): ohne echten Entwurf wird NICHT als Task
         # gehandelt, sondern als fyi belassen. Die Mail bleibt via
@@ -1868,6 +2198,18 @@ async def _post_process_triage(
         task_title = meta.get("subject", "E-Mail Triage (kein Titel)")
         logger.warning("Job %s: task ohne task_title, verwende Subject: %s", job_id, task_title)
 
+    # Low-Confidence-Gate (Best-Practice-Audit-Bucket): Eine Klassifikation mit
+    # geringer Sicherheit wird zur menschlichen Sichtung markiert, statt still
+    # durchzugehen. Nicht-destruktiv -- die Klasse bleibt, nur das needs_review-
+    # Signal wird gesetzt, damit das Cockpit solche Faelle hervorhebt.
+    low_conf_threshold = get_settings().triage_low_confidence_threshold
+    needs_review = confidence is not None and confidence < low_conf_threshold
+    if needs_review:
+        logger.info(
+            "Job %s: Confidence %.2f < %.2f -- als needs_review markiert",
+            job_id, confidence, low_conf_threshold,
+        )
+
     logger.info(
         "Job %s: JSON parsed -- label=%s, triage_class=%s, reply_expected=%s, draft_id=%s",
         job_id, label, triage_class, reply_expected, draft_id,
@@ -1891,6 +2233,7 @@ async def _post_process_triage(
                     "draft_id": draft_id,
                     "rationale": rationale,
                     "confidence": confidence,
+                    "needs_review": needs_review,
                 },
                 status="acted" if triage_class != "auto_reply" else "processing",
             )
@@ -2254,26 +2597,82 @@ async def _init_agent():
     return _agent
 
 
-def _run_agent_sync(agent, prompt: str, disable_thinking: bool) -> str:
+def _draft_sampling_overrides(disable_thinking: bool = True) -> dict:
+    """Prosa-Sampling fuer den Schreib-Pass (Qwen-3.6-Instruct-Empfehlung).
+
+    ``temperature``/``top_p``/``presence_penalty`` gehen als Standard-Chat-Parameter,
+    ``top_k`` provider-spezifisch via ``extra_body``. ``enable_thinking=False`` passt
+    zur Instruct-Empfehlung (die Prosa-Params sind fuer den Nicht-Thinking-Modus
+    gedacht) und haelt den Schreib-Pass schnell.
+    """
+    cfg = get_settings()
+    extra: dict = {"top_k": cfg.draft_top_k}
+    if disable_thinking:
+        extra["chat_template_kwargs"] = {"enable_thinking": False}
+    return {
+        "temperature": cfg.draft_temperature,
+        "top_p": cfg.draft_top_p,
+        "presence_penalty": cfg.draft_presence_penalty,
+        "extra_body": extra,
+    }
+
+
+def _run_agent_sync(
+    agent, prompt: str, disable_thinking: bool, overrides: dict | None = None
+) -> str:
     """Synchroner Agent-Lauf (im Thread). Gibt den finalen Antworttext zurueck.
 
     ``disable_thinking`` setzt SOTA-korrekt ``extra_body.chat_template_kwargs``;
-    standardmaessig False (Thinking an).
+    standardmaessig False (Thinking an). ``overrides`` erlaubt vollstaendige
+    ``request_overrides`` (z. B. Prosa-Sampling im Draft-Pass) und hat Vorrang --
+    der Aufrufer ist dann fuer den Thinking-Schalter im ``extra_body`` zustaendig.
     """
     prev_overrides = getattr(agent, "request_overrides", None)
-    if disable_thinking:
-        agent.request_overrides = {
-            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
-        }
+    req: dict | None = None
+    if overrides is not None:
+        req = dict(overrides)
+    elif disable_thinking:
+        req = {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    if req is not None:
+        agent.request_overrides = req
     try:
         result = agent.run_conversation(prompt, system_message=WORKER_SYSTEM_PROMPT)
     finally:
-        if disable_thinking:
+        if req is not None:
             agent.request_overrides = prev_overrides
 
     if isinstance(result, dict):
         return str(result.get("final_response") or "")
     return str(result or "")
+
+
+async def _generate_reply_draft(meta: dict) -> str | None:
+    """Zweiter, fokussierter Schreib-Pass (nur bei ``two_pass_draft``).
+
+    Erzeugt den Antwort-Entwurf in einem eigenen Agenten-Lauf mit Prosa-Sampling,
+    getrennt von der Klassifikation. Best-effort: liefert die echte create_draft-ID
+    (ground truth aus dem Tool-Callback) oder ``None``. Bei ``None`` greift im
+    Post-Processing der bestehende Fail-closed-Pfad (auto_reply ohne Draft -> fyi).
+    """
+    global _job_created_draft_id
+    if _agent is None:
+        logger.warning("Zwei-Pass-Draft: kein Worker-Agent verfügbar")
+        return None
+    try:
+        prompt = await _build_draft_prompt(meta)
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.exception("Zwei-Pass-Draft: Prompt-Bau fehlgeschlagen")
+        return None
+    # Nur den in DIESEM Pass erstellten Entwurf erfassen.
+    _job_created_draft_id = None
+    try:
+        await asyncio.to_thread(
+            _run_agent_sync, _agent, prompt, True, _draft_sampling_overrides(True)
+        )
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.exception("Zwei-Pass-Draft: Schreib-Pass fehlgeschlagen")
+        return None
+    return _job_created_draft_id
 
 
 def _enforce_autonomy_status(meta: dict, content: str) -> str:
@@ -2348,6 +2747,10 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
             status = await _post_process_triage(
                 job_id, content, meta, captured_draft_id, tools_used, captured_moved_id
             )
+            # Nach dem Post-Processing neu erfassen: ein evtl. Zwei-Pass-Schreib-Pass
+            # hat weitere Tools (get_email/get_thread/search_my_replies/create_draft)
+            # aufgerufen -- fuer korrekte Observability/Self-Grade mitzaehlen.
+            tools_used = sorted(_job_tool_names)
         elif job_type == "chat_triage":
             trace = list(_job_trace)
             tools_used = sorted(_job_tool_names)

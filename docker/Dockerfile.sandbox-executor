@@ -1,7 +1,8 @@
 # TaskPilot Sandbox-Executor
 #
-# Der EINZIGE Container mit Zugriff auf den Docker-Socket. Startet ausschliesslich
-# das gehaertete Image `taskpilot-sandbox:latest` mit fest verdrahteten Flags.
+# Der EINZIGE Container mit Zugriff auf den Docker-Socket. Startet den Code-Sandbox
+# (`taskpilot-sandbox:latest`, fest verdrahtete Flags) sowie registrierte Scripts
+# (Bild/Flags/Secrets ausschliesslich aus der mitgelieferten scripts.json-Registry).
 # Basis `docker:cli` bringt den Docker-Client multi-arch (inkl. arm64) aus Docker Hub
 # mit -- keine zusaetzliche Build-Whitelist-Domain noetig.
 FROM docker:cli
@@ -22,6 +23,9 @@ RUN apk add --no-cache --virtual .build-deps gcc musl-dev python3-dev libffi-dev
 
 COPY src/sandbox-executor/executor.py /opt/executor/executor.py
 COPY src/sandbox-executor/app.py /opt/executor/app.py
+# Script-Registry (Schicht 1): der Executor ist die vertrauenswuerdige Quelle fuer
+# erlaubte Images/Flags/Secrets. Muss mit src/mcp-scripts/scripts.json synchron sein.
+COPY src/mcp-scripts/scripts.json /opt/executor/scripts.json
 # Striktes Seccomp-Profil mitliefern (opt-in via TP_SANDBOX_SECCOMP).
 COPY docker/sandbox/seccomp-profile.json /opt/sandbox/seccomp-profile.json
 

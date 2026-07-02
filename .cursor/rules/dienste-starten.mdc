@@ -55,11 +55,37 @@ Die Code-Sandbox schreibt aus demselben Grund nach `~/.local/share/taskpilot/san
 Der `taskpilot-sandbox-executor` ist Teil der Shared Infra (`make infra`) und der EINZIGE
 Dienst mit docker.sock-Zugriff. Der Coding-Modus + Hermes `execute_code` rufen ihn per HTTP.
 
+**Faehigkeiten (generalisierter Code-Modus):**
+- Beliebiger Python-Zweck (nicht nur Datenanalyse); Prompt ist explizit headless/kein Netz.
+- **Iterativ:** Konversations-Historie (vorige Aufgabe/Code/Ausgabe) fliesst in die Generierung.
+- **Persistenter Workspace pro Konversation** (`workspace_key`): Dateien/Zustand bleiben ueber
+  Iterationen erhalten (unter `sandbox-output/conv-<id>/workspace`).
+- **stdin:** optionale Standard-Eingabe (Feld `stdin_data`; im UI "Eingabedaten (stdin)").
+- **Artefakte:** erzeugte Dateien werden ausgeliefert — Bilder inline, HTML als spielbare
+  Vorschau (sandboxed iframe, Null-Origin via Blob), sonst Download. Backend-Proxy:
+  `GET /api/code/conversations/{id}/artifacts/{name}` (owner-only, Bearer → Blob).
+- Interaktive/grafische Aufgaben (Spiele/UIs) erzeugt das Modell als HTML-Artefakt.
+
+**Registrierte Scripts (Schicht 1, `mcp-scripts`):** laufen ebenfalls ueber den Executor
+(`POST /run-script`). Der Executor besitzt die Registry (`scripts.json`, ins Image gebacken)
+und startet nur dort deklarierte Images/Flags/Secrets — der Aufrufer sendet nur `script_id`,
+`params`, `input_files`. **Script-Secrets** (z. B. `TOGGL_API_TOKEN`, `TOGGL_WORKSPACE_ID`)
+gehoeren jetzt in **`.env.sandbox`** (nur der Executor sieht sie, Least Privilege). Aenderungen
+an `src/mcp-scripts/scripts.json` erfordern einen Executor-Rebuild (Registry wird gebacken).
+
+**Haertung des Sandbox-Containers:** non-root (uid 999), `--read-only` Root-FS, `--network none`,
+`--cap-drop ALL`, `--tmpfs /tmp`, Mem/CPU/PID-Limits, Code read-only unter `/code`, Inputs
+read-only unter `/input`, einziger Schreibpfad `/workspace`. `--no-new-privileges` bleibt AUS
+(Kernel 6.17-nvidia blockt exec damit). Executor-Limits per Env: `TP_SANDBOX_MAX_CONCURRENT` (4),
+`TP_SANDBOX_MAX_WORKSPACE_BYTES` (512 MB), `TP_SANDBOX_RUN_TTL` (3600 s), `TP_SANDBOX_MEMORY`,
+`TP_SANDBOX_CPUS`.
+
 - Token setzen: `openssl rand -hex 32` → in `.env.sandbox` (`TP_SANDBOX_EXECUTOR_TOKEN`)
   UND in `.env.dev`/`.env.integration`/`.env.prod` (gleicher Wert).
 - Image bauen: `make sandbox` (Sandbox) + `make sandbox-executor` (Executor).
-- Aenderungen an `src/sandbox-executor/` erfordern Rebuild des Executor-Images + `make infra`
-  neu starten (`docker compose -f docker/docker-compose.yml up -d --build sandbox-executor`).
+- Aenderungen an `src/sandbox-executor/` ODER `docker/sandbox/` erfordern Rebuild + Neustart:
+  `docker compose -f docker/docker-compose.yml up -d --build sandbox-executor` (Executor) bzw.
+  `make sandbox` (Sandbox-Image, danach Executor-Neustart genuegt — er ruft nur `docker run`).
 
 ## Port-Uebersicht
 

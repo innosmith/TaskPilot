@@ -103,6 +103,41 @@ class Settings(BaseSettings):
     agent_reflection_interval_seconds: int = 86400
     # Mindestzahl gleichartiger Korrekturen, bevor eine Regel vorgeschlagen wird
     agent_reflection_min_occurrences: int = 2
+    # Structured-Output-Rettung im Fallback: Wenn der agentische Triage-Loop keinen
+    # verwertbaren JSON-Block liefert, wird EIN tool-freier Klassifikations-Call an
+    # Ollama gestellt (schema-constrained -> parse-garantiert), bevor fail-closed
+    # auf fyi/needs_review zurueckgefallen wird. Bewusst NICHT global im Agenten-
+    # Loop (request_overrides gilt fuer jeden Turn und wuerde Tool-Calls brechen).
+    # Default AN: strikt nicht-destruktiv (greift nur bei fehlendem JSON-Block) und
+    # Best Practice (constrained Decoding = 100% valides JSON statt fail-closed).
+    triage_structured_fallback: bool = True
+    # Thinking (Reasoning) fuer den Triage-Job deaktivieren. Best-Practice-Belege:
+    # "Thinking"-Modelle verbrennen bei reiner Klassifikation Tokens/Latenz und
+    # liefern eher schlechteres JSON. ABER unsere Triage ist agentisch mit Tool-
+    # Use (Mails verschieben/kategorisieren) -- Thinking-Aus kann die Tool-Wahl
+    # kleiner Modelle verschlechtern. Default AUS (Thinking an); erst nach Eval-
+    # Beleg (scripts/eval/ --no-think) aktivieren.
+    triage_disable_thinking: bool = False
+    # Confidence-Schwelle: Klassifikationen unterhalb dieses Wertes werden im
+    # Cockpit als needs_review markiert (Best-Practice-Audit-Bucket), statt still
+    # durchzugehen. Nur wirksam, wenn das Modell eine Confidence liefert.
+    triage_low_confidence_threshold: float = 0.5
+
+    # Zwei-Pass-Entwurf (Best Practice: klassifizieren -> schreiben trennen). Wenn
+    # aktiv, erstellt der Klassifikations-Lauf KEINEN Entwurf; sobald auto_reply
+    # feststeht, schreibt ein zweiter, fokussierter Agenten-Lauf den Draft mit
+    # Prosa-Sampling und eigenem Kontext (email-style, Thread, Stil-Anker) -- ohne
+    # JSON-/Tool-/Klassifikations-Druck. Hebt die sprachliche Qualitaet, jederzeit
+    # per Flag reversibel.
+    two_pass_draft: bool = True
+    # Prosa-Sampling fuer den Schreib-Pass -- offizielle Qwen-3.6-Instruct-Empfehlung
+    # (temperature=0.7, top_p=0.8, top_k=20, presence_penalty=1.5). Bewusst NICHT
+    # temp=0: deterministisches Sampling erzeugt flaches, repetitives Deutsch. Nur
+    # fuer den Draft-Pass; die Klassifikation bleibt deterministisch.
+    draft_temperature: float = 0.7
+    draft_top_p: float = 0.8
+    draft_top_k: int = 20
+    draft_presence_penalty: float = 1.5
 
     # Pipedrive CRM
     pipedrive_api_token: str = ""

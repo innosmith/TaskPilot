@@ -152,6 +152,20 @@ class TestTriagePrompt:
         prompt = await self._build_prompt(fake_job, style_text="", style_native=False)
         assert "SCHREIBSTIL" not in prompt
 
+    @pytest.mark.asyncio
+    async def test_two_pass_omits_style_and_draft_step(self, fake_job):
+        """Zwei-Pass: Klassifikations-Prompt ohne Stil-Block; Draft-Schritt sagt 'KEINEN'."""
+        prompt = await self._build_prompt(fake_job, style_native=True, two_pass=True)
+        assert "SCHREIBSTIL" not in prompt
+        assert "Erstelle KEINEN Antwort-Entwurf" in prompt
+        assert "separaten" in prompt
+
+    @pytest.mark.asyncio
+    async def test_single_pass_keeps_draft_step(self, fake_job):
+        """Einpass: der Draft-Schritt im selben Loop bleibt erhalten."""
+        prompt = await self._build_prompt(fake_job, style_native=True, two_pass=False)
+        assert "Erstelle Draft falls auto_reply" in prompt
+
     def test_style_canon_swiss_spelling(self):
         """Der echte Schreibstil-Kanon nutzt Schweizer Schreibweise (kein ß, keine ue/ae/oe-Ersatzformen)."""
         from app.services.hermes_worker import STYLE_PROFILE
@@ -179,17 +193,22 @@ class TestTriagePrompt:
         skill_text="(Triage-Skill Platzhalter)",
         skill_native=True,
         style_native=True,
+        two_pass=False,
     ):
         """Importiert und ruft _build_triage_prompt auf, mit gemockten DB-Calls.
 
         Skill-Verfügbarkeit und -Inhalt werden gemockt, damit der Test unabhängig
         vom Dateisystem (~/.hermes/skills/...) ist. Default: native Skills vorhanden.
+        ``two_pass`` steuert den Zwei-Pass-Modus (Default aus -> Stil im Klassifikations-
+        Prompt); im Zwei-Pass entfällt der Stil-Block (separater Schreib-Pass).
         """
+        from app.services.hermes_worker import get_settings
         with patch("app.services.hermes_worker._load_projects_context", new_callable=AsyncMock) as mock_projects, \
              patch("app.services.hermes_worker._load_style_profile", return_value=style_text), \
              patch("app.services.hermes_worker._load_triage_skill", return_value=skill_text), \
              patch("app.services.hermes_worker._triage_skill_available", return_value=skill_native), \
-             patch("app.services.hermes_worker._style_skill_available", return_value=style_native):
+             patch("app.services.hermes_worker._style_skill_available", return_value=style_native), \
+             patch.object(get_settings(), "two_pass_draft", two_pass):
             mock_projects.return_value = "## VERFÜGBARE PROJEKTE\n- \"TestProjekt\" (id: 123)"
 
             from app.services.hermes_worker import _build_triage_prompt
@@ -206,12 +225,15 @@ class TestForcedClassCorrection:
         skill_text="(Triage-Skill Platzhalter)",
         skill_native=True,
         style_native=True,
+        two_pass=False,
     ):
+        from app.services.hermes_worker import get_settings
         with patch("app.services.hermes_worker._load_projects_context", new_callable=AsyncMock) as mock_projects, \
              patch("app.services.hermes_worker._load_style_profile", return_value=style_text), \
              patch("app.services.hermes_worker._load_triage_skill", return_value=skill_text), \
              patch("app.services.hermes_worker._triage_skill_available", return_value=skill_native), \
-             patch("app.services.hermes_worker._style_skill_available", return_value=style_native):
+             patch("app.services.hermes_worker._style_skill_available", return_value=style_native), \
+             patch.object(get_settings(), "two_pass_draft", two_pass):
             mock_projects.return_value = "## VERFÜGBARE PROJEKTE\n- \"TestProjekt\" (id: 123)"
             from app.services.hermes_worker import _build_triage_prompt
             return await _build_triage_prompt(job)

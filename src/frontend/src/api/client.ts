@@ -117,6 +117,26 @@ export const api = {
   delete: <T>(path: string) =>
     request<T>(path, { method: 'DELETE' }),
 
+  /** Lädt eine Ressource authentifiziert als Blob (z. B. Sandbox-Artefakte).
+   * Nötig, weil Auth per Bearer-Header läuft — ein <img>/<iframe src> würde 401 liefern. */
+  blob: async (path: string): Promise<Blob> => {
+    const token = getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    let response = await fetch(path, { headers });
+    if (response.status === 401) {
+      const refreshed = await tryRefreshToken();
+      if (refreshed) {
+        response = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
+      }
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new ApiError(response.status, body || response.statusText);
+    }
+    return response.blob();
+  },
+
   upload: async <T>(path: string, formData: FormData): Promise<T> => {
     const token = getToken();
     const headers: Record<string, string> = {};
