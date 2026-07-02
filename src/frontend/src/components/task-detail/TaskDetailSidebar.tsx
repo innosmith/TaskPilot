@@ -1,4 +1,5 @@
 import { useRef, useState, useMemo, useCallback, useEffect, lazy, Suspense } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { TaskDetail, Tag, TaskUpdatePayload, PipelineColumn, Project, BoardColumn, AgentJob } from '../../types';
 import { api } from '../../api/client';
 import { EmailThreadPanel } from '../EmailThreadPanel';
@@ -114,6 +115,26 @@ export default function TaskDetailSidebar({
 
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+
+  // «Mit Agent besprechen»: öffnet einen Agent-Chat mit verknüpfter task_id —
+  // der Chat-Agent erhält damit das volle Task-Briefing im Prompt.
+  const navigate = useNavigate();
+  const [discussBusy, setDiscussBusy] = useState(false);
+  const handleDiscussWithAgent = useCallback(async () => {
+    if (discussBusy) return;
+    setDiscussBusy(true);
+    try {
+      const conv = await api.post<{ id: string }>('/api/chat/conversations', {
+        title: `Aufgabe: ${task.title}`.slice(0, 80),
+        task_id: taskId,
+        mode: 'agent',
+      });
+      navigate(`/agenten/chat/${conv.id}`);
+    } catch {
+      setDiscussBusy(false);
+      setAgentError('Chat konnte nicht geöffnet werden');
+    }
+  }, [discussBusy, task.title, taskId, navigate]);
 
   // Direkt nach der Agent-Zuweisung wurde serverseitig ein 'planned'-Job erzeugt,
   // den die Sidebar noch nicht kennt -> einmalig nachladen, damit Status/Aktion
@@ -643,6 +664,20 @@ export default function TaskDetailSidebar({
             onClose={() => setShowCalendarPicker(false)}
           />
         </Suspense>
+      )}
+
+      {/* ── Mit Agent besprechen (Owner-only): Agent-Chat mit Task-Kontext ── */}
+      {isOwner && !isTemplate && (
+        <button
+          type="button"
+          onClick={handleDiscussWithAgent}
+          disabled={discussBusy}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-2.5 py-2 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-50 disabled:opacity-50 dark:border-indigo-800 dark:bg-gray-900 dark:text-indigo-300 dark:hover:bg-indigo-950/30"
+          title="Öffnet einen InnoPilot-Chat, der diese Aufgabe als Kontext kennt"
+        >
+          <AgentSmallIcon className="h-3.5 w-3.5" />
+          {discussBusy ? 'Chat wird geöffnet…' : 'Mit Agent besprechen'}
+        </button>
       )}
 
       {/* ── Agent-Bereich (Owner-only): Status + Aktion + Steuerung ── */}

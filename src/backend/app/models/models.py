@@ -251,6 +251,54 @@ class ChatTriage(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
+class MeetingTranscript(Base):
+    """Teams-Meeting-Transkript: Original (VTT), geparster Text, Protokoll.
+
+    Anonymisierte Fassungen + Mapping bleiben ausschliesslich lokal
+    (``anonymization_map`` wird nie exportiert).
+    """
+
+    __tablename__ = "meeting_transcripts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    meeting_id: Mapped[str] = mapped_column(Text, nullable=False)
+    transcript_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    subject: Mapped[str | None] = mapped_column(Text)
+    organizer: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    raw_vtt: Mapped[str | None] = mapped_column(Text)
+    transcript_text: Mapped[str | None] = mapped_column(Text)
+    protocol_md: Mapped[str | None] = mapped_column(Text)
+    anonymized_text: Mapped[str | None] = mapped_column(Text)
+    anonymized_protocol_md: Mapped[str | None] = mapped_column(Text)
+    anonymization_map: Mapped[dict | None] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(Text, server_default="pending")
+    agent_job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_jobs.id"))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class FollowupSuggestion(Base):
+    """Follow-up-Erkennung: eine Zeile pro geprüfter Sent-Konversation.
+
+    Dient als Dedupe-Anker (auch nach Verwerfen des Task-Vorschlags) und als
+    Datenquelle für die Inbox-Statistik. ``status``: suggested | answered.
+    """
+
+    __tablename__ = "followup_suggestions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    conversation_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"))
+    subject: Mapped[str | None] = mapped_column(Text)
+    recipient: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    status: Mapped[str] = mapped_column(Text, server_default="suggested")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
 class SenderProfile(Base):
     __tablename__ = "sender_profiles"
 
@@ -399,6 +447,28 @@ class LlmMessage(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     conversation: Mapped["LlmConversation"] = relationship(back_populates="messages")
+
+
+class ConversationContextItem(Base):
+    """Angepinntes Kontext-Dokument einer Konversation.
+
+    Angehängte Dokumente (Uploads, OneDrive, E-Mail-Texte) werden beim ersten
+    Senden einmalig extrahiert und hier persistiert. Bei jedem weiteren Turn
+    der Konversation wird der Korpus re-injiziert — Dokumente «leben» damit in
+    der ganzen Konversation statt nur im Request, mit dem sie hochkamen.
+    """
+
+    __tablename__ = "conversation_context_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("llm_conversations.id", ondelete="CASCADE"), nullable=False)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)  # local_upload | onedrive_file | onedrive_folder
+    source_ref: Mapped[str | None] = mapped_column(Text)            # upload_id bzw. OneDrive item_id
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)      # extrahierter Volltext (einmalig aufgelöst)
+    char_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    pinned: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
 class WebSearch(Base):

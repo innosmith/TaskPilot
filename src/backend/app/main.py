@@ -29,6 +29,7 @@ from app.routers import (
     finance,
     intelligence,
     linkedin,
+    meetings,
     memory,
     mindmaps,
     models,
@@ -52,8 +53,10 @@ from app.routers import (
 )
 from app.routers import settings as user_settings
 from app.routers.auth import ensure_owner_exists
+from app.services.briefing import start_briefing_scheduler, stop_briefing_scheduler
 from app.services.content_converter import start_content_converter, stop_content_converter
 from app.services.hermes_worker import start_hermes_worker, stop_hermes_worker
+from app.services.meetings import start_meeting_poller, stop_meeting_poller
 from app.services.notification import start_notification_scheduler, stop_notification_scheduler
 from app.services.pipeline_promoter import start_pipeline_promoter, stop_pipeline_promoter
 from app.services.recurring import start_recurring_scheduler, stop_recurring_scheduler
@@ -157,7 +160,11 @@ async def lifespan(app: FastAPI):
     await start_triage_service()
     await start_notification_scheduler()
     await start_reflection_scheduler()
+    await start_briefing_scheduler()
+    await start_meeting_poller()
     yield
+    await stop_meeting_poller()
+    await stop_briefing_scheduler()
     await stop_reflection_scheduler()
     await stop_notification_scheduler()
     await stop_triage_service()
@@ -239,6 +246,7 @@ app.include_router(export.router)
 app.include_router(content.router)
 app.include_router(onedrive.router)
 app.include_router(teams.router)
+app.include_router(meetings.router)
 app.include_router(planner.router)
 app.include_router(web_search.router)
 app.include_router(notifications.router)

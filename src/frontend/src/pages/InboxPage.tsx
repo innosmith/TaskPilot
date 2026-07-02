@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { EmailBody } from '../components/EmailBody';
@@ -87,6 +88,7 @@ interface TriageStats {
   by_status: Record<string, number>;
   by_class: Record<string, number>;
   total_pending: number;
+  followups_due?: number;
 }
 
 /* ---------- Triage-Farben & Labels ---------- */
@@ -139,6 +141,7 @@ function getCategoryClass(cat: string): string {
 /* ---------- Haupt-Komponente ---------- */
 
 export function InboxPage() {
+  const navigate = useNavigate();
   const [emails, setEmails] = useState<EmailSummary[]>([]);
   const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [hiddenFolders, setHiddenFolders] = useState<string[]>([]);
@@ -438,7 +441,7 @@ export function InboxPage() {
       </div>
 
       {/* Triage-Statistik-Leiste */}
-      {triageStats && triageStats.total_pending > 0 && (
+      {triageStats && (triageStats.total_pending > 0 || (triageStats.followups_due ?? 0) > 0) && (
         <div className={`flex items-center gap-4 border-b px-4 py-2.5 text-xs sm:px-6 backdrop-blur-sm ${hasBg ? 'border-white/10 bg-black/30' : 'border-gray-200/60 bg-white/60 dark:border-gray-800/60 dark:bg-gray-900/60'}`}>
           <span className={`font-semibold ${hasBg ? 'text-white/80' : 'text-gray-700 dark:text-gray-300'}`}>Triage:</span>
           {Object.entries(triageStats.by_class).map(([cls, count]) => {
@@ -450,6 +453,16 @@ export function InboxPage() {
               </span>
             );
           })}
+          {(triageStats.followups_due ?? 0) > 0 && (
+            <button
+              onClick={() => navigate('/')}
+              className="flex items-center gap-1 font-medium text-orange-600 transition-colors hover:text-orange-700 dark:text-orange-400 dark:hover:text-orange-300"
+              title="Nachfass-Vorschläge im Cockpit prüfen"
+            >
+              <span className="inline-block h-2 w-2 rounded-full bg-orange-500" />
+              {triageStats.followups_due} Follow-up{(triageStats.followups_due ?? 0) > 1 ? 's' : ''} fällig
+            </button>
+          )}
           <span className="ml-auto text-gray-400 dark:text-gray-500">
             {triageStats.total_pending} offen
           </span>

@@ -9,7 +9,10 @@ import yaml
 
 from app.services.hermes_config import build_config_dict
 
-_AUX_SLOTS = ("compression", "vision", "background_review", "title", "curator")
+_AUX_SLOTS = (
+    "compression", "vision", "web_extract", "background_review",
+    "title_generation", "curator",
+)
 
 
 def test_skill_writes_are_gated():
@@ -28,6 +31,48 @@ def test_all_auxiliary_slots_pinned_to_local():
         assert aux[slot]["api_key"] == "ollama"
         assert aux[slot]["base_url"].endswith("/v1")
         assert aux[slot]["model"] and "ollama/" not in aux[slot]["model"]
+
+
+def test_legacy_title_slot_removed():
+    """Der fruehere Key 'title' war in Hermes 0.18 wirkungslos -- der korrekte
+    Slot heisst 'title_generation'."""
+    cfg = build_config_dict()
+    assert "title" not in cfg["auxiliary"]
+    assert "title_generation" in cfg["auxiliary"]
+
+
+def test_web_backends_explicitly_pinned():
+    """Suche via ddgs (anonym, gratis), Extraktion via Tavily (einziges
+    Extract-Backend). Explizit statt kaskadenabhängig -- die Auto-Detect-
+    Kaskade war zuvor auf ddgs (search-only) gefallen und web_extract
+    damit funktionslos."""
+    cfg = build_config_dict()
+    assert cfg["web"]["search_backend"] == "ddgs"
+    assert cfg["web"]["extract_backend"] == "tavily"
+
+
+def test_taskpilot_mcp_env_without_tavily_key():
+    """Das MCP-Tool mcp_taskpilot_web_search wurde entfernt (Redundanz zur
+    Hermes-nativen Websuche + Doppel-Logging) -- der taskpilot-Server braucht
+    den Tavily-Key nicht mehr."""
+    cfg = build_config_dict()
+    env = cfg["mcp_servers"]["taskpilot"]["env"]
+    assert "TP_TAVILY_API_KEY" not in env
+
+
+def test_populate_hermes_env_mirrors_tavily_key(monkeypatch):
+    """Hermes' native Web-Tools lesen TAVILY_API_KEY UNpräfixiert -- ohne
+    Spiegelung fällt die Backend-Kaskade auf ddgs zurück und web_extract
+    ist funktionslos."""
+    import asyncio
+    import os
+
+    from app.services.hermes_config import populate_hermes_env
+
+    monkeypatch.setenv("TP_TAVILY_API_KEY", "tvly-test-dummy")
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    asyncio.run(populate_hermes_env())
+    assert os.environ.get("TAVILY_API_KEY") == "tvly-test-dummy"
 
 
 def test_gateway_curator_defensively_disabled():

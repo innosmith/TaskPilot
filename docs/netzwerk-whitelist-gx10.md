@@ -165,11 +165,14 @@ Nur freigeben, wenn die Integration beim Kunden aktiv ist.
 |---------------|-------|-----------|
 | `api.track.toggl.com` | API v9 + Reports API v3 | Optional |
 
-### Tavily (Websuche, Legacy)
+### Tavily (Web-Extraktion)
 
 | Host / Muster | Zweck | Priorität |
 |---------------|-------|-----------|
-| `api.tavily.com` | `/search` — klassische Websuche (`web_search`-Router, MCP-TaskPilot) | Optional |
+| `api.tavily.com` | `/extract` — Hermes-natives `web_extract` (Extract-Backend, siehe Abschnitt 9) | Optional |
+
+Das frühere MCP-Tool `mcp_taskpilot_web_search` (Tavily `/search`) wurde entfernt —
+die Suche läuft über das Hermes-native `web_search` (DuckDuckGo, siehe Abschnitt 9).
 
 ### Unsplash (Hintergrundbilder)
 
@@ -213,18 +216,20 @@ Container: `clamav/clamav-debian:unstable` — intern auf Port 3310, kein Intern
 
 ## 9. Hermes Agent — Websuche & Recherche
 
-Hermes aktiviert das Built-in-Toolset **`web`** (`web_search`, `web_extract`) für agentische Recherche.
+Hermes aktiviert das Built-in-Toolset **`web`** (`web_search`, `web_extract`) für agentische
+Recherche. Die Backends sind in der generierten `config.yaml` explizit gepinnt
+(`web.search_backend: ddgs`, `web.extract_backend: tavily`):
 
-| Verhalten | Netzwerk-Implikation |
-|-----------|---------------------|
-| `web_search` / `web_extract` | **Beliebige HTTPS-Ziele** — nicht auf eine feste URL-Liste reduzierbar |
-| Legacy Tavily-Endpunkt | Nur `api.tavily.com` (siehe Abschnitt 7) |
+| Tool | Backend | Netzwerk-Implikation |
+|------|---------|---------------------|
+| `web_search` | DuckDuckGo (ddgs, anonym, kein API-Key) | Nur `duckduckgo.com` (HTML-Scraping) |
+| `web_extract` | Tavily `/extract` | Nur `api.tavily.com` — der Seitenabruf läuft auf Tavily-Servern, nicht auf der GX10 |
 
-**Empfehlung für strikte Whitelist:**
-
-1. Toolset `web` in Hermes deaktivieren / aus Allowlist entfernen, **oder**
-2. Separates HTTP-Proxy mit URL-Policy + Logging, **oder**
-3. Recherche ausschliesslich über Tavily (ohne `web_extract` auf beliebige Seiten)
+Damit ist der Recherche-Egress whitelist-tauglich: Die GX10 kontaktiert für Websuche
+und Extraktion ausschliesslich `duckduckgo.com` und `api.tavily.com`. Datenschutz-Split:
+Die (sensible) Suchanfrage geht anonym an DuckDuckGo; Tavily sieht nur URLs
+öffentlicher Seiten, nicht die Suchintention. Jede Suche wird in `web_searches`
+auditiert (Provider = tatsächliches Backend).
 
 ---
 

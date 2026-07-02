@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ListChecks, ScrollText, FileText, BrainCircuit } from 'lucide-react';
+import { ListChecks, ScrollText, FileText, BrainCircuit, Video } from 'lucide-react';
 import { api } from '../api/client';
 import { BackgroundPicker } from '../components/BackgroundPicker';
 import { FormattedOutput } from '../components/FormattedOutput';
@@ -10,15 +10,19 @@ import { ApprovalCard } from '../components/agent/ApprovalCard';
 import { RulesManager } from '../components/agent/RulesManager';
 import { SkillsPanel } from '../components/agent/SkillsPanel';
 import { KnowledgePanel } from '../components/agent/KnowledgePanel';
+import { MeetingsPanel } from '../components/agent/MeetingsPanel';
 import { useSSE } from '../hooks/useSSE';
 import type { AgentJob } from '../types';
 
 type FilterStatus = 'all' | 'active' | 'completed' | 'failed';
-type FilterType = 'all' | 'chat_agent' | 'chat_triage' | 'email_triage' | 'send_email' | 'other';
-type AgentTab = 'auftraege' | 'regeln' | 'skills' | 'wissen';
+type FilterType = 'all' | 'chat_agent' | 'chat_triage' | 'email_triage' | 'send_email' | 'briefing' | 'other';
+type AgentTab = 'auftraege' | 'meetings' | 'regeln' | 'skills' | 'wissen';
+
+const BRIEFING_TYPES = ['daily_briefing', 'weekly_briefing', 'monthly_briefing'];
 
 const AGENT_TABS: { id: AgentTab; label: string; icon: typeof ListChecks }[] = [
   { id: 'auftraege', label: 'Aufträge', icon: ListChecks },
+  { id: 'meetings', label: 'Meetings', icon: Video },
   { id: 'regeln', label: 'Regeln', icon: ScrollText },
   { id: 'skills', label: 'Skills', icon: FileText },
   { id: 'wissen', label: 'Wissen', icon: BrainCircuit },
@@ -43,6 +47,7 @@ const TYPE_FILTERS: { id: FilterType; label: string }[] = [
   { id: 'chat_triage', label: 'Chat-Triage' },
   { id: 'email_triage', label: 'E-Mail-Triage' },
   { id: 'send_email', label: 'E-Mail-Versand' },
+  { id: 'briefing', label: 'Briefings' },
   { id: 'other', label: 'Sonstige' },
 ];
 
@@ -54,7 +59,11 @@ export function AgentQueuePage() {
     setSearchParams(t === 'auftraege' ? {} : { tab: t }, { replace: true });
   const [jobs, setJobs] = useState<AgentJob[]>([]);
   const [filter, setFilter] = useState<FilterStatus>('all');
-  const [typeFilter, setTypeFilter] = useState<FilterType>('all');
+  // Deeplink z. B. /agenten?type=briefing (BriefingCard-Archivlink im Cockpit)
+  const [typeFilter, setTypeFilter] = useState<FilterType>(() => {
+    const t = searchParams.get('type');
+    return t && TYPE_FILTERS.some(f => f.id === t) ? (t as FilterType) : 'all';
+  });
   const [loading, setLoading] = useState(true);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
@@ -137,9 +146,10 @@ export function AgentQueuePage() {
     if (typeFilter === 'chat_triage' && j.job_type !== 'chat_triage') return false;
     if (typeFilter === 'email_triage' && j.job_type !== 'email_triage') return false;
     if (typeFilter === 'send_email' && j.job_type !== 'send_email') return false;
+    if (typeFilter === 'briefing' && !BRIEFING_TYPES.includes(j.job_type || '')) return false;
     if (
       typeFilter === 'other'
-      && ['chat_agent', 'chat_triage', 'email_triage', 'send_email'].includes(j.job_type || '')
+      && ['chat_agent', 'chat_triage', 'email_triage', 'send_email', ...BRIEFING_TYPES].includes(j.job_type || '')
     ) {
       return false;
     }
@@ -154,6 +164,7 @@ export function AgentQueuePage() {
   const chatAgentCount = jobs.filter((j) => j.job_type === 'chat_agent').length;
   const chatTriageCount = jobs.filter((j) => j.job_type === 'chat_triage').length;
   const triageCount = jobs.filter((j) => j.job_type === 'email_triage').length;
+  const briefingCount = jobs.filter((j) => BRIEFING_TYPES.includes(j.job_type || '')).length;
 
   const handleBgSelect = async (url: string | null) => {
     await api.patch('/api/settings', { agents_background_url: url });
@@ -257,6 +268,7 @@ export function AgentQueuePage() {
                 const count = tf.id === 'chat_agent' ? chatAgentCount
                   : tf.id === 'chat_triage' ? chatTriageCount
                   : tf.id === 'email_triage' ? triageCount
+                  : tf.id === 'briefing' ? briefingCount
                   : undefined;
                 return (
                   <button
@@ -555,6 +567,11 @@ export function AgentQueuePage() {
       </div>
       )}
 
+      {tab === 'meetings' && (
+        <div className="relative z-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
+          <MeetingsPanel />
+        </div>
+      )}
       {tab === 'regeln' && (
         <div className="relative z-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
           <RulesManager />
@@ -582,7 +599,19 @@ export function AgentQueuePage() {
   );
 }
 
+const BRIEFING_TITLES: Record<string, string> = {
+  daily_briefing: 'Tagesbriefing',
+  weekly_briefing: 'Wochenbriefing',
+  monthly_briefing: 'Monatsbriefing',
+};
+
 function _jobDisplayTitle(job: AgentJob, meta: Record<string, string>): string {
+  if (BRIEFING_TITLES[job.job_type || '']) {
+    return `${BRIEFING_TITLES[job.job_type!]} vom ${new Date(job.created_at).toLocaleDateString('de-CH', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  }
+  if (job.job_type === 'meeting_summary') {
+    return `Meeting-Protokoll: ${meta.subject || '(ohne Betreff)'}`;
+  }
   if (job.job_type === 'chat_agent') {
     const preview = meta.prompt_preview;
     if (preview) return preview.length > 80 ? preview.slice(0, 80) + '…' : preview;
@@ -656,6 +685,14 @@ function _jobTypeBadge(job: AgentJob): { label: string; classes: string } | null
       return { label: 'E-Mail-Versand', classes: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' };
     case 'recurring':
       return { label: 'Recurring', classes: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300' };
+    case 'daily_briefing':
+      return { label: 'Tagesbriefing', classes: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' };
+    case 'weekly_briefing':
+      return { label: 'Wochenbriefing', classes: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' };
+    case 'monthly_briefing':
+      return { label: 'Monatsbriefing', classes: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' };
+    case 'meeting_summary':
+      return { label: 'Meeting-Protokoll', classes: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300' };
     default:
       return job.job_type
         ? { label: job.job_type, classes: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300' }

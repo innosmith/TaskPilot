@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import time
+import uuid
 
 import httpx
 from datetime import date, datetime, timedelta, timezone
@@ -49,6 +50,7 @@ from app.models import (
     ChatTriage,
     ChecklistItem,
     EmailTriage,
+    MeetingTranscript,
     Project,
     Task,
     User,
@@ -62,6 +64,7 @@ from app.services.learning import record_episode
 from app.services.notification import (
     notify_agent_awaiting_approval,
     notify_agent_completed,
+    notify_chat_triage_task,
     notify_task_suggested,
 )
 
@@ -123,7 +126,8 @@ WORKER_SYSTEM_PROMPT = (
 
 # ── Runtime-State ────────────────────────────────────────
 _worker_task: asyncio.Task | None = None
-_agent = None  # persistenter Worker-AIAgent
+_agent = None  # persistenter Worker-AIAgent (volle Allowlist)
+_triage_agent = None  # persistenter Triage-AIAgent (reduzierte Allowlist, Paket C)
 _runtime_ready = False
 _runtime_lock: asyncio.Lock | None = None
 _trajectory_shim_installed = False
@@ -457,11 +461,18 @@ async def _load_projects_context() -> str:
     return "\n".join(lines)
 
 
-async def _build_recall_block(meta: dict) -> str:
+async def _build_recall_block(
+    meta: dict,
+    *,
+    job_type: str | None = "email_triage",
+    query: str | None = None,
+) -> str:
     """Few-Shot-Recall: gelernte Lektionen aus aehnlichen frueheren Korrekturen.
 
     Hoechstes Lernsignal -- zeigt dem Agenten, wie der Berater in vergleichbaren
     Faellen frueher korrigiert hat, damit derselbe Fehler nicht wiederholt wird.
+    ``job_type`` filtert die Episoden (None = alle Job-Typen); ``query`` erlaubt
+    eine eigene Suchanfrage (Default: E-Mail-Metadaten aus ``meta``).
     Best-effort: ohne Embedding-Modell/Episoden faellt der Block weg.
     """
     cfg = get_settings()
@@ -470,15 +481,16 @@ async def _build_recall_block(meta: dict) -> str:
     try:
         from app.services.learning import recall_similar_episodes
 
-        subject = meta.get("subject", "")
-        from_addr = meta.get("from_address", "")
-        from_name = meta.get("from_name", "")
-        preview = meta.get("body_preview", "")
-        query = f"E-Mail von {from_name} <{from_addr}>: '{subject}'. {preview[:300]}"
+        if not query:
+            subject = meta.get("subject", "")
+            from_addr = meta.get("from_address", "")
+            from_name = meta.get("from_name", "")
+            preview = meta.get("body_preview", "")
+            query = f"E-Mail von {from_name} <{from_addr}>: '{subject}'. {preview[:300]}"
 
         async with async_session() as db:
             episodes = await recall_similar_episodes(
-                db, query=query, job_type="email_triage", k=3, corrected_only=True,
+                db, query=query, job_type=job_type, k=3, corrected_only=True,
             )
         lessons = [e for e in episodes if (e.get("lesson") or "").strip()]
         if not lessons:
@@ -1112,7 +1124,9 @@ Sprache: Schweizer Hochdeutsch (ss statt scharfem S, korrekte Umlaute ä/ö/ü).
 1. Lies die vollständige Nachricht mit den verfügbaren MCP-Tools.
 2. Klassifiziere zurückhaltend (fail-closed): `task` nur, wenn klar eine konkrete
    Handlung von Anthony nötig ist. Reine Infos, Bestätigungen, Small Talk -> `fyi`.
-3. Bei `task`: Erstelle einen TaskPilot-Task mit Kontext-Briefing und passendem Projekt.
+3. Bei `task`: Erstelle den Task NICHT selbst -- das Backend legt aus deinem
+   JSON-Block deterministisch einen Task-Vorschlag (mit Review-Schleife) an.
+   Liefere dafür Titel, Kurzbeschreibung, passendes Projekt und ggf. Deadline.
 4. Bei `fyi`: Nur zur Kenntnis nehmen.
 
 ## PFLICHT: JSON-Block am Ende
@@ -1120,14 +1134,16 @@ Sprache: Schweizer Hochdeutsch (ss statt scharfem S, korrekte Umlaute ä/ö/ü).
 Gib als Letztes einen JSON-Block aus (ohne ihn kann das Backend die Einordnung nicht speichern):
 
 ```json
-{{"triage_class": "task|fyi", "confidence": 0.0, "rationale": "kurze Begründung"}}
+{{"triage_class": "task|fyi", "confidence": 0.0, "rationale": "kurze Begründung",
+  "task_title": "nur bei task", "task_description": "nur bei task",
+  "suggested_project": "Projektname oder null", "deadline": "YYYY-MM-DD oder null"}}
 ```
 
 Status und Output werden automatisch aus deiner finalen Antwort gespeichert -- rufe update_agent_job NICHT selbst auf.
 """
 
 
-async def _post_process_chat_triage(job_id, content: str) -> str:
+async def _post_process_chat_triage(job_id, content: str, meta: dict | None = None) -> str:
     """Schreibt die Chat-Klassifikation nach dem LLM-Lauf in ``chat_triage`` zurueck.
 
     Analog zur E-Mail-Triage: ohne diesen Schritt blieb ``chat_triage.triage_class``
@@ -1157,23 +1173,131 @@ async def _post_process_chat_triage(job_id, content: str) -> str:
         triage_class = "fyi"
 
     async with async_session() as db:
+        # Deterministische Task-Erstellung (Paritaet zur E-Mail-Triage): Das
+        # Backend legt den Vorschlag an (needs_review), nicht der Agent selbst.
+        created_task = None
+        if triage_class == "task":
+            try:
+                created_task = await _create_chat_task(
+                    db,
+                    job_id,
+                    meta or {},
+                    task_title=(parsed or {}).get("task_title"),
+                    task_description=(parsed or {}).get("task_description"),
+                    suggested_project=(parsed or {}).get("suggested_project"),
+                    deadline=(parsed or {}).get("deadline"),
+                )
+            except Exception:  # noqa: BLE001 - Klassifikation trotzdem persistieren
+                logger.exception("Job %s: Chat-Task konnte nicht erstellt werden", job_id)
+
+        suggested_action = {
+            "triage_class": triage_class,
+            "rationale": rationale,
+            "confidence": confidence,
+            "fallback": parsed is None,
+        }
+        if created_task is not None:
+            suggested_action["task_id"] = str(created_task.id)
+
         await db.execute(
             update(ChatTriage)
             .where(ChatTriage.agent_job_id == job_id)
             .values(
                 triage_class=triage_class,
                 confidence=confidence,
-                suggested_action={
-                    "triage_class": triage_class,
-                    "rationale": rationale,
-                    "confidence": confidence,
-                    "fallback": parsed is None,
-                },
+                suggested_action=suggested_action,
                 status="acted",
             )
         )
+        # Episode fuer das episodische Gedaechtnis (Lern-Paritaet mit der
+        # E-Mail-Triage): Grundlage fuer Recall bei kuenftigen Chat-Triagen.
+        meta = meta or {}
+        summary = (
+            f"Teams-Nachricht von {meta.get('from_name') or '?'}: "
+            f"'{(meta.get('body_preview') or '')[:200]}'. "
+            f"Triage-Entscheid: {triage_class}"
+        )
+        await record_episode(
+            db,
+            summary=summary,
+            job_type="chat_triage",
+            agent_job_id=job_id,
+            decision={"triage_class": triage_class, "confidence": confidence},
+        )
         await db.commit()
     logger.info("Job %s: Chat-Triage -> %s (confidence=%s)", job_id, triage_class, confidence)
+    return "completed"
+
+
+_ACTION_ITEMS_FENCE = re.compile(r"```(?:json)?\s*(\{[^`]*\"action_items\"[^`]*\})\s*```", re.DOTALL)
+
+
+async def _post_process_meeting_summary(job_id, content: str, meta: dict | None = None) -> str:
+    """Persistiert das Meeting-Protokoll und erstellt Action-Item-Vorschläge.
+
+    - ``protocol_md`` = LLM-Output ohne den Action-Item-JSON-Block.
+    - Pro Action-Item mit Owner Anthony (oder ohne Owner) ein ``needs_review``-Task
+      (HITL) via ``_create_review_task``.
+    - Notification ``meeting_summary_ready`` mit Link auf den Meetings-Tab.
+    """
+    meta = meta or {}
+    transcript_id = meta.get("meeting_transcript_id")
+
+    action_items: list[dict] = []
+    protocol_md = (content or "").strip()
+    m = _ACTION_ITEMS_FENCE.search(protocol_md)
+    if m:
+        parsed = _loads_lenient(m.group(1))
+        if isinstance(parsed, dict) and isinstance(parsed.get("action_items"), list):
+            action_items = [ai for ai in parsed["action_items"] if isinstance(ai, dict)]
+        protocol_md = (protocol_md[: m.start()] + protocol_md[m.end():]).strip()
+
+    subject = meta.get("subject") or "Meeting"
+    created_count = 0
+    async with async_session() as db:
+        for item in action_items[:10]:
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            owner = (item.get("owner") or "").strip().lower()
+            # Nur eigene Aufgaben vorschlagen; fremde Zusagen bleiben im Protokoll.
+            if owner and owner not in ("anthony", "anthony smith", "ich", "me"):
+                continue
+            desc = (item.get("description") or "").strip()
+            source_block = f"\n\n---\n**Quelle:** Meeting «{subject}»"
+            task = await _create_review_task(
+                db,
+                job_id,
+                title=title,
+                description=(desc or "Aus Meeting-Protokoll.") + source_block,
+                suggested_project=item.get("suggested_project"),
+                deadline=item.get("deadline"),
+            )
+            if task is not None:
+                created_count += 1
+
+        if transcript_id:
+            try:
+                record = await db.get(MeetingTranscript, uuid.UUID(transcript_id))
+            except ValueError:
+                record = None
+            if record is not None:
+                record.protocol_md = protocol_md[:64000]
+                record.status = "completed"
+                from app.services.notification import notify_meeting_summary_ready
+
+                await notify_meeting_summary_ready(
+                    db,
+                    transcript_id=record.id,
+                    subject=record.subject,
+                    action_item_count=created_count,
+                )
+        await db.commit()
+
+    logger.info(
+        "Job %s: Meeting-Protokoll gespeichert (%d Action-Item-Vorschläge)",
+        job_id, created_count,
+    )
     return "completed"
 
 
@@ -1351,24 +1475,185 @@ async def _build_generic_prompt(job: AgentJob) -> str:
     if not description:
         description = str(meta)
 
-    # Leitregeln je nach Job-Typ: Chat-Agent -> 'chat', E-Mail-Versand -> 'draft'.
-    # Andere generische Jobs erhalten nur die kontextuebergreifenden 'general'-Regeln.
+    # Leitregeln je nach Job-Typ: Chat-Agent -> 'chat', E-Mail-Versand -> 'draft',
+    # delegierte Tasks/sonstige Jobs -> 'task'. 'general' wirkt immer mit
+    # (siehe _build_rules_block) -- frueher fiel der Default faelschlich auf
+    # 'triage' zurueck, obwohl Task-Jobs keine Triage sind.
     _rule_contexts = {
         "chat_agent": ("chat",),
         "send_email": ("draft",),
-    }.get(job.job_type or "", ())
+    }.get(job.job_type or "", ("task",))
     rules_block = await _build_rules_block(*_rule_contexts)
+
+    # Gelernte Lektionen aus frueheren Jobs desselben Typs (Lern-Paritaet mit
+    # der E-Mail-Triage). Query aus dem Auftragstext statt E-Mail-Metadaten.
+    recall_block = await _build_recall_block(
+        meta, job_type=job.job_type or "task", query=str(description)[:400],
+    )
 
     return f"""## AGENT-JOB
 
+Heute ist {_today_context_line()} (Europe/Zurich).
+
 {projects_context}
-{skill_hint}{style_hint}{rules_block}
+{skill_hint}{style_hint}{rules_block}{recall_block}
 
 **Job-ID:** {job.id}
 **Job-Typ:** {job.job_type or 'generic'}
 **Auftrag:** {description}
 
 Führe den Auftrag aus und gib dein **vollständiges** Ergebnis direkt als finale Antwort aus -- formatiert als Markdown (Überschriften, Listen, Fettungen, wo sinnvoll). Deine Antwort selbst ist das gespeicherte Resultat; es gibt keinen separaten Speicherort und keine "Kurzfassung". Rufe update_agent_job NICHT selbst auf -- Status und Output werden automatisch aus deiner finalen Antwort gespeichert.
+"""
+
+
+# ── Briefing-Prompt (Daily/Weekly/Monthly) ───────────────
+
+_BRIEFING_INSTRUCTIONS: dict[str, str] = {
+    "daily_briefing": (
+        "Erstelle ein kompaktes **Tagesbriefing** für heute:\n"
+        "1. **Tagesüberblick** (2-3 Sätze): Was prägt den heutigen Tag?\n"
+        "2. **Termine**: Chronologisch, mit kurzen Vorbereitungshinweisen wo sinnvoll "
+        "(z. B. 'Unterlagen zu X bereitlegen'). Terminkonflikte explizit benennen.\n"
+        "3. **Top-Prioritäten** (max. 3): Welche Aufgaben heute zuerst? Begründe kurz "
+        "anhand Fälligkeit und Fokus-Spalte.\n"
+        "4. **Entscheidungen fällig**: Wartende Freigaben und Task-Vorschläge in einem Satz.\n"
+        "5. **Sonstiges**: Nur wenn relevant (Triage-Auffälligkeiten, Signale, Warnungen)."
+    ),
+    "weekly_briefing": (
+        "Erstelle ein **Wochenbriefing** zur Ressourcenplanung der kommenden Woche:\n"
+        "1. **Rückblick** (3-4 Sätze): Plan vs. effektiv geleistete Zeit pro Projekt -- wo "
+        "gab es Abweichungen? Nenne nur die relevanten.\n"
+        "2. **Kommende Woche**: Kapazitätslage (geplante Auslastung, Termine, Abwesenheiten). "
+        "Wie viel Zeit bleibt realistisch für Aufgabenarbeit?\n"
+        "3. **Projekt-Lage**: Wo brennen offene/überfällige Aufgaben? Priorisiere über Projekte.\n"
+        "4. **Planungsempfehlung** (max. 5 Punkte): Welche Aufgaben in die verfügbare Zeit "
+        "einplanen, was verschieben, was delegieren?\n"
+        "5. **Risiken**: Überbuchung, Deadline-Kollisionen, offene Entscheidungen."
+    ),
+    "monthly_briefing": (
+        "Erstelle ein **Monatsbriefing** mit Blick auf die nächsten zwei Monate:\n"
+        "1. **Monatsrückblick** (3-4 Sätze): Soll/Ist pro Projekt, wesentliche Abweichungen.\n"
+        "2. **Vorschau nächster Monat**: Termine, geplante Kapazität, Umsatzprognose, "
+        "Abwesenheiten -- was prägt den Monat?\n"
+        "3. **Vorschau übernächster Monat**: Was zeichnet sich ab, was muss JETZT geplant "
+        "werden, damit es rechtzeitig bereit ist (Vorlaufzeiten!)?\n"
+        "4. **Empfehlungen** (max. 5 Punkte): Aufgaben rechtzeitig einplanen, Engpässe "
+        "entschärfen, Kapazität anpassen.\n"
+        "5. **Finanzen/Administratives**: Nur wenn aus den Daten relevant (Renewals, Warnungen)."
+    ),
+}
+
+
+async def _build_briefing_prompt(job: AgentJob) -> str:
+    """Baut den Prompt für Briefing-Jobs: injizierter Datenkontext + Syntheseauftrag.
+
+    Der komplette Zahlen-Kontext kommt deterministisch aus ``briefing_data``
+    (metadata_json.context_markdown) -- das Modell synthetisiert nur noch.
+    """
+    meta = job.metadata_json or {}
+    briefing_type = meta.get("briefing_type") or job.job_type or "daily_briefing"
+    context_md = meta.get("context_markdown") or "(Kein Datenkontext verfügbar)"
+    instructions = _BRIEFING_INSTRUCTIONS.get(briefing_type, _BRIEFING_INSTRUCTIONS["daily_briefing"])
+
+    rules_block = await _build_rules_block("general")
+
+    return f"""## BRIEFING-AUFTRAG
+
+Heute ist {_today_context_line()} (Europe/Zurich).
+
+Du bist Anthonys persönlicher Assistent und erstellst sein Briefing.
+{rules_block}
+{context_md}
+
+## AUFTRAG
+
+{instructions}
+
+## VERBINDLICHE REGELN
+
+- Verwende AUSSCHLIESSLICH Zahlen und Fakten aus der obigen Datenlage. Erfinde NICHTS.
+- Sektionen ohne Daten lässt du weg. Als «Quelle nicht konfiguriert» oder «nicht
+  erreichbar» markierte Quellen erwähnst du gesammelt in EINEM Satz am Ende.
+- Schreibe auf Deutsch (Schweizer Rechtschreibung: ss statt ß), direkt und knapp.
+  Keine Floskeln, keine Einleitung wie «Gerne erstelle ich...».
+- Nutze Markdown: `##`-Überschriften pro Sektion, kurze Listen, **Fett** für das Wichtigste.
+- Du brauchst KEINE Tools aufzurufen -- alle Daten stehen oben. Gib das fertige
+  Briefing direkt als finale Antwort aus.
+"""
+
+
+# ── Meeting-Protokoll-Prompt ─────────────────────────────
+
+async def _build_meeting_summary_prompt(job: AgentJob) -> str:
+    """Prompt für ``meeting_summary``-Jobs: Transkript-Kontext + Protokollauftrag.
+
+    Lange Transkripte werden vorab per Map-Reduce (Chunk-Zusammenfassungen,
+    lokales Modell) verdichtet -- das Original bleibt unverändert in der DB.
+    """
+    from app.services.meetings import DIRECT_PROMPT_MAX_CHARS, summarize_transcript_chunks
+
+    meta = job.metadata_json or {}
+    transcript_id = meta.get("meeting_transcript_id")
+    record = None
+    if transcript_id:
+        async with async_session() as db:
+            record = await db.get(MeetingTranscript, uuid.UUID(transcript_id))
+
+    if record is None or not (record.transcript_text or "").strip():
+        return (
+            "## MEETING-PROTOKOLL\n\nEs liegt kein Transkript-Text vor. Antworte mit "
+            "einem kurzen Hinweis, dass das Transkript fehlt -- erfinde keinen Inhalt."
+        )
+
+    subject = record.subject or "(ohne Betreff)"
+    when = record.started_at.strftime("%d.%m.%Y %H:%M") if record.started_at else "?"
+    text = record.transcript_text
+    if len(text) > DIRECT_PROMPT_MAX_CHARS:
+        logger.info(
+            "Job %s: Transkript %d Zeichen -> Map-Reduce-Verdichtung", job.id, len(text)
+        )
+        text = await summarize_transcript_chunks(text)
+        context_label = "Verdichtete Abschnitts-Zusammenfassungen des Transkripts"
+    else:
+        context_label = "Vollständiges Transkript (sprecher-attribuiert)"
+
+    rules_block = await _build_rules_block("general")
+
+    return f"""## MEETING-PROTOKOLL ERSTELLEN
+
+Heute ist {_today_context_line()}.
+
+**Meeting:** {subject}
+**Zeitpunkt:** {when}
+{rules_block}
+## {context_label}
+
+{text}
+
+## AUFTRAG
+
+Erstelle ein strukturiertes Meeting-Protokoll (Deutsch, Schweizer Rechtschreibung:
+ss statt ß) mit diesen Sektionen:
+
+1. **Teilnehmende** (aus den Sprechernamen)
+2. **Zusammenfassung** (3-5 Sätze: Anlass, Kernergebnis)
+3. **Besprochene Themen** (pro Thema 2-4 Stichpunkte mit den relevanten Details)
+4. **Entscheidungen** (klar getroffene Entscheide, mit wer/was)
+5. **Offene Punkte** (unentschieden, vertagt, Klärungsbedarf)
+
+## PFLICHT: Action-Items als JSON-Block am Ende
+
+Gib als Letztes einen JSON-Block mit den konkreten Aufgaben aus, die sich aus dem
+Meeting ergeben (nur echte Zusagen/Handlungen, im Zweifel weglassen):
+
+```json
+{{"action_items": [{{"title": "kurzer Task-Titel", "description": "1-2 Sätze Kontext",
+  "owner": "Name oder 'Anthony'", "deadline": "YYYY-MM-DD oder null",
+  "suggested_project": "Projektname oder null"}}]}}
+```
+
+Verwende AUSSCHLIESSLICH Informationen aus dem Transkript. Erfinde nichts.
+Du brauchst keine Tools -- gib das Protokoll direkt als finale Antwort aus.
 """
 
 
@@ -1922,6 +2207,34 @@ async def _find_duplicate_open_task(db, meta: dict) -> Task | None:
     return None
 
 
+async def _was_suggestion_dismissed(db, meta: dict, days: int = 14) -> bool:
+    """True, wenn ein praktisch identischer Task-Vorschlag kürzlich verworfen wurde.
+
+    Beim Verwerfen (dismiss-review) wird der Task gelöscht -- der Dedupe über
+    offene Tasks greift dann nicht mehr. Der Marker ``task_dismissed`` auf der
+    Quell-Triage (gleicher Absender + normalisierter Betreff) verhindert, dass
+    z. B. der nächste identische n8n-Alert denselben Vorschlag wieder hochspült.
+    """
+    from_addr = (meta.get("from_address") or "").strip().lower()
+    norm_subject = _normalize_subject(meta.get("subject"))
+    if not from_addr or not norm_subject:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    res = await db.execute(
+        select(EmailTriage.subject)
+        .where(
+            func.lower(EmailTriage.from_address) == from_addr,
+            EmailTriage.created_at >= cutoff,
+            EmailTriage.suggested_action["task_dismissed"].as_boolean() == True,  # noqa: E712
+        )
+        .limit(100)
+    )
+    for (subj,) in res.all():
+        if _normalize_subject(subj) == norm_subject:
+            return True
+    return False
+
+
 async def _append_duplicate_note(db, task: Task, meta: dict) -> None:
     """Dockt eine weitere Meldung als Checklisten-Eintrag an einen offenen Task an."""
     subj = meta.get("subject") or "(kein Betreff)"
@@ -1943,6 +2256,127 @@ async def _append_duplicate_note(db, task: Task, meta: dict) -> None:
     )
     task.updated_at = datetime.now(timezone.utc)
     await db.flush()
+
+
+async def _create_review_task(
+    db,
+    job_id,
+    *,
+    title: str,
+    description: str,
+    suggested_project: str | None,
+    deadline: str | None,
+    email_conversation_id: str | None = None,
+) -> Task | None:
+    """Gemeinsamer Kern: legt einen Task-Vorschlag (``needs_review=True``) an.
+
+    Genutzt von Chat-Triage und Meeting-Nachbereitung (Paritaet zur E-Mail-
+    Triage): Projekt-Matching, erste Board-Spalte, Pipeline-Spalte nach
+    Deadline. Dedupe: gleicher offener Titel -> kein neuer Task.
+    """
+    dup_res = await db.execute(
+        select(Task)
+        .where(func.lower(Task.title) == title.lower(), Task.is_completed.is_(False))
+        .limit(1)
+    )
+    if dup_res.scalar_one_or_none() is not None:
+        logger.info("Job %s: Task-Duplikat (Titel '%s') -- kein neuer Task", job_id, title[:60])
+        return None
+
+    proj_result = await db.execute(
+        select(Project).where(Project.status != "archived").order_by(Project.name)
+    )
+    projects = list(proj_result.scalars().all())
+    matched_project = _match_project(suggested_project, projects)
+    if not matched_project and projects:
+        matched_project = projects[0]
+    if not matched_project:
+        logger.warning("Job %s: Kein Projekt fuer Task-Vorschlag vorhanden", job_id)
+        return None
+
+    col_result = await db.execute(
+        select(BoardColumn)
+        .where(BoardColumn.project_id == matched_project.id)
+        .order_by(BoardColumn.position)
+        .limit(1)
+    )
+    first_col = col_result.scalar_one_or_none()
+    if not first_col:
+        logger.warning("Job %s: Projekt '%s' hat keine Board-Spalte", job_id, matched_project.name)
+        return None
+
+    pipeline_col_id = _determine_pipeline_column(deadline)
+    due_date = None
+    if deadline:
+        try:
+            due_date = date.fromisoformat(deadline)
+        except ValueError:
+            pass
+
+    max_pos_result = await db.execute(
+        select(Task.board_position)
+        .where(Task.board_column_id == first_col.id)
+        .order_by(Task.board_position.desc())
+        .limit(1)
+    )
+    next_pos = (max_pos_result.scalar_one_or_none() or 0) + 1
+
+    new_task = Task(
+        title=title[:200],
+        description=description,
+        project_id=matched_project.id,
+        board_column_id=first_col.id,
+        board_position=next_pos,
+        pipeline_column_id=pipeline_col_id,
+        due_date=due_date,
+        email_conversation_id=email_conversation_id,
+        needs_review=True,
+        assignee="me",
+    )
+    db.add(new_task)
+    await db.flush()
+    logger.info(
+        "Job %s: Task-Vorschlag '%s' in Projekt '%s' erstellt",
+        job_id, new_task.title, matched_project.name,
+    )
+    return new_task
+
+
+async def _create_chat_task(
+    db,
+    job_id,
+    meta: dict,
+    *,
+    task_title: str | None,
+    task_description: str | None,
+    suggested_project: str | None,
+    deadline: str | None,
+) -> Task | None:
+    """Legt aus einer triagierten Teams-Nachricht einen Task-Vorschlag an."""
+    title = (task_title or "").strip() or f"Teams: {(meta.get('body_preview') or 'Nachricht')[:80]}"
+    from_name = meta.get("from_name") or "?"
+    preview = (meta.get("body_preview") or "").strip()
+    base_desc = _strip_internal_notes(task_description) or "Erstellt aus Teams-Nachricht."
+    source_block = f"\n\n---\n**Quelle:** Teams-Chat von {from_name}"
+    if preview:
+        source_block += f"\n> {preview[:400]}"
+
+    new_task = await _create_review_task(
+        db,
+        job_id,
+        title=title,
+        description=base_desc + source_block,
+        suggested_project=suggested_project,
+        deadline=deadline,
+    )
+    if new_task is not None:
+        await notify_chat_triage_task(
+            db,
+            task_id=new_task.id,
+            task_title=new_task.title,
+            from_name=meta.get("from_name"),
+        )
+    return new_task
 
 
 async def _create_email_task(
@@ -1968,6 +2402,34 @@ async def _create_email_task(
     wird die neue Meldung als Checklisten-Eintrag angedockt und die zugehoerige
     ``email_triage`` als dedupliziert (fyi) markiert.
     """
+    # Verworfene Vorschläge respektieren: Hat der Berater denselben Vorschlag
+    # (Absender + Betreff) kürzlich weggeklickt, wird KEIN neuer Task erstellt.
+    if await _was_suggestion_dismissed(db, meta):
+        if job_id is not None:
+            await db.execute(
+                update(EmailTriage)
+                .where(EmailTriage.agent_job_id == job_id)
+                .values(
+                    triage_class="fyi",
+                    reply_expected=False,
+                    suggested_action={
+                        "label": "Verworfen",
+                        "triage_class": "fyi",
+                        "suppressed_by_dismissal": True,
+                        "rationale": (
+                            "Praktisch identischer Task-Vorschlag wurde kürzlich "
+                            "verworfen -- kein erneuter Vorschlag."
+                        ),
+                    },
+                    status="acted",
+                )
+            )
+        logger.info(
+            "Job %s: Task-Vorschlag unterdrückt (kürzlich verworfen: '%s')",
+            job_id, (meta.get("subject") or "")[:60],
+        )
+        return None
+
     dup = await _find_duplicate_open_task(db, meta)
     if dup is not None:
         await _append_duplicate_note(db, dup, meta)
@@ -2579,6 +3041,28 @@ def build_local_allowlist(include_delegation: bool = False) -> list[str]:
     return [*core, *servers]
 
 
+# MCP-Server, die die Triage tatsaechlich braucht: E-Mail/Teams lesen und
+# verschieben (graph) sowie Tasks/Profile/History (taskpilot). Alle anderen
+# Server (CRM, Buchhaltung, Zeiterfassung, SIGNA, Sandbox, ...) sind fuer die
+# Klassifikation irrelevanter Prompt-Ballast fuer das lokale Modell.
+_TRIAGE_MCP_SERVERS: list[str] = ["graph", "taskpilot"]
+
+
+def build_triage_allowlist() -> list[str]:
+    """Reduzierte Allowlist fuer Triage-Jobs (Tool-Scoping, Paket C).
+
+    Core-Toolsets ohne ``web`` (Datenminimierung: der Triage-Agent soll keine
+    E-Mail-Inhalte in externe Suchanfragen packen koennen -- die Triage-Prompts
+    weisen Websuche ohnehin nie an) plus nur die zwei fachlich noetigen
+    MCP-Server. Reduziert die Tool-Definitionen im Kontext deutlich und
+    verbessert die Tool-Wahl des lokalen Modells.
+    """
+    core = [t for t in LOCAL_CORE_TOOLSETS if t != "web"]
+    configured = set(get_configured_server_keys() or _KNOWN_MCP_SERVERS)
+    servers = [s for s in _TRIAGE_MCP_SERVERS if s in configured]
+    return [*core, *servers]
+
+
 def count_tools(enabled_toolsets: list[str] | None) -> int:
     """Anzahl der Tool-Definitionen fuer eine gegebene Toolset-Auswahl.
 
@@ -2593,8 +3077,15 @@ def count_tools(enabled_toolsets: list[str] | None) -> int:
         return 0
 
 
-def _build_worker_agent():
-    """Konstruiert den persistenten Worker-AIAgent (laeuft im Thread)."""
+def _build_worker_agent(
+    enabled_toolsets: list[str] | None = None,
+    session_id: str = "taskpilot-worker",
+):
+    """Konstruiert einen persistenten Worker-AIAgent (laeuft im Thread).
+
+    ``enabled_toolsets`` erlaubt job-typ-spezifisches Tool-Scoping (z. B. die
+    reduzierte Triage-Allowlist); Default ist die volle lokale Allowlist.
+    """
     from run_agent import AIAgent
 
     cfg = get_settings()
@@ -2606,7 +3097,8 @@ def _build_worker_agent():
         base_url = f"{cfg.ollama_base_url.rstrip('/')}/v1"
         api_key = "ollama"
         # Härtung: explizite Allowlist statt None (= volles Host-Toolkit).
-        enabled_toolsets = build_local_allowlist()
+        if enabled_toolsets is None:
+            enabled_toolsets = build_local_allowlist()
         skip_memory = False
         skip_context_files = False
     else:
@@ -2632,7 +3124,7 @@ def _build_worker_agent():
         # Hermes-native: Trajektorien persistieren (Grundlage fuer Inspektion +
         # spaeteres Fine-Tuning/Lernen). Best-effort in Hermes, schreibt JSONL.
         save_trajectories=True,
-        session_id="taskpilot-worker",
+        session_id=session_id,
         reasoning_callback=_on_reasoning,
         tool_start_callback=_on_tool_start,
         tool_complete_callback=_on_tool_complete,
@@ -2680,8 +3172,10 @@ async def ensure_runtime_ready() -> bool:
 def build_chat_agent(
     model: str | None,
     *,
+    preset: str = "agent",
     enabled_servers: list[str] | None = None,
     include_memory: bool = False,
+    temperature: float | None = None,
     on_text=None,
     on_reasoning=None,
     on_tool_start=None,
@@ -2695,6 +3189,13 @@ def build_chat_agent(
     (Streaming + Thinking + Tools), damit parallele Anfragen sich nicht
     gegenseitig stoeren. MCP-Tools stammen aus der globalen Registry
     (``ensure_runtime_ready`` muss vorher gelaufen sein).
+
+    Presets:
+    - ``agent``: voller InnoPilot (MCP-Tools nach Grounding-Politik).
+    - ``chat``: reiner Konversationsmodus auf derselben Hermes-Runtime —
+      KEINE Tools (weder Core noch MCP), aber Session-Kompression, Memory-
+      Injektion (lokal) und ``conversation_history``-Handling. Ersetzt den
+      frueheren litellm-Direktpfad des Plain-Chats.
 
     Modell-Routing: ``ollama/*`` (und Default) -> Ollama ``/v1`` lokal;
     Cloud-Modelle (``openai/*``, ``anthropic/*``, ``gemini/*``) -> LiteLLM-Proxy.
@@ -2727,6 +3228,16 @@ def build_chat_agent(
         skip_memory = not include_memory
         skip_context_files = True
 
+    if preset == "chat":
+        # Reiner Chat: keinerlei Tools — das Modell soll antworten, nicht agieren.
+        enabled_toolsets = []
+        # Kontextdateien (SOUL/AGENTS) sind Agenten-Identitaet; im Plain-Chat aus.
+        skip_context_files = True
+
+    request_overrides = None
+    if temperature is not None:
+        request_overrides = {"temperature": float(temperature)}
+
     return AIAgent(
         base_url=base_url,
         api_key=api_key,
@@ -2741,6 +3252,7 @@ def build_chat_agent(
         quiet_mode=True,
         save_trajectories=True,
         session_id=session_id or "taskpilot-chat",
+        request_overrides=request_overrides,
         stream_delta_callback=on_text,
         reasoning_callback=on_reasoning,
         tool_start_callback=on_tool_start,
@@ -2763,6 +3275,63 @@ async def _init_agent():
         logger.exception("Hermes Worker-AIAgent-Initialisierung fehlgeschlagen")
         _agent = None
     return _agent
+
+
+def _build_cloud_job_agent(model: str):
+    """Ephemerer Agent fuer einen Job mit Cloud-``llm_override``.
+
+    Grounding-Politik wie im Chat: Cloud = Default-Deny (keine MCP-Tools, kein
+    Memory/USER-Profil, keine Kontextdateien). Der Task-Kontext steht vollstaendig
+    im Prompt (siehe ``_build_generic_prompt``) -- Schreib-/Analyseauftraege sind
+    damit trotzdem moeglich. Routing via LiteLLM-Proxy.
+    """
+    from run_agent import AIAgent
+
+    cfg = get_settings()
+    return AIAgent(
+        base_url=f"{cfg.litellm_base_url.rstrip('/')}/v1",
+        api_key="sk-litellm-local",
+        provider="custom",
+        api_mode="chat_completions",
+        model=model,
+        enabled_toolsets=[],
+        skip_memory=True,
+        skip_context_files=True,
+        max_iterations=30,
+        tool_delay=0.0,
+        quiet_mode=True,
+        save_trajectories=True,
+        session_id="taskpilot-worker-cloud",
+        reasoning_callback=_on_reasoning,
+        tool_start_callback=_on_tool_start,
+        tool_complete_callback=_on_tool_complete,
+    )
+
+
+async def _init_triage_agent():
+    """Initialisiert den reduzierten Triage-Agent (Tool-Scoping, Paket C).
+
+    Eigene persistente Instanz mit der schlanken Triage-Allowlist (Core ohne
+    ``web`` + graph + taskpilot). Best-effort: schlaegt der Bau fehl, faellt der
+    Worker-Loop auf den vollen Agenten zurueck.
+    """
+    global _triage_agent
+    if _triage_agent is not None:
+        return _triage_agent
+    if not await ensure_runtime_ready():
+        return None
+    try:
+        _triage_agent = await asyncio.to_thread(
+            _build_worker_agent, build_triage_allowlist(), "taskpilot-worker-triage",
+        )
+        logger.info(
+            "Hermes Triage-AIAgent initialisiert (reduzierte Toolsets: %s)",
+            build_triage_allowlist(),
+        )
+    except Exception:
+        logger.exception("Hermes Triage-AIAgent-Initialisierung fehlgeschlagen")
+        _triage_agent = None
+    return _triage_agent
 
 
 def _draft_sampling_overrides(disable_thinking: bool = True) -> dict:
@@ -2866,6 +3435,30 @@ def _enforce_autonomy_status(meta: dict, content: str) -> str:
     return "awaiting_approval" if "awaiting_approval" in content.lower() else "completed"
 
 
+def _local_override_request(
+    meta: dict, agent_model: str | None, disable_thinking: bool
+) -> dict | None:
+    """Berechnet die ``request_overrides`` fuer einen lokalen LLM-Override.
+
+    Gibt None zurueck, wenn kein Override gesetzt, das Override ein Cloud-Modell
+    ist (laeuft ueber einen eigenen Agenten) oder das Modell dem Agent-Default
+    entspricht. Rein und damit unabhaengig testbar.
+    """
+    override_model = (meta or {}).get("llm_override") or ""
+    # Platzhalter ('hermes'/'nanobot') sind kein echtes Modell -> kein Override.
+    if not override_model or override_model in ("hermes", "nanobot"):
+        return None
+    if not _is_local_model(override_model):
+        return None
+    resolved = override_model.removeprefix("ollama/")
+    if not resolved or resolved == agent_model:
+        return None
+    overrides: dict = {"model": resolved}
+    if disable_thinking:
+        overrides["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+    return overrides
+
+
 async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) -> None:
     """Verarbeitet einen einzelnen AgentJob via Hermes AIAgent."""
     global _job_trace, _job_created_draft_id, _job_moved_message_id
@@ -2885,13 +3478,22 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
     _job_tool_names.clear()
     disable_thinking = _thinking_disabled(job_type, meta.get("skill"))
 
+    # Pro-Task-LLM-Override (lokal): Modellwechsel fuer diesen Job via
+    # request_overrides (Leitprinzip 3: LLM-Kontrolle pro Task). Cloud-Overrides
+    # laufen ueber einen eigenen Agenten (siehe _worker_loop/_build_cloud_job_agent).
+    overrides = _local_override_request(meta, getattr(agent, "model", None), disable_thinking)
+    if overrides:
+        logger.info("Job %s: LLM-Override aktiv -> %s", job_id, overrides.get("model"))
+
     # Token-Verbrauch pro Job messen: der persistente Agent zaehlt kumulativ
     # (session_total_tokens) -- die Differenz vor/nach dem Lauf ist der Verbrauch
     # dieses Jobs. Grundlage fuer Kosten-/Kontext-Observability im Cockpit.
     tokens_before = int(getattr(agent, "session_total_tokens", 0) or 0)
 
     try:
-        content = await asyncio.to_thread(_run_agent_sync, agent, prompt, disable_thinking)
+        content = await asyncio.to_thread(
+            _run_agent_sync, agent, prompt, disable_thinking, overrides
+        )
         # Echte Draft-ID aus dem Tool-Ergebnis (ground truth) an das Post-Processing
         # weiterreichen -- die vom LLM gemeldete ID wird bewusst ignoriert.
         captured_draft_id = _job_created_draft_id
@@ -2923,18 +3525,59 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
         elif job_type == "chat_triage":
             trace = list(_job_trace)
             tools_used = sorted(_job_tool_names)
-            status = await _post_process_chat_triage(job_id, content)
+            status = await _post_process_chat_triage(job_id, content, meta)
+        elif job_type == "meeting_summary":
+            trace = list(_job_trace)
+            tools_used = sorted(_job_tool_names)
+            status = await _post_process_meeting_summary(job_id, content, meta)
         else:
             trace = list(_job_trace)
             tools_used = sorted(_job_tool_names)
             status = _enforce_autonomy_status(meta, content)
+            # Episode auch fuer delegierte Task-/generische Jobs (Lern-Paritaet):
+            # Grundlage fuer Recall, wenn aehnliche Auftraege wiederkehren.
+            try:
+                async with async_session() as ep_db:
+                    await record_episode(
+                        ep_db,
+                        summary=(
+                            f"Agent-Job ({job_type}): "
+                            f"'{(meta.get('prompt_preview') or meta.get('description') or prompt[:200])[:300]}'. "
+                            f"Ergebnis-Status: {status}"
+                        ),
+                        job_type=job_type,
+                        agent_job_id=job_id,
+                        decision={"status": status},
+                        commit=True,
+                    )
+            except Exception:  # noqa: BLE001 - best-effort, darf den Job nie kippen
+                logger.warning("Episode fuer Job %s konnte nicht gespeichert werden", job_id)
 
+        is_briefing = job_type in ("daily_briefing", "weekly_briefing", "monthly_briefing")
         if job_type != "email_triage":
             if status == "awaiting_approval":
                 async with async_session() as notif_db:
                     await notify_agent_awaiting_approval(notif_db, job_id=job_id)
                     await notif_db.commit()
-            elif status == "completed" and (meta or {}).get("autonomy_level") == "L2":
+            elif status == "completed" and is_briefing:
+                # Briefings: eigener Notification-Typ statt generischem L2-Hinweis.
+                from app.services.notification import notify_briefing_ready
+
+                labels = {
+                    "daily_briefing": "Tagesbriefing",
+                    "weekly_briefing": "Wochenbriefing",
+                    "monthly_briefing": "Monatsbriefing",
+                }
+                async with async_session() as notif_db:
+                    await notify_briefing_ready(
+                        notif_db, job_id=job_id, briefing_label=labels[job_type],
+                    )
+                    await notif_db.commit()
+            elif (
+                status == "completed"
+                and (meta or {}).get("autonomy_level") == "L2"
+                and job_type != "meeting_summary"  # eigene Notification im Post-Process
+            ):
                 # L2 'Melden': autonom ausgeführt, Mensch post-hoc informieren.
                 async with async_session() as notif_db:
                     await notify_agent_completed(notif_db, job_id=job_id)
@@ -2994,6 +3637,12 @@ async def _process_job(agent, job_id, job_type: str, prompt: str, meta: dict) ->
                     update(ChatTriage)
                     .where(ChatTriage.agent_job_id == job_id)
                     .values(triage_class="fyi", status="dismissed")
+                )
+            elif job_type == "meeting_summary":
+                await db.execute(
+                    update(MeetingTranscript)
+                    .where(MeetingTranscript.agent_job_id == job_id)
+                    .values(status="failed", error_message=str(e)[:2000])
                 )
             await db.commit()
 
@@ -3241,10 +3890,41 @@ async def _worker_loop() -> None:
                     prompt = await _build_triage_prompt(job)
                 elif job.job_type == "chat_triage":
                     prompt = await _build_chat_triage_prompt(job)
+                elif job.job_type in ("daily_briefing", "weekly_briefing", "monthly_briefing"):
+                    prompt = await _build_briefing_prompt(job)
+                elif job.job_type == "meeting_summary":
+                    prompt = await _build_meeting_summary_prompt(job)
                 else:
                     prompt = await _build_generic_prompt(job)
 
-                await _process_job(agent, job.id, job.job_type or "generic", prompt, meta)
+                job_agent = agent
+                # Tool-Scoping (Paket C): Triage-Jobs laufen auf dem reduzierten
+                # Agenten (Core ohne web + graph + taskpilot). Fallback: voller Agent.
+                if (
+                    get_settings().triage_tool_scoping
+                    and job.job_type in ("email_triage", "chat_triage")
+                ):
+                    job_agent = await _init_triage_agent() or agent
+                # Cloud-LLM-Override: eigener ephemerer Agent (Default-Deny) via
+                # LiteLLM-Proxy; lokale Overrides laufen via request_overrides.
+                override_model = (meta.get("llm_override") or "").strip()
+                if override_model and not _is_local_model(override_model):
+                    try:
+                        job_agent = await asyncio.to_thread(
+                            _build_cloud_job_agent, override_model
+                        )
+                        logger.info(
+                            "Job %s: Cloud-LLM-Override -> %s (Default-Deny-Toolset)",
+                            job.id, override_model,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Cloud-Override-Agent (%s) fehlgeschlagen -- lokaler Fallback",
+                            override_model,
+                        )
+                        job_agent = agent
+
+                await _process_job(job_agent, job.id, job.job_type or "generic", prompt, meta)
             else:
                 await asyncio.sleep(POLL_INTERVAL)
 
@@ -3264,7 +3944,7 @@ async def start_hermes_worker() -> None:
 
 async def stop_hermes_worker() -> None:
     """Stoppt den Hermes-Worker und gibt MCP-Verbindungen frei."""
-    global _worker_task, _agent
+    global _worker_task, _agent, _triage_agent
     if _worker_task and not _worker_task.done():
         _worker_task.cancel()
         try:
@@ -3273,6 +3953,7 @@ async def stop_hermes_worker() -> None:
             pass
     _worker_task = None
     _agent = None
+    _triage_agent = None
     try:
         from tools.mcp_tool import shutdown_mcp_servers
 

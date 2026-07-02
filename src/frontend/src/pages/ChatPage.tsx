@@ -97,13 +97,24 @@ interface ChatMessage {
   job_id?: string | null;
 }
 
-type ChatMode = 'chat' | 'web_search' | 'deep_research' | 'agent' | 'code_execute';
+type ChatMode = 'chat' | 'deep_research' | 'agent' | 'code_execute';
 
+/** Angepinntes Kontext-Dokument der Konversation (bleibt über alle Turns sichtbar). */
+interface ContextItem {
+  id: string;
+  name: string;
+  source_type: string;
+  char_count: number;
+  pinned: boolean;
+  created_at: string;
+}
+
+// Hinweis: Der frühere Modus 'web_search' (Tavily) wurde entfernt — die
+// Hermes-native Websuche im Agent-Modus (web_search/web_extract) ersetzt ihn.
 const MODES: { id: ChatMode; label: string; tooltip: string }[] = [
-  { id: 'agent', label: 'Agent', tooltip: 'InnoPilot führt Aktionen aus: Kalender, E-Mail, CRM, Aufgaben' },
+  { id: 'agent', label: 'Agent', tooltip: 'InnoPilot führt Aktionen aus: Kalender, E-Mail, CRM, Aufgaben — inkl. Web-Recherche' },
   { id: 'chat', label: 'Chat', tooltip: 'Direkte Fragen an das LLM — antwortet aus Trainingswissen' },
   { id: 'code_execute', label: 'Code', tooltip: 'Python-Code generieren und in isolierter Sandbox ausführen (Datenanalyse, Scripts)' },
-  { id: 'web_search', label: 'Websuche', tooltip: 'Durchsucht das Web in Echtzeit via Tavily nach aktuellen Fakten' },
   { id: 'deep_research', label: 'Deep Research', tooltip: 'Mehrstufige Recherche mit vielen Quellen — dauert länger, geht tiefer' },
 ];
 
@@ -365,6 +376,8 @@ export function ChatPage() {
   const [deanonymizing, setDeanonymizing] = useState<string | null>(null);
   const [onedriveOpen, setOnedriveOpen] = useState(false);
   const [contextSources, setContextSources] = useState<ContextSource[]>([]);
+  // Angepinnte Dokumente der aktiven Konversation (persistenter Kontext).
+  const [contextItems, setContextItems] = useState<ContextItem[]>([]);
 
   // Per-Konversation Agent-Stream-State
   interface ClarifyRequest {
@@ -473,13 +486,38 @@ export function ChatPage() {
     }
   }, [searchParams, activeId, setSearchParams]);
 
+  const loadContextItems = useCallback(async (convId: string) => {
+    try {
+      const d = await api.get<{ items: ContextItem[] }>(`/api/chat/conversations/${convId}/context-items`);
+      setContextItems(d.items || []);
+    } catch { setContextItems([]); }
+  }, []);
+
+  const toggleContextItemPin = async (item: ContextItem) => {
+    if (!activeId) return;
+    try {
+      await api.patch(`/api/chat/conversations/${activeId}/context-items/${item.id}`, { pinned: !item.pinned });
+      setContextItems(prev => prev.map(ci => ci.id === item.id ? { ...ci, pinned: !item.pinned } : ci));
+    } catch { /* */ }
+  };
+
+  const removeContextItem = async (item: ContextItem) => {
+    if (!activeId) return;
+    try {
+      await api.delete(`/api/chat/conversations/${activeId}/context-items/${item.id}`);
+      setContextItems(prev => prev.filter(ci => ci.id !== item.id));
+    } catch { /* */ }
+  };
+
   useEffect(() => {
-    if (!activeId) { setMessages([]); return; }
+    if (!activeId) { setMessages([]); setContextItems([]); return; }
+    loadContextItems(activeId);
     if (skipNextFetchRef.current) { skipNextFetchRef.current = false; return; }
     api.get<{ messages: ChatMessage[]; mode?: string; model?: string; grounding?: { enabled_servers?: string[]; include_memory?: boolean } }>(`/api/chat/conversations/${activeId}`)
       .then(d => {
         setMessages(d.messages || []);
-        if (d.mode) setMode(d.mode as ChatMode);
+        // Legacy-Konversationen im entfernten Websuche-Modus öffnen im Agent-Modus.
+        if (d.mode) setMode(d.mode === 'web_search' ? 'agent' : (d.mode as ChatMode));
         setEnabledServers(new Set(d.grounding?.enabled_servers || []));
         setIncludeMemory(Boolean(d.grounding?.include_memory));
         // Modell der Konversation wiederherstellen. Legacy-Platzhalter
@@ -489,7 +527,7 @@ export function ChatPage() {
         }
       })
       .catch(() => {});
-  }, [activeId]);
+  }, [activeId, loadContextItems]);
 
   const prevMsgCountRef = useRef(0);
   useEffect(() => {
@@ -546,83 +584,9 @@ export function ChatPage() {
     return groups;
   };
 
-  const showModelControls = mode !== 'web_search';
-
-  const handleWebSearch = async (query: string) => {
-    let convId = activeId;
-
-    if (!convId) {
-      try {
-        const conv = await api.post<Conversation>('/api/chat/conversations', {
-          model: 'tavily', mode: 'web_search',
-        });
-        setConversations(prev => [conv, ...prev]);
-        convId = conv.id;
-        skipNextFetchRef.current = true;
-        setActiveId(conv.id);
-      } catch (err) {
-        setMessages(prev => [...prev, {
-          id: uuid(), role: 'assistant',
-          content: `Konversation konnte nicht erstellt werden: ${(err as Error).message}`,
-          tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
-        }]);
-        return;
-      }
-    }
-
-    updateAgentState(convId, { isStreaming: true, status: 'running' });
-    const userMsg: ChatMessage = {
-      id: uuid(), role: 'user', content: query,
-      tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
-    };
-    setMessages(prev => [...prev, userMsg]);
-
-    try {
-      const token = getToken();
-      const resp = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ query, search_depth: 'basic', max_results: 5, conversation_id: convId }),
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-
-      let content = '';
-      if (data.answer) content += `**Zusammenfassung:** ${data.answer}\n\n`;
-      if ((data.results || []).length > 0) {
-        content += `### Suchergebnisse (${data.result_count})\n\n`;
-        content += '| # | Quelle | Auszug |\n|---|--------|--------|\n';
-        for (let i = 0; i < (data.results || []).length; i++) {
-          const r = data.results[i];
-          const snippet = (r.content || '').replace(/\n/g, ' ').slice(0, 200);
-          content += `| ${i + 1} | [${r.title}](${r.url}) | ${snippet}${r.content?.length > 200 ? '...' : ''} |\n`;
-        }
-        content += '\n';
-      }
-      content += `---\n*Quelle: Tavily · ${data.credits_used} Credit(s)*`;
-
-      const assistantMsg: ChatMessage = {
-        id: uuid(), role: 'assistant', content,
-        tokens: null, cost_usd: null, citations: data.results, created_at: new Date().toISOString(),
-      };
-      setMessages(prev => [...prev, assistantMsg]);
-
-      api.post(`/api/chat/conversations/${convId}/messages/batch`, {
-        messages: [
-          { role: 'user', content: query },
-          { role: 'assistant', content, citations: data.results },
-        ],
-      }).catch(() => {});
-    } catch (err) {
-      setMessages(prev => [...prev, {
-        id: uuid(), role: 'assistant',
-        content: `Suchfehler: ${(err as Error).message}`,
-        tokens: null, cost_usd: null, citations: null, created_at: new Date().toISOString(),
-      }]);
-    } finally {
-      updateAgentState(convId, { isStreaming: false, status: 'done' });
-    }
-  };
+  // Früher wurden die Modell-Controls im Tavily-Websuche-Modus versteckt;
+  // seit dessen Entfernung sind sie in allen Modi sichtbar.
+  const showModelControls = true;
 
   const handleCodeExecute = async (taskDescription: string) => {
     let convId = activeId;
@@ -1018,18 +982,17 @@ export function ChatPage() {
 
     try {
 
-    // Quick-Capture: /suche wechselt den Modus
+    // Quick-Capture: /suche schickt die Anfrage als Web-Recherche an den
+    // Agent-Modus (Hermes-native web_search). setMode wirkt erst beim nächsten
+    // Render, daher entscheidet effMode über den Versandpfad dieses Sends.
+    let effMode = mode;
     if (content.startsWith('/suche ')) {
-      content = content.slice(7).trim();
-      setMode('web_search');
+      content = `Recherchiere im Web: ${content.slice(7).trim()}`;
+      effMode = 'agent';
+      setMode('agent');
     }
 
-    if (mode === 'web_search') {
-      await handleWebSearch(content);
-      return;
-    }
-
-    if (mode === 'code_execute') {
+    if (effMode === 'code_execute') {
       await handleCodeExecute(content);
       return;
     }
@@ -1040,7 +1003,7 @@ export function ChatPage() {
         const conv = await api.post<Conversation>('/api/chat/conversations', {
           model: selectedModel,
           temperature,
-          mode,
+          mode: effMode,
         });
         setConversations(prev => [conv, ...prev]);
         convId = conv.id;
@@ -1074,7 +1037,7 @@ export function ChatPage() {
     setMessages(prev => [...prev, userMsg]);
     updateAgentState(convId, {
       isStreaming: true, streamingContent: '', toolTrace: [], jobId: null, status: 'running',
-      thinkingContent: mode === 'agent' ? 'InnoPilot wird gestartet...' : '',
+      thinkingContent: effMode === 'agent' ? 'InnoPilot wird gestartet...' : '',
     });
     setAttachments([]);
     setContextSources([]);
@@ -1108,7 +1071,7 @@ export function ChatPage() {
       });
     }
 
-    if (mode === 'agent') {
+    if (effMode === 'agent') {
       try {
         const resp = await fetch(`/api/chat/conversations/${convId}/agent`, {
           method: 'POST',
@@ -1120,6 +1083,7 @@ export function ChatPage() {
             enabled_servers: Array.from(enabledServers),
             include_memory: includeMemory,
             context_sources: contextSourcesPayload,
+            attachments: attachmentMeta,
           }),
         });
         if (!resp.ok) {
@@ -1131,6 +1095,7 @@ export function ChatPage() {
         agentOffsets.current[convId] = 0;
         agentAccumulators.current[convId] = { stream: '', think: '', trace: [] };
         persistAgentJob(convId, job_id, 0);
+        if (contextSourcesPayload.length > 0) loadContextItems(convId);
 
         connectAgentStream(convId, job_id, 0);
       } catch (err) {
@@ -1153,13 +1118,14 @@ export function ChatPage() {
         const resp = await fetch(`/api/chat/conversations/${convId}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: JSON.stringify({ content, model: selectedModel, temperature, context_sources: contextSourcesPayload }),
+          body: JSON.stringify({ content, model: selectedModel, temperature, context_sources: contextSourcesPayload, attachments: attachmentMeta }),
           signal: controller.signal,
         });
         if (!resp.ok) {
           const errorText = await resp.text().catch(() => `HTTP ${resp.status}`);
           throw new Error(errorText);
         }
+        if (contextSourcesPayload.length > 0) loadContextItems(convId);
         await processSSE(resp, convId);
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
@@ -1532,7 +1498,6 @@ export function ChatPage() {
               <p className="text-lg font-medium text-gray-600 dark:text-gray-300">
                 {mode === 'chat' && 'Was möchtest du wissen?'}
                 {mode === 'code_execute' && 'Welchen Code soll ich generieren und ausführen?'}
-                {mode === 'web_search' && 'Was soll gesucht werden?'}
                 {mode === 'deep_research' && 'Welches Thema vertiefen?'}
                 {mode === 'agent' && 'Was soll InnoPilot tun?'}
               </p>
@@ -1568,11 +1533,10 @@ export function ChatPage() {
                   onChange={e => { setInput(e.target.value); resizeTA(); }}
                   onKeyDown={handleKeyDown}
                   placeholder={
-                    mode === 'web_search' ? 'Suchbegriff eingeben...'
-                      : mode === 'deep_research' ? 'Frage für Deep Research eingeben...'
-                        : mode === 'agent' ? 'Aufgabe für InnoPilot eingeben...'
-                          : mode === 'code_execute' ? 'Beschreibe was der Code tun soll...'
-                            : 'Nachricht eingeben... (/suche für Websuche)'
+                    mode === 'deep_research' ? 'Frage für Deep Research eingeben...'
+                      : mode === 'agent' ? 'Aufgabe für InnoPilot eingeben...'
+                        : mode === 'code_execute' ? 'Beschreibe was der Code tun soll...'
+                          : 'Nachricht eingeben... (/suche für Web-Recherche)'
                   }
                   rows={4}
                   className="max-h-48 min-h-[96px] w-full resize-none border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
@@ -1646,7 +1610,6 @@ export function ChatPage() {
                     </>
                   )}
                   <div className="ml-auto flex shrink-0 items-center gap-2">
-                    {mode === 'web_search' && <span className="whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500" title="Tavily durchsucht das Web nach aktuellen Ergebnissen">via Tavily</span>}
                     <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
                     <button onClick={() => fileInputRef.current?.click()} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="Datei anhängen"><AttachIcon className="h-4 w-4" /></button>
                     <button onClick={() => setOnedriveOpen(true)} className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700" title="OneDrive-Dateien anhängen"><OneDriveIcon className="h-4 w-4" /></button>
@@ -1686,6 +1649,42 @@ export function ChatPage() {
         ) : (
           <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-4 sm:py-6">
             <div className="mx-auto max-w-4xl space-y-4">
+              {contextItems.length > 0 && (
+                <div className="rounded-xl border border-indigo-200/70 bg-indigo-50/60 px-3 py-2 dark:border-indigo-800/50 dark:bg-indigo-900/15">
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-indigo-700 dark:text-indigo-300">
+                    <PinIcon className="h-3 w-3" />
+                    Angepinnte Dokumente — bleiben der ganzen Konversation als Kontext erhalten
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {contextItems.map(item => (
+                      <span
+                        key={item.id}
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${item.pinned
+                          ? 'border-indigo-300 bg-white text-indigo-800 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-200'
+                          : 'border-gray-300 bg-gray-100 text-gray-400 line-through dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-500'}`}
+                      >
+                        <FileIcon className="h-3 w-3 shrink-0" />
+                        <span className="max-w-[220px] truncate" title={item.name}>{item.name}</span>
+                        <span className="text-[9px] opacity-60">{Math.round(item.char_count / 1000)}k</span>
+                        <button
+                          onClick={() => toggleContextItemPin(item)}
+                          title={item.pinned ? 'Aus dem Kontext nehmen (bleibt gespeichert)' : 'Wieder in den Kontext aufnehmen'}
+                          className="ml-0.5 opacity-60 transition-opacity hover:opacity-100"
+                        >
+                          <PinIcon className={`h-3 w-3 ${item.pinned ? '' : 'rotate-45'}`} />
+                        </button>
+                        <button
+                          onClick={() => removeContextItem(item)}
+                          title="Dokument endgültig aus der Konversation entfernen"
+                          className="opacity-60 transition-opacity hover:text-red-500 hover:opacity-100"
+                        >
+                          <XIcon className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {messages.map(msg => (
                 <div key={msg.id} className={`group/msg flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`relative ${msg.role === 'user' ? 'chat-bubble-user max-w-[80%] break-words rounded-2xl bg-indigo-600 px-4 py-3 text-white shadow-md' : 'chat-bubble-assistant max-w-[92%] rounded-xl px-5 py-4 text-gray-900 dark:text-gray-100'}`}>
@@ -1989,11 +1988,10 @@ export function ChatPage() {
                 onChange={e => { setInput(e.target.value); resizeTA(); }}
                 onKeyDown={handleKeyDown}
                 placeholder={
-                  mode === 'web_search' ? 'Suchbegriff eingeben...'
-                    : mode === 'deep_research' ? 'Frage für Deep Research eingeben...'
-                      : mode === 'agent' ? (isStreaming ? 'Korrigieren & neu lenken — stoppt den aktuellen Lauf...' : 'Aufgabe für InnoPilot eingeben...')
-                        : mode === 'code_execute' ? 'Beschreibe was der Code tun soll...'
-                          : 'Nachricht eingeben... (/suche für Websuche)'
+                  mode === 'deep_research' ? 'Frage für Deep Research eingeben...'
+                    : mode === 'agent' ? (isStreaming ? 'Korrigieren & neu lenken — stoppt den aktuellen Lauf...' : 'Aufgabe für InnoPilot eingeben...')
+                      : mode === 'code_execute' ? 'Beschreibe was der Code tun soll...'
+                        : 'Nachricht eingeben... (/suche für Web-Recherche)'
                 }
                 rows={1}
                 className="max-h-36 min-h-[44px] w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
@@ -2089,9 +2087,6 @@ export function ChatPage() {
 
                 {/* Modus-Hinweis + Nachrichtenanzahl */}
                 <div className="ml-auto flex shrink-0 items-center gap-2">
-                  {mode === 'web_search' && (
-                    <span className="whitespace-nowrap text-[10px] text-gray-400 dark:text-gray-500" title="Tavily durchsucht das Web nach aktuellen Ergebnissen">via Tavily</span>
-                  )}
                   {messages.length > 0 && (
                     <span className="text-[10px] text-gray-400 dark:text-gray-500">{messages.length} Nachrichten</span>
                   )}
@@ -2237,6 +2232,9 @@ function FileOutputIcon({ className }: { className?: string }) {
 }
 function XIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>;
+}
+function PinIcon({ className }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 17v5M9 4h6l-1 7 3 2v2H7v-2l3-2-1-7Z" /></svg>;
 }
 function SettingsIcon({ className }: { className?: string }) {
   return <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.431.992a7.723 7.723 0 0 1 0 .255c-.007.378.138.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>;

@@ -212,6 +212,13 @@ async def populate_hermes_env() -> None:
         value = db_settings.get(db_key) or getattr(cfg, db_key, "")
         os.environ[env_key] = str(value) if value not in (None, "") else ""
 
+    # Hermes' native Web-Tools (web_search/web_extract) suchen den Tavily-Key
+    # UNpräfixiert (TAVILY_API_KEY) in os.environ bzw. ~/.hermes/.env. Ohne
+    # Spiegelung fällt die Backend-Kaskade auf ddgs zurück (search-only) und
+    # web_extract ist funktionslos.
+    if not os.environ.get("TAVILY_API_KEY"):
+        os.environ["TAVILY_API_KEY"] = os.environ.get("TP_TAVILY_API_KEY", "")
+
 
 def build_config_dict() -> dict:
     """Baut das Hermes-Config-Dict (Modell + 9 MCP-Server + contentConverter)."""
@@ -318,6 +325,18 @@ def build_config_dict() -> dict:
             "api_mode": "chat_completions",
             "context_length": 131072,
         },
+        # Web-Recherche: Backends EXPLIZIT statt kaskadenabhängig festlegen.
+        # Suche via ddgs (DuckDuckGo): anonym (kein API-Key/Account), gratis --
+        # die Suchanfrage ist der sensible Teil und bleibt unpersonalisiert.
+        # Extraktion via Tavily: einziges konfiguriertes Extract-Backend; sieht
+        # nur URLs oeffentlicher Seiten (nicht die Suchintention). Der Abruf
+        # laeuft auf Tavily-Servern -- Egress bleibt auf api.tavily.com
+        # begrenzbar (siehe docs/netzwerk-whitelist-gx10.md, Abschnitt 9).
+        # Braucht TAVILY_API_KEY unpraefixiert (Spiegelung in populate_hermes_env).
+        "web": {
+            "search_backend": "ddgs",
+            "extract_backend": "tavily",
+        },
         # Built-in-Memory aktiv schalten: MEMORY.md + USER.md werden in den
         # System-Prompt injiziert (nur bei lokalen Modellen, da der Worker/Chat
         # fuer Cloud-Modelle skip_memory setzt). Kein externer Provider (Honcho):
@@ -376,15 +395,19 @@ def build_config_dict() -> dict:
         # Endpoint inkl. Kontextfenster eindeutig ist und die Kompressions-
         # Feasibility-Pruefung beim Sessionstart nicht warnt.
         # ALLE Aux-Slots explizit auf das lokale Modell gepinnt (nicht "auto"),
-        # damit kein Nebenaufgaben-Task (Kompression, Vision, Titel, Kuratierung
-        # und der post-turn background_review-Fork) unbemerkt ein nicht-lokales
-        # Modell waehlt -- Datenschutz-Souveraenitaet. background_review auf dem
-        # Hauptmodell bleibt cache-warm (kein Routing, voller Replay).
+        # damit kein Nebenaufgaben-Task (Kompression, Vision, Web-Extraktion,
+        # Titel, Kuratierung und der post-turn background_review-Fork) unbemerkt
+        # ein nicht-lokales Modell waehlt -- Datenschutz-Souveraenitaet.
+        # background_review auf dem Hauptmodell bleibt cache-warm (kein Routing,
+        # voller Replay). Hinweis: Der Slot heisst in Hermes 0.18
+        # 'title_generation' (der fruehere Key 'title' war wirkungslos);
+        # 'web_extract' ist der Aux-Slot der nativen Websuche-Extraktion.
         "auxiliary": {
             "compression": _local_aux(),
             "vision": _local_aux(),
+            "web_extract": _local_aux(),
             "background_review": _local_aux(),
-            "title": _local_aux(),
+            "title_generation": _local_aux(),
             "curator": _local_aux(),
         },
         # Tool-Loop-Guardrails: schuetzen vor Endlosschleifen/Token-Verbrennung.

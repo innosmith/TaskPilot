@@ -211,6 +211,53 @@ async def notify_chat_triage_task(
     )
 
 
+async def notify_briefing_ready(
+    db: AsyncSession,
+    job_id: UUID,
+    briefing_label: str,
+) -> None:
+    """Benachrichtigung, sobald ein Daily/Weekly/Monthly-Briefing bereitliegt."""
+    owner = await _get_owner(db)
+    if not owner:
+        return
+    await create_notification(
+        db,
+        user_id=owner.id,
+        type="briefing_ready",
+        title=f"{briefing_label} ist bereit",
+        link="/",
+        source_type="agent_job",
+        source_id=job_id,
+    )
+
+
+async def notify_meeting_summary_ready(
+    db: AsyncSession,
+    transcript_id: UUID,
+    subject: str | None = None,
+    action_item_count: int = 0,
+) -> None:
+    """Benachrichtigung, sobald ein Meeting-Protokoll bereitliegt."""
+    owner = await _get_owner(db)
+    if not owner:
+        return
+    title = f"Meeting-Protokoll bereit: {subject}" if subject else "Meeting-Protokoll bereit"
+    body = (
+        f"{action_item_count} Action-Item-Vorschlag/Vorschläge zur Prüfung"
+        if action_item_count else None
+    )
+    await create_notification(
+        db,
+        user_id=owner.id,
+        type="meeting_summary_ready",
+        title=title,
+        body=body,
+        link="/agenten?tab=meetings",
+        source_type="meeting_transcript",
+        source_id=transcript_id,
+    )
+
+
 async def _get_owner(db: AsyncSession) -> User | None:
     result = await db.execute(
         select(User).where(User.role == "owner", User.is_active.is_(True)).limit(1)

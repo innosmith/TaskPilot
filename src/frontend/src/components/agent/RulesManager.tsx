@@ -43,7 +43,7 @@ const SCOPE_LABELS: Record<string, string> = {
   calendar: 'Kalender',
 };
 
-const LLM_SCOPES = ['triage', 'draft', 'chat', 'general'] as const;
+const LLM_SCOPES = ['triage', 'draft', 'chat', 'task', 'general'] as const;
 const FIELD_LABELS: Record<string, string> = { sender: 'Absender', domain: 'Domain', subject: 'Betreff' };
 const OP_LABELS: Record<string, string> = { equals: 'ist gleich', contains: 'enthält' };
 const FIELDS = ['sender', 'domain', 'subject'] as const;
@@ -536,7 +536,7 @@ function RuleEditor({
                 ))}
               </div>
               <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">
-                „Allgemein" wirkt in jedem Kontext. „Triage"/„Entwurf" greifen bei der E-Mail-Verarbeitung, „Chat" im Agent-Chat.
+                „Allgemein" wirkt in jedem Kontext. „Triage"/„Entwurf" greifen bei der E-Mail-Verarbeitung, „Chat" im Agent-Chat, „Aufgabe" bei delegierten Agent-Aufgaben.
               </p>
             </div>
           )}

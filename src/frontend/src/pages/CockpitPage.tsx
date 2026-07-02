@@ -11,6 +11,7 @@ import { EmailBody } from '../components/EmailBody';
 import { TracePanel } from '../components/TracePanel';
 import { AgentRationale } from '../components/agent/AgentRationale';
 import { ConfidenceBadge } from '../components/agent/ConfidenceBadge';
+import { BriefingCard } from '../components/BriefingCard';
 import { useSSE } from '../hooks/useSSE';
 import { parseExcludeVendors, isExcludedVendor } from './creditors/creditors-helpers';
 import type { AgentJob, TaskCard, PipelineData } from '../types';
@@ -51,6 +52,7 @@ interface PendingReviewTask {
   source_email_subject: string | null;
   source_email_from: string | null;
   email_conversation_id: string | null;
+  source: string | null; // 'followup' | null
   needs_review: boolean;
 }
 
@@ -100,46 +102,6 @@ interface PipedriveActivitySummary {
   due_date: string | null;
   deal_id: number | null;
   person_name: string | null;
-}
-
-interface LearningStats {
-  period_days: number;
-  drafts_sent: number;
-  drafts_edited: number;
-  drafts_clean: number;
-  edit_rate: number;
-  triage_reclass: number;
-  rejected: number;
-  thumbs_up: number;
-  thumbs_down: number;
-  episodes_total: number;
-  episodes_corrected: number;
-  rules_proposed: number;
-  rules_active: number;
-}
-
-interface LearningSignal {
-  feedback_type: string;
-  source: string;
-  sender_email: string | null;
-  reason: string | null;
-  created_at: string | null;
-}
-
-interface LearningOverview {
-  stats: LearningStats;
-  recent: LearningSignal[];
-}
-
-interface LearnedRule {
-  id: string;
-  scope: string;
-  rule_text: string;
-  evidence: Record<string, unknown>;
-  status: string;
-  autonomy_hint: string | null;
-  created_at: string | null;
-  approved_at: string | null;
 }
 
 export const JOB_TYPE_LABELS: Record<string, string> = {
@@ -211,9 +173,14 @@ export function CockpitPage() {
   const [weekCapacity, setWeekCapacity] = useState<{ total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number } | null>(null);
   const [monthCapacity, setMonthCapacity] = useState<{ total_hours: number; booked_hours: number; meeting_hours: number; blocker_hours: number; free_hours: number; work_days: number } | null>(null);
   const [aiStats, setAiStats] = useState<{ pending_decisions: number; completed_week: number; completed_month: number; breakdown_week: { triage: number; drafts: number; suggestions: number; other: number } } | null>(null);
-  const [learning, setLearning] = useState<LearningOverview | null>(null);
-  const [proposedRules, setProposedRules] = useState<LearnedRule[]>([]);
-  const [ruleBusyId, setRuleBusyId] = useState<string | null>(null);
+  // KPI-Leiste: eingeklappt eine schmale Zeile, aufgeklappt die drei Kacheln (Wahl bleibt erhalten)
+  const [kpiExpanded, setKpiExpanded] = useState<boolean>(() => localStorage.getItem('cockpit_kpi_expanded') === '1');
+  const toggleKpi = () => {
+    setKpiExpanded(v => {
+      localStorage.setItem('cockpit_kpi_expanded', v ? '0' : '1');
+      return !v;
+    });
+  };
   const loadSignaSignals = useCallback(async (reset = false) => {
     if (signaLoading) return;
     setSignaLoading(true);
@@ -313,27 +280,7 @@ export function CockpitPage() {
     api.get<{ pending_decisions: number; completed_week: number; completed_month: number; breakdown_week: { triage: number; drafts: number; suggestions: number; other: number } }>('/api/agent-jobs/stats')
       .then(data => setAiStats(data))
       .catch(() => {});
-
-    // Lern-Feed: KPIs + offene Regel-Vorschläge (nur sichtbar, wenn es etwas gibt)
-    api.get<LearningOverview>('/api/intelligence/learning?days=7')
-      .then(data => setLearning(data))
-      .catch(() => {});
-    api.get<{ rules: LearnedRule[] }>('/api/intelligence/rules?status=proposed')
-      .then(data => setProposedRules(data.rules))
-      .catch(() => {});
   }, []);
-
-  const handleRuleDecision = async (ruleId: string, decision: 'approve' | 'reject') => {
-    setRuleBusyId(ruleId);
-    try {
-      await api.post(`/api/intelligence/rules/${ruleId}/${decision}`, {});
-      setProposedRules(prev => prev.filter(r => r.id !== ruleId));
-      api.get<LearningOverview>('/api/intelligence/learning?days=7')
-        .then(data => setLearning(data))
-        .catch(() => {});
-    } catch { /* */ }
-    finally { setRuleBusyId(null); }
-  };
 
   useEffect(() => { fetchAppData(); fetchPipedriveData(); }, [fetchAppData, fetchPipedriveData]);
 
@@ -570,18 +517,20 @@ export function CockpitPage() {
       <div className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-4 sm:p-6">
         <div className="mx-auto max-w-6xl space-y-4 lg:space-y-6">
 
-          {/* ── Zone 1: KPI-Übersicht ── */}
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-            <AiFreigabenCard stats={aiStats} hasBg={hasBg} />
-            <AgendaKpiCard fokus={focusTasks.length} overdue={overdueTasks.length} week={weekTasks.length} hasBg={hasBg} />
-            <CapacityCard weekCapacity={weekCapacity} monthCapacity={monthCapacity} hasBg={hasBg} />
-          </div>
+          {/* ── Zone 1: Briefing (zuoberst) ── */}
+          <BriefingCard
+            cardClass={cardClass}
+            textPrimary={textPrimary}
+            textSecondary={textSecondary}
+            textMuted={textMuted}
+            hasBg={hasBg}
+          />
 
-          {/* ── Zone 2: Aufgaben (Fokus | Überfällig | Diese Woche) | Kalender | E-Mails & Aufgaben ── */}
+          {/* ── Zone 2: Agenda (dominant) | Kalender heute ── */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
-            {/* Spalte 1: Agenda */}
-            <section className={`rounded-xl border p-4 ${cardClass}`}>
+            {/* Agenda: grösste Fläche (2/3) */}
+            <section className={`rounded-xl border p-4 lg:col-span-2 ${cardClass}`}>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
                   Agenda
@@ -594,85 +543,89 @@ export function CockpitPage() {
                 </button>
               </div>
 
-              {/* Fokus */}
-              <div className="mb-3">
-                <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-amber-300' : 'text-amber-600 dark:text-amber-400'}`}>
-                  Fokus ({focusTasks.length})
-                </h3>
-                {focusTasks.length === 0 ? (
-                  <p className={`text-xs ${textMuted}`}>Keine Fokus-Aufgaben</p>
-                ) : (
-                  <div className="space-y-1">
-                    {focusTasks.slice(0, 6).map(task => (
-                      <div
-                        key={task.id}
-                        className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
-                        onClick={() => setSelectedTaskId(task.id)}
-                      >
-                        <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-amber-400" />
-                        <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  {/* Fokus */}
+                  <div className="mb-3">
+                    <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-amber-300' : 'text-amber-600 dark:text-amber-400'}`}>
+                      Fokus ({focusTasks.length})
+                    </h3>
+                    {focusTasks.length === 0 ? (
+                      <p className={`text-xs ${textMuted}`}>Keine Fokus-Aufgaben</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {focusTasks.slice(0, 8).map(task => (
+                          <div
+                            key={task.id}
+                            className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                            onClick={() => setSelectedTaskId(task.id)}
+                          >
+                            <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-amber-400" />
+                            <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
+                          </div>
+                        ))}
+                        {focusTasks.length > 8 && (
+                          <p className={`text-xs pl-5 ${textMuted}`}>+{focusTasks.length - 8} weitere</p>
+                        )}
                       </div>
-                    ))}
-                    {focusTasks.length > 6 && (
-                      <p className={`text-xs pl-5 ${textMuted}`}>+{focusTasks.length - 6} weitere</p>
                     )}
                   </div>
-                )}
-              </div>
 
-              {/* Überfällig */}
-              {overdueTasks.length > 0 && (
-                <div className="mb-3">
-                  <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-red-300' : 'text-red-600 dark:text-red-400'}`}>
-                    Überfällig ({overdueTasks.length})
-                  </h3>
-                  <div className="space-y-1">
-                    {overdueTasks.slice(0, 6).map(task => (
-                      <div
-                        key={task.id}
-                        className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
-                        onClick={() => setSelectedTaskId(task.id)}
-                      >
-                        <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-red-500" />
-                        <div className="min-w-0 flex-1 flex items-center gap-2">
-                          <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
-                          <span className={`shrink-0 text-[10px] font-medium text-red-500`}>
-                            {new Date(task.due_date!).toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })}
-                          </span>
-                        </div>
+                  {/* Überfällig */}
+                  {overdueTasks.length > 0 && (
+                    <div>
+                      <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-red-300' : 'text-red-600 dark:text-red-400'}`}>
+                        Überfällig ({overdueTasks.length})
+                      </h3>
+                      <div className="space-y-1">
+                        {overdueTasks.slice(0, 6).map(task => (
+                          <div
+                            key={task.id}
+                            className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                            onClick={() => setSelectedTaskId(task.id)}
+                          >
+                            <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-red-500" />
+                            <div className="min-w-0 flex-1 flex items-center gap-2">
+                              <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
+                              <span className={`shrink-0 text-[10px] font-medium text-red-500`}>
+                                {new Date(task.due_date!).toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                        {overdueTasks.length > 6 && (
+                          <p className={`text-xs pl-5 ${textMuted}`}>+{overdueTasks.length - 6} weitere</p>
+                        )}
                       </div>
-                    ))}
-                    {overdueTasks.length > 6 && (
-                      <p className={`text-xs pl-5 ${textMuted}`}>+{overdueTasks.length - 6} weitere</p>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
-              )}
 
-              {/* Diese Woche */}
-              <div>
-                <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-blue-300' : 'text-blue-600 dark:text-blue-400'}`}>
-                  Diese Woche ({weekTasks.length})
-                </h3>
-                {weekTasks.length === 0 ? (
-                  <p className={`text-xs ${textMuted}`}>Keine Aufgaben diese Woche</p>
-                ) : (
-                  <div className="space-y-1">
-                    {weekTasks.slice(0, 6).map(task => (
-                      <div
-                        key={task.id}
-                        className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
-                        onClick={() => setSelectedTaskId(task.id)}
-                      >
-                        <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-blue-400" />
-                        <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
-                      </div>
-                    ))}
-                    {weekTasks.length > 6 && (
-                      <p className={`text-xs pl-5 ${textMuted}`}>+{weekTasks.length - 6} weitere</p>
-                    )}
-                  </div>
-                )}
+                {/* Diese Woche */}
+                <div>
+                  <h3 className={`mb-1.5 text-xs font-semibold uppercase tracking-wide ${hasBg ? 'text-blue-300' : 'text-blue-600 dark:text-blue-400'}`}>
+                    Diese Woche ({weekTasks.length})
+                  </h3>
+                  {weekTasks.length === 0 ? (
+                    <p className={`text-xs ${textMuted}`}>Keine Aufgaben diese Woche</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {weekTasks.slice(0, 10).map(task => (
+                        <div
+                          key={task.id}
+                          className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 cursor-pointer ${hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                          onClick={() => setSelectedTaskId(task.id)}
+                        >
+                          <div className="h-1.5 w-1.5 rounded-full shrink-0 bg-blue-400" />
+                          <span className={`text-sm truncate ${textPrimary}`}>{task.title}</span>
+                        </div>
+                      ))}
+                      {weekTasks.length > 10 && (
+                        <p className={`text-xs pl-5 ${textMuted}`}>+{weekTasks.length - 10} weitere</p>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
 
@@ -732,101 +685,7 @@ export function CockpitPage() {
                 </div>
               )}
             </section>
-
-            {/* Spalte 3: E-Mails & CRM */}
-            <section className={`rounded-xl border p-4 ${cardClass}`}>
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-                  E-Mails & CRM
-                </h2>
-                <div className={`flex items-center gap-1.5 text-xs font-medium`}>
-                  <button
-                    onClick={() => navigate('/inbox')}
-                    className={`${hasBg ? 'text-white/60 hover:text-white' : 'text-indigo-600 hover:text-indigo-800 dark:text-indigo-400'}`}
-                  >
-                    Posteingang
-                  </button>
-                  <span className={`${hasBg ? 'text-white/30' : 'text-gray-300 dark:text-gray-600'}`}>·</span>
-                  <a
-                    href="https://innosmith.pipedrive.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={`${hasBg ? 'text-white/60 hover:text-white' : 'text-green-600 hover:text-green-800 dark:text-green-400'}`}
-                  >
-                    Pipedrive
-                  </a>
-                </div>
-              </div>
-              <div className="space-y-1.5 max-h-80 overflow-y-auto">
-                {flaggedEmails.map(email => (
-                  <div
-                    key={email.id}
-                    className={`flex items-start gap-2.5 rounded-lg p-2.5 cursor-pointer transition-colors ${
-                      hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                    }`}
-                    onClick={() => navigate('/inbox')}
-                  >
-                    <FlagIcon className={`mt-0.5 h-4 w-4 shrink-0 ${hasBg ? 'text-orange-300' : 'text-orange-500 dark:text-orange-400'}`} />
-                    <div className="min-w-0 flex-1">
-                      <div className={`text-sm font-medium truncate ${textPrimary}`}>{email.subject || 'Kein Betreff'}</div>
-                      <div className={`text-[11px] ${textMuted}`}>
-                        {email.from_name || email.from_address}
-                        {email.received_at && ` · ${relativeDate(email.received_at)}`}
-                      </div>
-                    </div>
-                    {email.has_attachments && (
-                      <PaperclipIcon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${textMuted}`} />
-                    )}
-                  </div>
-                ))}
-                {pipedriveActivities.length > 0 && flaggedEmails.length > 0 && (
-                  <div className={`my-2 border-t ${hasBg ? 'border-white/10' : 'border-gray-100 dark:border-gray-800'}`} />
-                )}
-                {pipedriveActivities.map(act => {
-                  const isOverdue = act.due_date && new Date(act.due_date) < new Date();
-                  return (
-                    <a
-                      key={`pd-${act.id}`}
-                      href={`https://innosmith.pipedrive.com/activities/${act.id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`flex items-start gap-2.5 rounded-lg p-2.5 transition-colors ${
-                        hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      <div className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${isOverdue ? 'bg-red-500' : 'bg-orange-400'}`} />
-                      <div className="min-w-0 flex-1">
-                        <div className={`text-sm font-medium truncate ${textPrimary}`}>{act.subject}</div>
-                        <div className={`text-[11px] ${isOverdue ? 'text-red-500 font-medium' : textMuted}`}>
-                          {act.type || 'Aufgabe'}
-                          {act.due_date && ` · ${isOverdue ? 'Überfällig' : new Date(act.due_date).toLocaleDateString('de-CH')}`}
-                          {act.person_name && ` · ${act.person_name}`}
-                        </div>
-                      </div>
-                    </a>
-                  );
-                })}
-                {flaggedEmails.length === 0 && pipedriveActivities.length === 0 && (
-                  <div className={`flex h-20 items-center justify-center rounded-lg text-sm ${textMuted}`}>
-                    Keine E-Mails oder Aufgaben
-                  </div>
-                )}
-              </div>
-            </section>
           </div>
-
-          {/* ── Diese Woche gelernt (Self-Learning, nur wenn Daten vorhanden) ── */}
-          <LearningFeedCard
-            learning={learning}
-            rules={proposedRules}
-            ruleBusyId={ruleBusyId}
-            onRuleDecision={handleRuleDecision}
-            cardClass={cardClass}
-            textPrimary={textPrimary}
-            textSecondary={textSecondary}
-            textMuted={textMuted}
-            hasBg={hasBg}
-          />
 
           {/* ── Zone 3: Freigaben (kompakt, aufklappbar) ── */}
           {approvalJobs.length > 0 && (
@@ -1123,7 +982,16 @@ export function CockpitPage() {
                         <TaskIcon className="h-4 w-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className={`text-sm font-semibold truncate ${textPrimary}`}>{task.title}</div>
+                        <div className="flex items-center gap-2">
+                          <div className={`text-sm font-semibold truncate ${textPrimary}`}>{task.title}</div>
+                          {task.source === 'followup' && (
+                            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                              hasBg ? 'bg-rose-500/30 text-rose-200' : 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+                            }`}>
+                              Follow-up
+                            </span>
+                          )}
+                        </div>
                         {task.source_email_subject && (
                           <div className={`text-xs truncate ${textMuted}`}>
                             Aus E-Mail: {task.source_email_subject}
@@ -1158,6 +1026,41 @@ export function CockpitPage() {
               </div>
             </section>
           )}
+
+          {/* ── Zone 4: KPI-Leiste (aufklappbar, ohne Inhaltsverlust) ── */}
+          <section className={`rounded-xl border ${cardClass} ${kpiExpanded ? 'p-4' : 'px-4 py-2.5'}`}>
+            <button
+              type="button"
+              onClick={toggleKpi}
+              className="flex w-full items-center justify-between gap-3 text-left"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <h2 className={`shrink-0 text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+                  Kennzahlen
+                </h2>
+                {!kpiExpanded && (
+                  <span className={`truncate text-xs ${textMuted}`}>
+                    {[
+                      `${aiStats?.pending_decisions ?? 0} Freigaben offen`,
+                      `${focusTasks.length} Fokus`,
+                      overdueTasks.length > 0 ? `${overdueTasks.length} überfällig` : null,
+                      weekCapacity ? `${weekCapacity.free_hours}h frei diese Woche` : null,
+                    ].filter(Boolean).join(' · ')}
+                  </span>
+                )}
+              </div>
+              {kpiExpanded
+                ? <ChevronUpIcon className={`h-4 w-4 shrink-0 ${textMuted}`} />
+                : <ChevronDownIcon className={`h-4 w-4 shrink-0 ${textMuted}`} />}
+            </button>
+            {kpiExpanded && (
+              <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3">
+                <AiFreigabenCard stats={aiStats} hasBg={hasBg} />
+                <AgendaKpiCard fokus={focusTasks.length} overdue={overdueTasks.length} week={weekTasks.length} hasBg={hasBg} />
+                <CapacityCard weekCapacity={weekCapacity} monthCapacity={monthCapacity} hasBg={hasBg} />
+              </div>
+            )}
+          </section>
 
           {/* ── Fällige Kreditoren-Zahlungen ── */}
           <UpcomingPaymentsCard cardClass={cardClass} textSecondary={textSecondary} textMuted={textMuted} excludeVendors={creditorsExcludeVendors} />
@@ -1208,6 +1111,83 @@ export function CockpitPage() {
             </section>
           )}
 
+          {/* ── E-Mails & CRM (ans Ende verschoben, tiefere Priorität) ── */}
+          {(flaggedEmails.length > 0 || pipedriveActivities.length > 0) && (
+            <section className={`rounded-xl border p-4 ${cardClass}`}>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+                  E-Mails & CRM
+                </h2>
+                <div className={`flex items-center gap-1.5 text-xs font-medium`}>
+                  <button
+                    onClick={() => navigate('/inbox')}
+                    className={`${hasBg ? 'text-white/60 hover:text-white' : 'text-indigo-600 hover:text-indigo-800 dark:text-indigo-400'}`}
+                  >
+                    Posteingang
+                  </button>
+                  <span className={`${hasBg ? 'text-white/30' : 'text-gray-300 dark:text-gray-600'}`}>·</span>
+                  <a
+                    href="https://innosmith.pipedrive.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`${hasBg ? 'text-white/60 hover:text-white' : 'text-green-600 hover:text-green-800 dark:text-green-400'}`}
+                  >
+                    Pipedrive
+                  </a>
+                </div>
+              </div>
+              <div className="space-y-1.5 max-h-80 overflow-y-auto">
+                {flaggedEmails.map(email => (
+                  <div
+                    key={email.id}
+                    className={`flex items-start gap-2.5 rounded-lg p-2.5 cursor-pointer transition-colors ${
+                      hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+                    }`}
+                    onClick={() => navigate('/inbox')}
+                  >
+                    <FlagIcon className={`mt-0.5 h-4 w-4 shrink-0 ${hasBg ? 'text-orange-300' : 'text-orange-500 dark:text-orange-400'}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm font-medium truncate ${textPrimary}`}>{email.subject || 'Kein Betreff'}</div>
+                      <div className={`text-[11px] ${textMuted}`}>
+                        {email.from_name || email.from_address}
+                        {email.received_at && ` · ${relativeDate(email.received_at)}`}
+                      </div>
+                    </div>
+                    {email.has_attachments && (
+                      <PaperclipIcon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${textMuted}`} />
+                    )}
+                  </div>
+                ))}
+                {pipedriveActivities.length > 0 && flaggedEmails.length > 0 && (
+                  <div className={`my-2 border-t ${hasBg ? 'border-white/10' : 'border-gray-100 dark:border-gray-800'}`} />
+                )}
+                {pipedriveActivities.map(act => {
+                  const isOverdue = act.due_date && new Date(act.due_date) < new Date();
+                  return (
+                    <a
+                      key={`pd-${act.id}`}
+                      href={`https://innosmith.pipedrive.com/activities/${act.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`flex items-start gap-2.5 rounded-lg p-2.5 transition-colors ${
+                        hasBg ? 'hover:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      <div className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${isOverdue ? 'bg-red-500' : 'bg-orange-400'}`} />
+                      <div className="min-w-0 flex-1">
+                        <div className={`text-sm font-medium truncate ${textPrimary}`}>{act.subject}</div>
+                        <div className={`text-[11px] ${isOverdue ? 'text-red-500 font-medium' : textMuted}`}>
+                          {act.type || 'Aufgabe'}
+                          {act.due_date && ` · ${isOverdue ? 'Überfällig' : new Date(act.due_date).toLocaleDateString('de-CH')}`}
+                          {act.person_name && ` · ${act.person_name}`}
+                        </div>
+                      </div>
+                    </a>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {/* Alles erledigt */}
           {pendingDecisions === 0 && focusTasks.length === 0 && flaggedEmails.length === 0 && calendarEvents.length === 0 && (
@@ -1465,152 +1445,6 @@ function CapacityCard({ weekCapacity, monthCapacity, hasBg }: { weekCapacity: Ca
         {renderCol('Monat', monthCapacity)}
       </div>
     </div>
-  );
-}
-
-/* ── Diese Woche gelernt (Self-Learning Feed) ── */
-
-const FEEDBACK_LABELS: Record<string, string> = {
-  draft_edit: 'Entwurf nachbearbeitet',
-  approved_clean: 'Entwurf unverändert gesendet',
-  triage_reclass: 'Einschätzung korrigiert',
-  rejected: 'Vorschlag abgelehnt',
-  task_deleted: 'Aufgaben-Vorschlag verworfen',
-  task_moved: 'Aufgabe verschoben',
-  chat_teach: 'Im Chat beigebracht',
-};
-
-function signalLabel(s: { feedback_type: string }): string {
-  return FEEDBACK_LABELS[s.feedback_type] ?? s.feedback_type;
-}
-
-function LearningFeedCard({
-  learning, rules, ruleBusyId, onRuleDecision,
-  cardClass, textPrimary, textSecondary, textMuted, hasBg,
-}: {
-  learning: LearningOverview | null;
-  rules: LearnedRule[];
-  ruleBusyId: string | null;
-  onRuleDecision: (id: string, decision: 'approve' | 'reject') => void;
-  cardClass: string;
-  textPrimary: string;
-  textSecondary: string;
-  textMuted: string;
-  hasBg: boolean;
-}) {
-  const s = learning?.stats;
-  const hasSignals =
-    !!s &&
-    (s.drafts_sent + s.triage_reclass + s.rejected +
-      s.episodes_corrected + s.rules_active + s.rules_proposed) > 0;
-  // Standardmässig eingeklappt -- die Karte soll Tasks/Wochenplanung nicht verdrängen.
-  const [expanded, setExpanded] = useState(false);
-  // Zeigt sich erst, wenn es etwas zu zeigen gibt (Lern-Aktivität ODER offene Regeln).
-  if (!hasSignals && rules.length === 0) return null;
-
-  const chip = (value: number | string, label: string) => (
-    <div className={`rounded-lg px-2.5 py-1.5 ${hasBg ? 'bg-white/10' : 'bg-gray-50 dark:bg-gray-800/50'}`}>
-      <div className={`text-sm font-semibold ${textPrimary}`}>{value}</div>
-      <div className={`text-[10px] ${textMuted}`}>{label}</div>
-    </div>
-  );
-
-  return (
-    <section className={`rounded-xl border p-4 ${cardClass}`}>
-      <button
-        type="button"
-        onClick={() => setExpanded(v => !v)}
-        className={`flex w-full items-center justify-between ${expanded ? 'mb-3' : ''}`}
-      >
-        <h2 className={`flex items-center gap-2 text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
-          Diese Woche gelernt
-          {rules.length > 0 && (
-            <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-indigo-100 px-1.5 text-[11px] font-bold text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-              {rules.length}
-            </span>
-          )}
-        </h2>
-        <div className="flex items-center gap-2">
-          <span className={`text-[11px] ${textMuted}`}>Letzte 7 Tage</span>
-          {expanded
-            ? <ChevronUpIcon className={`h-4 w-4 ${textMuted}`} />
-            : <ChevronDownIcon className={`h-4 w-4 ${textMuted}`} />}
-        </div>
-      </button>
-
-      {expanded && (
-        <>
-      {s && (
-        <div className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-6">
-          {chip(`${Math.round(s.edit_rate * 100)}%`, 'Entwurf-Edits')}
-          {chip(s.drafts_sent, 'Entwürfe gesendet')}
-          {chip(s.triage_reclass, 'Korrekturen')}
-          {chip(s.episodes_corrected, 'Episoden gelernt')}
-          {chip(s.rules_active, 'Regeln aktiv')}
-          {chip(s.rules_proposed, 'Regeln offen')}
-        </div>
-      )}
-
-      {/* Offene Regel-Vorschläge mit Freigabe */}
-      {rules.length > 0 && (
-        <div className="mb-3 space-y-2">
-          <div className={`text-xs font-medium ${textSecondary}`}>Vorgeschlagene Regeln (Freigabe nötig)</div>
-          {rules.map(rule => (
-            <div
-              key={rule.id}
-              className={`flex items-start gap-3 rounded-lg border p-3 ${
-                hasBg ? 'border-white/15 bg-white/5' : 'border-indigo-100 bg-indigo-50/50 dark:border-indigo-900/40 dark:bg-indigo-950/20'
-              }`}
-            >
-              <div className="min-w-0 flex-1">
-                <div className={`text-sm ${textPrimary}`}>{rule.rule_text}</div>
-                <div className={`mt-0.5 text-[11px] ${textMuted}`}>{rule.scope}</div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <button
-                  disabled={ruleBusyId === rule.id}
-                  onClick={() => onRuleDecision(rule.id, 'approve')}
-                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  Freigeben
-                </button>
-                <button
-                  disabled={ruleBusyId === rule.id}
-                  onClick={() => onRuleDecision(rule.id, 'reject')}
-                  className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
-                    hasBg ? 'text-red-300 hover:bg-red-500/20' : 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20'
-                  }`}
-                >
-                  Verwerfen
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Jüngste Lernsignale */}
-      {learning && learning.recent.length > 0 && (
-        <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
-          {learning.recent.slice(0, 20).map((sig, i) => (
-            <div key={i} className="flex items-center gap-2 text-xs">
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                sig.feedback_type === 'rejected' || sig.feedback_type === 'task_deleted'
-                  ? 'bg-red-400'
-                  : sig.feedback_type === 'approved_clean'
-                    ? 'bg-emerald-400'
-                    : 'bg-indigo-400'
-              }`} />
-              <span className={textPrimary}>{signalLabel(sig)}</span>
-              {sig.sender_email && <span className={textMuted}>· {sig.sender_email}</span>}
-              {sig.reason && <span className={`truncate ${textMuted}`}>— {sig.reason}</span>}
-            </div>
-          ))}
-        </div>
-      )}
-        </>
-      )}
-    </section>
   );
 }
 

@@ -86,10 +86,22 @@ async def triage_stats(
     )
     by_class = {row[0] or "unclassified": row[1] for row in result2.all()}
 
+    # Fällige Follow-ups: Vorschläge, deren needs_review-Task noch offen ist
+    from app.models import FollowupSuggestion, Task
+
+    followups_due = (
+        await db.execute(
+            select(func.count(Task.id))
+            .join(FollowupSuggestion, FollowupSuggestion.task_id == Task.id)
+            .where(Task.needs_review == True)  # noqa: E712
+        )
+    ).scalar_one()
+
     return {
         "by_status": by_status,
         "by_class": by_class,
         "total_pending": by_status.get("pending", 0),
+        "followups_due": followups_due,
     }
 
 

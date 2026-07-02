@@ -11,6 +11,9 @@ import {
   Bot,
   Mail,
   MessagesSquare,
+  Newspaper,
+  FileText,
+  MailQuestion,
 } from 'lucide-react';
 import type { NotificationItem } from '../hooks/useNotifications';
 
@@ -22,6 +25,9 @@ const TYPE_CONFIG: Record<string, { icon: typeof Bell; color: string }> = {
   comment_mention: { icon: MessageCircle, color: 'text-violet-500' },
   task_due_soon: { icon: Clock, color: 'text-orange-500' },
   system_health_warning: { icon: AlertTriangle, color: 'text-red-500' },
+  briefing_ready: { icon: Newspaper, color: 'text-sky-500' },
+  meeting_summary_ready: { icon: FileText, color: 'text-emerald-500' },
+  follow_up_due: { icon: MailQuestion, color: 'text-rose-500' },
 };
 
 interface NotificationPanelProps {

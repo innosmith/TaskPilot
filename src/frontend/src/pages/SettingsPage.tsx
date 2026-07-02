@@ -35,6 +35,15 @@ interface UserSettingsData {
   vat_saldo_rate?: number | null;
   tax_canton?: string | null;
   civil_status?: string | null;
+  briefing_daily_enabled?: boolean | null;
+  briefing_daily_time?: string | null;
+  briefing_weekly_enabled?: boolean | null;
+  briefing_weekly_day?: number | null;
+  briefing_weekly_time?: string | null;
+  briefing_monthly_enabled?: boolean | null;
+  briefing_monthly_time?: string | null;
+  followup_enabled?: boolean | null;
+  followup_wait_days?: number | null;
 }
 
 interface ManagedUser {
@@ -1004,6 +1013,119 @@ export function SettingsPage() {
                   >
                     <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${(settings.cockpit_calendar_hide_private ?? true) ? 'left-[22px]' : 'left-0.5'}`} />
                   </button>
+                </div>
+
+                {/* ── Briefings (Daily / Weekly / Monthly) ── */}
+                <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-4 dark:border-sky-900 dark:bg-sky-950/30">
+                  <label className="mb-1 block text-sm font-semibold text-gray-900 dark:text-white">Automatische Briefings</label>
+                  <p className="mb-4 text-xs text-gray-500 dark:text-gray-400">
+                    Der Agent erstellt Briefings automatisch und zeigt sie zuoberst im Cockpit.
+                    Ältere Briefings bleiben im Archiv (Agenten → Aufträge → Filter «Briefings»).
+                  </p>
+                  <div className="space-y-3">
+                    {/* Daily */}
+                    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/60">
+                      <button
+                        onClick={() => updateSetting('briefing_daily_enabled', !(settings.briefing_daily_enabled ?? true))}
+                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${(settings.briefing_daily_enabled ?? true) ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      >
+                        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${(settings.briefing_daily_enabled ?? true) ? 'left-[22px]' : 'left-0.5'}`} />
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">Tagesbriefing</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">Werktags — Termine, fällige Tasks, Triage seit gestern</p>
+                      </div>
+                      <input
+                        type="time"
+                        value={settings.briefing_daily_time ?? '06:30'}
+                        onChange={(e) => updateSetting('briefing_daily_time', e.target.value || null)}
+                        disabled={!(settings.briefing_daily_enabled ?? true)}
+                        className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                      />
+                    </div>
+                    {/* Weekly */}
+                    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/60">
+                      <button
+                        onClick={() => updateSetting('briefing_weekly_enabled', !(settings.briefing_weekly_enabled ?? true))}
+                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${(settings.briefing_weekly_enabled ?? true) ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      >
+                        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${(settings.briefing_weekly_enabled ?? true) ? 'left-[22px]' : 'left-0.5'}`} />
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">Wochenbriefing</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">Projekte, Kapazität, Plan vs. Ist, kommende Woche</p>
+                      </div>
+                      <select
+                        value={settings.briefing_weekly_day ?? 6}
+                        onChange={(e) => updateSetting('briefing_weekly_day', Number(e.target.value))}
+                        disabled={!(settings.briefing_weekly_enabled ?? true)}
+                        className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                      >
+                        {['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'].map((d, i) => (
+                          <option key={i} value={i}>{d}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="time"
+                        value={settings.briefing_weekly_time ?? '17:00'}
+                        onChange={(e) => updateSetting('briefing_weekly_time', e.target.value || null)}
+                        disabled={!(settings.briefing_weekly_enabled ?? true)}
+                        className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                      />
+                    </div>
+                    {/* Monthly */}
+                    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/60">
+                      <button
+                        onClick={() => updateSetting('briefing_monthly_enabled', !(settings.briefing_monthly_enabled ?? true))}
+                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${(settings.briefing_monthly_enabled ?? true) ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      >
+                        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${(settings.briefing_monthly_enabled ?? true) ? 'left-[22px]' : 'left-0.5'}`} />
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">Monatsbriefing</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">Am letzten Kalendertag — Rückblick, Forecast, nächste zwei Monate</p>
+                      </div>
+                      <input
+                        type="time"
+                        value={settings.briefing_monthly_time ?? '17:00'}
+                        onChange={(e) => updateSetting('briefing_monthly_time', e.target.value || null)}
+                        disabled={!(settings.briefing_monthly_enabled ?? true)}
+                        className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── Follow-up-Erkennung ── */}
+                <div className="rounded-xl border border-rose-200 bg-rose-50/50 p-4 dark:border-rose-900 dark:bg-rose-950/30">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-900 dark:text-white">Follow-up-Erkennung</label>
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Gesendete E-Mails ohne Antwort werden nach der Wartezeit als
+                        Nachfass-Vorschlag im Cockpit angezeigt (mit Follow-up-Badge).
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => updateSetting('followup_enabled', !(settings.followup_enabled ?? true))}
+                      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${(settings.followup_enabled ?? true) ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                    >
+                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${(settings.followup_enabled ?? true) ? 'left-[22px]' : 'left-0.5'}`} />
+                    </button>
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <label className="text-sm text-gray-700 dark:text-gray-300">Wartezeit:</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={settings.followup_wait_days ?? 5}
+                      onChange={(e) => updateSetting('followup_wait_days', Number(e.target.value) || 5)}
+                      disabled={!(settings.followup_enabled ?? true)}
+                      className="w-20 rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                    />
+                    <span className="text-sm text-gray-500 dark:text-gray-400">Arbeitstage</span>
+                  </div>
                 </div>
 
               </div>

@@ -301,6 +301,20 @@ CREATE TABLE llm_messages (
     created_at      TIMESTAMPTZ DEFAULT now()
 );
 
+-- Angepinnte Kontext-Dokumente pro Konversation (Re-Injektion bei jedem Turn)
+CREATE TABLE conversation_context_items (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES llm_conversations(id) ON DELETE CASCADE,
+    source_type     TEXT NOT NULL CHECK (source_type IN ('local_upload', 'onedrive_file', 'onedrive_folder')),
+    source_ref      TEXT,
+    name            TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    char_count      INT DEFAULT 0,
+    pinned          BOOLEAN DEFAULT true,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_conversation_context_items_conv ON conversation_context_items(conversation_id);
+
 -- Web-Suchen (Tavily etc.)
 CREATE TABLE web_searches (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -362,7 +376,7 @@ CREATE TABLE chat_triage (
     body_preview    TEXT,
     chat_type       TEXT,
     received_at     TIMESTAMPTZ,
-    triage_class    TEXT CHECK (triage_class IN ('task', 'fyi', 'meeting_summary')),
+    triage_class    TEXT CHECK (triage_class IN ('task', 'fyi', 'auto_reply', 'meeting_summary')),
     confidence      REAL,
     suggested_action JSONB,
     agent_job_id    UUID REFERENCES agent_jobs(id),
@@ -376,6 +390,47 @@ CREATE INDEX idx_chat_triage_chat_id ON chat_triage(chat_id);
 
 CREATE TRIGGER chat_triage_notify AFTER INSERT OR UPDATE ON chat_triage
     FOR EACH ROW EXECUTE FUNCTION notify_change('chat_triage_changed');
+
+-- Follow-up-Erkennung: Dedupe-Anker pro Sent-Konversation
+CREATE TABLE followup_suggestions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id TEXT NOT NULL UNIQUE,
+    task_id         UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    subject         TEXT,
+    recipient       TEXT,
+    sent_at         TIMESTAMPTZ,
+    status          TEXT DEFAULT 'suggested'
+        CHECK (status IN ('suggested', 'answered')),
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_followup_suggestions_status ON followup_suggestions(status);
+
+-- Teams-Meeting-Transkripte (Original + Protokoll + Anonymisierung)
+CREATE TABLE meeting_transcripts (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    meeting_id              TEXT NOT NULL,
+    transcript_id           TEXT NOT NULL UNIQUE,
+    subject                 TEXT,
+    organizer               TEXT,
+    started_at              TIMESTAMPTZ,
+    ended_at                TIMESTAMPTZ,
+    raw_vtt                 TEXT,
+    transcript_text         TEXT,
+    protocol_md             TEXT,
+    anonymized_text         TEXT,
+    anonymized_protocol_md  TEXT,
+    anonymization_map       JSONB,
+    status                  TEXT DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    agent_job_id            UUID REFERENCES agent_jobs(id),
+    error_message           TEXT,
+    created_at              TIMESTAMPTZ DEFAULT now(),
+    updated_at              TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_meeting_transcripts_status ON meeting_transcripts(status);
+CREATE INDEX idx_meeting_transcripts_started ON meeting_transcripts(started_at DESC);
 
 -- Notifications
 CREATE TABLE notifications (

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import async_session
-from app.models import ChecklistItem, Tag, Task, TaskTag
+from app.models import AgentJob, ChecklistItem, Tag, Task, TaskTag
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
 from graph_client import GraphClient, GraphConfig  # noqa: E402
@@ -182,6 +182,27 @@ async def _copy_template(
     )
     for tag in tag_result.scalars().all():
         db.add(TaskTag(task_id=instance.id, tag_id=tag.id))
+
+    # Agent-Delegation: Instanzen mit assignee='agent' erzeugen wie im
+    # Task-Router einen 'planned'-Job. Der Agent-Scheduler gibt ihn am
+    # Fälligkeitstag frei (planned -> queued) -- vorher lief die Zuweisung
+    # bei Recurring-Instanzen komplett ins Leere (kein Job, keine Ausführung).
+    if instance.assignee == "agent":
+        db.add(AgentJob(
+            task_id=instance.id,
+            job_type="task",
+            status="planned",
+            llm_model=instance.llm_override,
+            metadata_json={
+                "autonomy_level": instance.autonomy_level,
+                "data_class": instance.data_class,
+                "llm_override": instance.llm_override,
+                "recurring_template_id": str(template.id),
+            },
+        ))
+        logger.info(
+            "Recurring-Instanz %s: Agent-Job (planned) erzeugt", instance.id,
+        )
 
     await _create_calendar_blocker(instance, template)
 

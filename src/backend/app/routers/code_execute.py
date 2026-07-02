@@ -78,8 +78,15 @@ SICHERHEIT & QUALITÄT:
 - Schweizer Deutsch in Kommentaren (ss statt ß)."""
 
 
-_HISTORY_LIMIT = 8
-_HISTORY_MAX_CHARS = 4000
+# Verlaufsfenster für iteratives Coding. Erweitert (vorher 8×4000): moderne
+# Coder-Modelle (32B, 32k+ Kontext) verkraften mehr Verlauf problemlos — das
+# Modell sieht damit auch länger zurückliegende Iterationen derselben Session.
+_HISTORY_LIMIT = 16
+_HISTORY_MAX_CHARS = 8000
+
+# Budget für angepinnte Konversations-Dokumente im Code-Prompt (zusätzlich
+# zum Verlauf; strikt additiv, damit der Code-Modus keinen Rückschritt macht).
+_PINNED_CONTEXT_BUDGET = 24_000
 
 
 async def _load_history_messages(
@@ -111,6 +118,41 @@ async def _load_history_messages(
             content = content[:_HISTORY_MAX_CHARS] + "\n… [gekürzt]"
         history.append({"role": m.role, "content": content})
     return history
+
+
+async def _load_pinned_context_message(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+) -> dict | None:
+    """Angepinnte Konversations-Dokumente als zusätzliche Kontext-Message.
+
+    Teilt die Kontext-Pipeline mit Chat/Agent: hat der Berater in dieser
+    Konversation Dokumente angehängt (z. B. eine CSV-Beschreibung oder ein
+    Anforderungsdokument), sieht der Code-Generator sie ebenfalls. Best-effort;
+    bei Fehlern oder ohne Dokumente wird nichts injiziert (kein Rückschritt).
+    """
+    try:
+        from app.services.conversation_context import (
+            build_pinned_context_block,
+            load_pinned_items,
+        )
+
+        items = await load_pinned_items(session, conversation_id)
+        block = build_pinned_context_block(items, budget_chars=_PINNED_CONTEXT_BUDGET)
+        if not block:
+            return None
+        return {
+            "role": "user",
+            "content": (
+                "Kontext: Folgende Dokumente sind in dieser Konversation angehängt. "
+                "Nutze sie als fachliche Referenz für den Code (sie liegen NICHT "
+                "als Dateien in /input/, ausser sie sind dort explizit aufgeführt):\n\n"
+                + block
+            ),
+        }
+    except Exception:  # noqa: BLE001 - Kontext ist optional, Code-Flow hat Vorrang
+        logger.warning("Angepinnter Kontext für Code-Modus konnte nicht geladen werden")
+        return None
 
 
 def _build_user_prompt(
@@ -375,6 +417,9 @@ async def generate_code(
 
     # Historie VOR dem Anhängen der neuen Nutzernachricht laden (iteratives Coding).
     history = await _load_history_messages(db, conv.id)
+    pinned_msg = await _load_pinned_context_message(db, conv.id)
+    if pinned_msg:
+        history = [pinned_msg, *history]
     has_stdin = bool((body.get("stdin_data") or "").strip())
 
     user_msg = LlmMessage(
@@ -522,6 +567,9 @@ async def generate_and_execute(
 
         async with async_session() as save_db:
             history = await _load_history_messages(save_db, uuid.UUID(conv_id_str))
+            pinned_msg = await _load_pinned_context_message(save_db, uuid.UUID(conv_id_str))
+            if pinned_msg:
+                history = [pinned_msg, *history]
             user_msg = LlmMessage(
                 conversation_id=uuid.UUID(conv_id_str),
                 role="user",

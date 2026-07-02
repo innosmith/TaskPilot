@@ -1,127 +1,26 @@
-"""Router für die klassische Websuche (Tavily API) mit Historisierung.
+"""Router für den Websuche-Verlauf (read-only, Audit).
 
-DEPRECATED: Die klassische Websuche ist zugunsten der Hermes-nativen agentischen
-Recherche (``web_search``/``web_extract`` im Agent-Modus) abgelöst. Der POST-Endpunkt
-bleibt vorerst funktionsfähig (Rückwärtskompatibilität des Chat-„web_search“-Modus),
-ist aber als veraltet markiert. Die Historie-Endpunkte sind read-only und bleiben für
-Audit/Anzeige erhalten. Für neue Recherche bitte den Agent-Modus (InnoPilot) nutzen.
+Die klassische Tavily-Websuche (POST /api/search) wurde entfernt: Die
+Hermes-native agentische Recherche (``web_search``/``web_extract`` im
+Agent-Modus) ersetzt sie vollständig und wird für den Audit-Trail in
+``web_searches`` historisiert (siehe ``routers/chat.py``). Die
+Historie-Endpunkte bleiben für Anzeige und Nachvollziehbarkeit erhalten.
 """
 
 import logging
 import uuid
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pydantic import BaseModel, Field
-
-from app.auth.deps import get_current_user, require_role
-from app.config import get_settings
+from app.auth.deps import require_role
 from app.database import get_db
 from app.models import User
 from app.models.models import WebSearch
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/search", tags=["web-search"])
-
-TAVILY_API_URL = "https://api.tavily.com/search"
-
-
-class WebSearchRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=500)
-    search_depth: str = Field("basic", pattern="^(basic|advanced)$")
-    max_results: int = Field(5, ge=1, le=20)
-    task_id: str | None = None
-    conversation_id: str | None = None
-    triggered_by: str = "user"
-
-
-async def _tavily_search(query: str, search_depth: str = "basic", max_results: int = 5) -> dict:
-    """Tavily-Suche ausführen. basic=1 Credit, advanced=2 Credits."""
-    settings = get_settings()
-    if not settings.tavily_api_key:
-        raise HTTPException(status_code=503, detail="Tavily API-Key nicht konfiguriert")
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            TAVILY_API_URL,
-            json={
-                "api_key": settings.tavily_api_key,
-                "query": query,
-                "search_depth": search_depth,
-                "include_answer": True,
-                "include_raw_content": False,
-                "max_results": max_results,
-            },
-        )
-        if resp.status_code != 200:
-            logger.error("Tavily-Fehler: %d %s", resp.status_code, resp.text)
-            raise HTTPException(status_code=502, detail="Web-Suche fehlgeschlagen")
-        return resp.json()
-
-
-@router.post("", deprecated=True)
-async def perform_search(
-    body: WebSearchRequest,
-    user: User = Depends(require_role("owner")),
-    db: AsyncSession = Depends(get_db),
-):
-    """DEPRECATED: Klassische Websuche. Nutze stattdessen den Agent-Modus (web_search)."""
-    logger.info(
-        "Deprecated /api/search aufgerufen (query=%.60s) — Hermes-native web_search bevorzugen.",
-        body.query,
-    )
-    query = body.query.strip()
-
-    search_depth = body.search_depth
-    max_results = body.max_results
-    task_id = body.task_id
-    conversation_id = body.conversation_id
-    triggered_by = body.triggered_by
-
-    tavily_result = await _tavily_search(query, search_depth, max_results)
-
-    results = tavily_result.get("results", [])
-    answer = tavily_result.get("answer")
-
-    formatted_results = []
-    for r in results:
-        formatted_results.append({
-            "title": r.get("title", ""),
-            "url": r.get("url", ""),
-            "content": r.get("content", ""),
-            "score": r.get("score"),
-        })
-
-    credits = 2 if search_depth == "advanced" else 1
-
-    search_record = WebSearch(
-        query=query,
-        provider="tavily",
-        results=formatted_results,
-        result_count=len(formatted_results),
-        triggered_by=triggered_by,
-        task_id=uuid.UUID(task_id) if task_id else None,
-        conversation_id=uuid.UUID(conversation_id) if conversation_id else None,
-        user_id=user.id,
-        credits_used=credits,
-    )
-    db.add(search_record)
-    await db.flush()
-
-    return {
-        "id": str(search_record.id),
-        "query": query,
-        "answer": answer,
-        "results": formatted_results,
-        "result_count": len(formatted_results),
-        "provider": "tavily",
-        "credits_used": credits,
-        "created_at": search_record.created_at.isoformat(),
-        "deprecated": True,
-    }
 
 
 @router.get("/history")

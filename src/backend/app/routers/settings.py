@@ -86,6 +86,17 @@ class UserSettings(BaseModel):
     vat_saldo_rate: float | None = None  # Saldosteuersatz (Dezimal, z.B. 0.062)
     tax_canton: str | None = None        # Sitz-/Wohnkanton (z.B. "Bern")
     civil_status: str | None = None      # Zivilstand (z.B. "verheiratet")
+    # Briefings (Daily/Weekly/Monthly)
+    briefing_daily_enabled: bool | None = None
+    briefing_daily_time: str | None = None      # "HH:MM" lokal (nur Werktage)
+    briefing_weekly_enabled: bool | None = None
+    briefing_weekly_day: int | None = None      # 0=Montag … 6=Sonntag
+    briefing_weekly_time: str | None = None
+    briefing_monthly_enabled: bool | None = None
+    briefing_monthly_time: str | None = None    # am letzten Kalendertag
+    # Follow-up-Erkennung (unbeantwortete gesendete E-Mails)
+    followup_enabled: bool | None = None
+    followup_wait_days: int | None = None       # Arbeitstage bis Vorschlag
 
 
 SETTINGS_FIELDS = [
@@ -102,6 +113,10 @@ SETTINGS_FIELDS = [
     "forecast_fill_horizon_months", "forecast_vat_rate",
     "annual_revenue_goal", "min_liquidity",
     "vat_method", "vat_saldo_rate", "tax_canton", "civil_status",
+    "briefing_daily_enabled", "briefing_daily_time",
+    "briefing_weekly_enabled", "briefing_weekly_day", "briefing_weekly_time",
+    "briefing_monthly_enabled", "briefing_monthly_time",
+    "followup_enabled", "followup_wait_days",
 ]
 
 

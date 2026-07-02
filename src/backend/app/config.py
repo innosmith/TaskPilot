@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     # Cockpit als needs_review markiert (Best-Practice-Audit-Bucket), statt still
     # durchzugehen. Nur wirksam, wenn das Modell eine Confidence liefert.
     triage_low_confidence_threshold: float = 0.5
+    # Tool-Scoping fuer Triage-Jobs: reduzierter Agent (Core ohne web + graph +
+    # taskpilot) statt aller ~113 MCP-Tools. Weniger Prompt-Ballast = bessere
+    # Tool-Wahl des lokalen Modells; zugleich Datenminimierung (keine Websuche
+    # mit E-Mail-Inhalten aus der Triage heraus). Per Flag reversibel.
+    triage_tool_scoping: bool = True
 
     # Zwei-Pass-Entwurf (Best Practice: klassifizieren -> schreiben trennen). Wenn
     # aktiv, erstellt der Klassifikations-Lauf KEINEN Entwurf; sobald auto_reply

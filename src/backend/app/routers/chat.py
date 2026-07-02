@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import os
 import pathlib
 import threading
 import time
@@ -18,7 +17,6 @@ from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
 from app.auth.deps import get_current_user, require_role
-from app.config import get_settings
 from app.database import get_db, async_session
 from app.models import AgentJob, BoardColumn, Project, Task, User
 from app.models.models import LlmConversation, LlmMessage
@@ -28,27 +26,21 @@ litellm.drop_params = True
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
-# Hinweis fuer den reinen Chat-Modus (kein Tool-/MCP-Zugriff). Verhindert, dass das
-# Modell eine Live-Datensuche (z. B. SIGNA-Signale) vortaeuscht oder ins Leere laufen
-# laesst, wenn der Nutzer versehentlich nicht im Agent-Modus ist.
+# Hinweis für den reinen Chat-Modus (kein Tool-/MCP-Zugriff). Verhindert, dass das
+# Modell eine Live-Datensuche (z. B. SIGNA-Signale) vortäuscht oder ins Leere laufen
+# lässt, wenn der Nutzer versehentlich nicht im Agent-Modus ist.
 _PLAIN_CHAT_TOOL_HINT = (
     "Du bist im reinen Chat-Modus und hast in diesem Modus KEINEN Zugriff auf Live-Tools "
     "oder Firmendaten (SIGNA-Signale/Recherche, E-Mail, Kalender, CRM/Pipedrive, "
     "Buchhaltung/Bexio, Aufgaben). Wenn der Nutzer nach solchen Live-Daten fragt – "
-    "insbesondere nach einer SIGNA-Signal- oder semantischen Recherche – fuehre KEINE "
-    "erfundene Suche durch. Weise stattdessen kurz und freundlich darauf hin, dass dafuer "
-    "der Agent-Modus (InnoPilot) noetig ist, und bitte den Nutzer, oben links auf 'Agent' "
+    "insbesondere nach einer SIGNA-Signal- oder semantischen Recherche – führe KEINE "
+    "erfundene Suche durch. Weise stattdessen kurz und freundlich darauf hin, dass dafür "
+    "der Agent-Modus (InnoPilot) nötig ist, und bitte den Nutzer, oben links auf 'Agent' "
     "umzuschalten und die Anfrage dort erneut zu stellen. Allgemeine Wissensfragen "
-    "beantwortest du normal. Sprache: Schweizer Hochdeutsch (ss statt ß, korrekte Umlaute)."
+    "beantwortest du normal. Angehängte/angepinnte Dokumente in dieser Konversation "
+    "kennst du vollständig — beziehe dich bei Rückfragen direkt darauf. "
+    "Sprache: Schweizer Hochdeutsch (ss statt ß, korrekte Umlaute)."
 )
-
-
-def _should_enable_thinking(model_id: str) -> bool:
-    """Prüft via LiteLLM-Library ob ein Modell Reasoning/Thinking unterstützt."""
-    try:
-        return litellm.supports_reasoning(model=model_id)
-    except Exception:
-        return False
 
 
 # ── Datei-Anhänge als LLM-Kontext (Dokumenten-Kontext-Brücke) ──
@@ -111,35 +103,82 @@ async def upload_chat_context_file(
     }
 
 
-async def _resolve_attached_context(context_sources: list | None) -> str:
-    """Löst Kontext-Quellen (lokale Uploads + OneDrive) zu einem LLM-Block auf.
+@router.get("/conversations/{conversation_id}/context-items")
+async def list_context_items(
+    conversation_id: uuid.UUID,
+    user: User = Depends(require_role("owner")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Angepinnte Kontext-Dokumente einer Konversation auflisten (ohne Volltext)."""
+    from app.models import ConversationContextItem
 
-    Gemeinsame Brücke für Chat- und Agent-Modus: extrahiert die Inhalte der
-    angehängten Dokumente und liefert einen `<attached_files>`-Block. Fehler
-    dürfen den Chat/Agent niemals blockieren — im Zweifel leerer String.
-    """
-    if not context_sources:
-        return ""
-
-    from app.services.context_resolver import resolve_context_sources
-
-    needs_graph = any(
-        str(s.get("type", "")).startswith("onedrive") for s in context_sources
+    result = await db.execute(
+        select(ConversationContextItem)
+        .where(ConversationContextItem.conversation_id == conversation_id)
+        .order_by(ConversationContextItem.created_at)
     )
-    graph_client = None
-    if needs_graph:
-        from app.services.graph import get_graph_client
+    return {
+        "items": [
+            {
+                "id": str(item.id),
+                "name": item.name,
+                "source_type": item.source_type,
+                "char_count": item.char_count,
+                "pinned": item.pinned,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in result.scalars().all()
+        ]
+    }
 
-        graph_client = get_graph_client()
-        if graph_client is None:
-            logger.warning("Graph nicht konfiguriert — OneDrive-Kontext wird übersprungen")
 
-    try:
-        ctx = await resolve_context_sources(context_sources, graph_client)
-        return ctx.to_llm_context()
-    except Exception:  # noqa: BLE001 - best-effort, darf den Chat nie blockieren
-        logger.exception("Kontext-Auflösung der Anhänge fehlgeschlagen")
-        return ""
+@router.patch("/conversations/{conversation_id}/context-items/{item_id}")
+async def update_context_item(
+    conversation_id: uuid.UUID,
+    item_id: uuid.UUID,
+    body: dict,
+    user: User = Depends(require_role("owner")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Kontext-Dokument an-/abpinnen (abgepinnte werden nicht mehr injiziert)."""
+    from app.models import ConversationContextItem
+
+    result = await db.execute(
+        select(ConversationContextItem).where(
+            ConversationContextItem.id == item_id,
+            ConversationContextItem.conversation_id == conversation_id,
+        )
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Kontext-Dokument nicht gefunden")
+    if "pinned" in body:
+        item.pinned = bool(body["pinned"])
+    await db.flush()
+    return {"id": str(item.id), "pinned": item.pinned}
+
+
+@router.delete("/conversations/{conversation_id}/context-items/{item_id}")
+async def delete_context_item(
+    conversation_id: uuid.UUID,
+    item_id: uuid.UUID,
+    user: User = Depends(require_role("owner")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Kontext-Dokument endgültig aus der Konversation entfernen."""
+    from app.models import ConversationContextItem
+
+    result = await db.execute(
+        select(ConversationContextItem).where(
+            ConversationContextItem.id == item_id,
+            ConversationContextItem.conversation_id == conversation_id,
+        )
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Kontext-Dokument nicht gefunden")
+    await db.delete(item)
+    return {"ok": True}
 
 
 @router.get("/conversations")
@@ -408,6 +447,65 @@ async def batch_save_messages(
     return {"ok": True, "saved": saved}
 
 
+def _is_gemini_deep_research(m: str) -> bool:
+    return m.startswith("gemini/deep-research") or m in (
+        "deep-research-preview-04-2026",
+        "deep-research-max-preview-04-2026",
+    )
+
+
+def _build_research_briefing(
+    user_content: str,
+    history: list[dict],
+    pinned_block: str,
+) -> str:
+    """Research-Briefing für Deep Research: Verlauf + angepinnte Dokumente.
+
+    Deep Research (Gemini Interactions API) ist zustandslos — vorher ging nur
+    die nackte Frage raus und Rückfragen verloren jeden Bezug. Das Briefing
+    liefert den Konversationskontext und die angepinnten Dokumente mit, damit
+    Folge-Recherchen auf dem Gesprächsstand aufsetzen.
+    """
+    parts: list[str] = []
+    if pinned_block:
+        parts.append(
+            "## Angehängte Dokumente (Kontext der Konversation)\n\n"
+            + pinned_block[:60_000]
+        )
+    if history:
+        lines = []
+        for m in history[-12:]:
+            role = "Frage" if m["role"] == "user" else "Antwort"
+            content = m["content"]
+            if len(content) > 2500:
+                content = content[:2500] + " […]"
+            lines.append(f"**{role}:** {content}")
+        parts.append("## Bisheriger Gesprächsverlauf\n\n" + "\n\n".join(lines))
+    parts.append("## Rechercheauftrag\n\n" + user_content)
+    if len(parts) == 1:
+        return user_content
+    return (
+        "Kontext für diese Recherche (Konversation mit Vorwissen):\n\n"
+        + "\n\n".join(parts)
+    )
+
+
+# <think>-Tags aus Antworten separieren (Qwen/Perplexity liefern Reasoning teils inline).
+_THINK_RE = None
+
+
+def _split_think_tags(text: str) -> tuple[str, str]:
+    """Trennt ``<think>…</think>``-Blöcke vom sichtbaren Antwort-Text."""
+    import re
+
+    global _THINK_RE
+    if _THINK_RE is None:
+        _THINK_RE = re.compile(r"<think>(.*?)</think>\s*", re.DOTALL)
+    thinking_parts = _THINK_RE.findall(text)
+    cleaned = _THINK_RE.sub("", text).strip()
+    return cleaned, "\n".join(t.strip() for t in thinking_parts)
+
+
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(
     conversation_id: uuid.UUID,
@@ -415,7 +513,21 @@ async def send_message(
     user: User = Depends(require_role("owner")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Nachricht senden und LLM-Antwort als SSE streamen."""
+    """Nachricht senden und LLM-Antwort als SSE streamen (Hermes-Runtime).
+
+    Der Plain-Chat läuft seit der Kontext-Vereinheitlichung auf derselben
+    Hermes-Runtime wie der Agent-Modus (Preset ``chat``: keine Tools, aber
+    Session-Kompression, grosszügiges Verlaufsfenster und angepinnte
+    Dokumente). Der frühere litellm-Direktpfad mit 24k-Zeichen-Fenster ist
+    abgelöst. Ausnahme: Gemini Deep Research (Interactions API, eigener Pfad).
+    """
+    from app.services.conversation_context import (
+        build_conversation_history,
+        build_pinned_context_block,
+        load_pinned_items,
+        persist_context_sources,
+    )
+
     result = await db.execute(
         select(LlmConversation)
         .options(selectinload(LlmConversation.messages))
@@ -438,25 +550,54 @@ async def send_message(
     db.add(user_msg)
     await db.flush()
 
+    # Chat-Lernkanal auch im Plain-Chat: "merk dir ..."-Absicht erfassen ->
+    # Regel-Vorschlag (HITL).
+    try:
+        from app.services.learning import extract_teach_intent, record_chat_teach
+
+        lesson = extract_teach_intent(user_content)
+        if lesson:
+            await record_chat_teach(db, content=lesson, conversation_id=str(conv.id))
+    except Exception:  # noqa: BLE001 - best-effort, darf den Chat nie blockieren
+        logger.warning("Chat-Teach-Erfassung (Plain-Chat) fehlgeschlagen")
+
     if not conv.title and len(conv.messages) <= 1:
         conv.title = user_content[:80] + ("..." if len(user_content) > 80 else "")
 
-    # Inhalte angehängter Dokumente serverseitig extrahieren und als Kontext-Block
-    # vor die aktuelle Frage stellen (funktioniert auch ohne Tool-Zugriff).
-    attached_context = await _resolve_attached_context(context_sources)
+    # Modellwechsel-Fix: Das im Request mitgesendete Modell gilt sofort für
+    # diese Antwort (und wird an der Konversation persistiert).
+    if body.get("model"):
+        conv.model = str(body["model"])
+    if body.get("temperature") is not None:
+        try:
+            conv.temperature = float(body["temperature"])
+        except (TypeError, ValueError):
+            pass
 
-    messages_for_llm = [{"role": "system", "content": _PLAIN_CHAT_TOOL_HINT}]
-    for msg in conv.messages:
-        messages_for_llm.append({"role": msg.role, "content": msg.content})
-    if attached_context:
-        messages_for_llm.append({
+    # Dokumente an die Konversation pinnen (einmalige Extraktion) und den
+    # gesamten angepinnten Korpus für diesen Turn laden — Dokumente bleiben
+    # damit über die ganze Konversation sichtbar, nicht nur im Upload-Request.
+    await persist_context_sources(db, conv.id, context_sources)
+    pinned_items = await load_pinned_items(db, conv.id)
+    pinned_block = build_pinned_context_block(pinned_items)
+
+    # Verlauf als echtes Message-Array (tokenbudgetiert, grosszügig) — die
+    # Hermes-Session-Kompression übernimmt bei sehr langen Konversationen.
+    history = build_conversation_history(
+        [m for m in conv.messages if m.id != user_msg.id]
+    )
+    # Für die Hermes-Runtime steht der angepinnte Dokument-Korpus am Anfang
+    # des Verlaufs (stabiler Präfix → prompt-cache-freundlich).
+    hermes_history = history
+    if pinned_block:
+        hermes_history = [{
             "role": "user",
             "content": (
-                "Die folgenden Dokumente wurden als Kontext angehängt. "
-                "Beziehe dich bei deiner Antwort darauf:\n\n" + attached_context
+                "Folgende Dokumente sind in dieser Konversation angepinnt und "
+                "bleiben dauerhaft verfügbar. Beziehe dich bei Antworten darauf:\n\n"
+                + pinned_block
             ),
-        })
-    messages_for_llm.append({"role": "user", "content": user_content})
+        }, *history]
 
     await db.commit()
 
@@ -464,34 +605,17 @@ async def send_message(
     model = conv.model
     temperature = conv.temperature
 
-    def _setup_api_keys():
-        """API-Keys als Env-Vars setzen, damit litellm sie findet."""
-        s = get_settings()
-        if s.openai_api_key:
-            os.environ["OPENAI_API_KEY"] = s.openai_api_key
-        if s.anthropic_api_key:
-            os.environ["ANTHROPIC_API_KEY"] = s.anthropic_api_key
-        if s.gemini_api_key:
-            os.environ["GEMINI_API_KEY"] = s.gemini_api_key
-        if s.perplexity_api_key:
-            os.environ["PERPLEXITYAI_API_KEY"] = s.perplexity_api_key
-
-    def _is_gemini_deep_research(m: str) -> bool:
-        return m.startswith("gemini/deep-research") or m in (
-            "deep-research-preview-04-2026",
-            "deep-research-max-preview-04-2026",
-        )
-
     async def generate_gemini_research():
-        """Gemini Deep Research via Interactions API."""
+        """Gemini Deep Research via Interactions API (mit Kontext-Briefing)."""
         from app.services.gemini_research import stream_research
 
         full_response = ""
         full_thinking = ""
         gemini_model = model.replace("gemini/", "") if model.startswith("gemini/") else None
+        briefing = _build_research_briefing(user_content, history, pinned_block)
 
         try:
-            async for event in stream_research(user_content, model=gemini_model):
+            async for event in stream_research(briefing, model=gemini_model):
                 if event["type"] == "thought":
                     full_thinking += event["content"] + "\n"
                     yield {"event": "thinking", "data": json.dumps({"content": event["content"]})}
@@ -537,101 +661,134 @@ async def send_message(
     if _is_gemini_deep_research(model):
         return EventSourceResponse(generate_gemini_research())
 
-    async def generate():
-        _setup_api_keys()
-        full_response = ""
-        full_thinking = ""
-        total_tokens_used = 0
-        reasoning_tokens = 0
-        cost_usd = 0.0
+    async def generate_hermes_chat():
+        """Plain-Chat auf der Hermes-Runtime (Preset ``chat``, keine Tools).
 
-        extra_params: dict = {}
-        if not model.startswith("ollama/"):
-            thinking_enabled = _should_enable_thinking(model)
-            if thinking_enabled:
-                if model.startswith("anthropic/"):
-                    extra_params["thinking"] = {"type": "enabled", "budget_tokens": 8192}
-                else:
-                    extra_params["thinking"] = {"type": "enabled"}
+        Die synchronen Hermes-Callbacks (Text/Reasoning) werden threadsicher
+        in eine ``asyncio.Queue`` gebrückt und als dieselben SSE-Events wie
+        bisher gestreamt (``thinking``/``chunk``/``done``/``error``) — das
+        Frontend bleibt unverändert. Bricht der Client ab, wird der Agent
+        via ``interrupt()`` kooperativ gestoppt.
+        """
+        from app.services.hermes_worker import build_chat_agent, ensure_runtime_ready
 
-        try:
-            response = await litellm.acompletion(
-                model=model,
-                messages=messages_for_llm,
-                temperature=temperature if not extra_params.get("thinking") else 1.0,
-                stream=True,
-                api_base=get_settings().ollama_base_url if model.startswith("ollama/") else None,
-                **extra_params,
-            )
-
-            _first_delta_logged = False
-            async for chunk in response:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta:
-                    if not _first_delta_logged:
-                        _attrs = {k: v for k, v in vars(delta).items() if v is not None and k != "content"}
-                        if _attrs:
-                            logger.debug("[Thinking-Debug] model=%s first delta attrs: %s", model, _attrs)
-                        _first_delta_logged = True
-
-                    rc = getattr(delta, "reasoning_content", None)
-                    if not rc:
-                        rc = getattr(delta, "thinking", None)
-                    if not rc and hasattr(delta, "thinking_blocks"):
-                        blocks = delta.thinking_blocks or []
-                        if blocks and isinstance(blocks, list):
-                            block = blocks[0]
-                            rc = block.get("thinking", "") if isinstance(block, dict) else getattr(block, "thinking", "")
-
-                    if rc:
-                        full_thinking += rc
-                        yield {
-                            "event": "thinking",
-                            "data": json.dumps({"content": rc}),
-                        }
-                    if delta.content:
-                        full_response += delta.content
-                        yield {
-                            "event": "chunk",
-                            "data": json.dumps({"content": delta.content}),
-                        }
-                if hasattr(chunk, "usage") and chunk.usage:
-                    total_tokens_used = getattr(chunk.usage, "total_tokens", 0) or 0
-                    details = getattr(chunk.usage, "completion_tokens_details", None)
-                    if details:
-                        reasoning_tokens = getattr(details, "reasoning_tokens", 0) or 0
-
-        except Exception as e:
-            logger.exception("Streaming-Fehler mit Modell %s", model)
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": "LLM-Streaming fehlgeschlagen"}),
-            }
+        if not await ensure_runtime_ready():
+            yield {"event": "error", "data": json.dumps({"error": "LLM-Runtime nicht verfügbar"})}
             return
 
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _emit(evt_type: str, payload: str):
+            loop.call_soon_threadsafe(queue.put_nowait, (evt_type, payload))
+
+        def on_text(text: str):
+            if text:
+                _emit("chunk", text)
+
+        def on_reasoning(text: str):
+            if text:
+                _emit("thinking", text)
+
         try:
-            cost_usd = litellm.cost_calculator.completion_cost(
-                model=model,
-                prompt=str(messages_for_llm),
-                completion=full_response,
+            agent = await asyncio.to_thread(
+                build_chat_agent,
+                model,
+                preset="chat",
+                temperature=temperature,
+                on_text=on_text,
+                on_reasoning=on_reasoning,
+                # Eigener Session-Namespace pro Preset: die Plain-Chat-Session
+                # (ohne Tools) darf die Agent-Session derselben Konversation
+                # nicht überschreiben, falls der Modus gewechselt wird.
+                session_id=f"chatplain-{conv_id_str}",
             )
         except Exception:
-            pass
+            logger.exception("Chat-Agent-Init fehlgeschlagen (Modell %s)", model)
+            yield {"event": "error", "data": json.dumps({"error": "LLM-Initialisierung fehlgeschlagen"})}
+            return
 
-        # <think>-Tags aus dem Content separieren (Perplexity Deep Research)
-        import re
-        clean_response = full_response
-        think_match = re.search(r"<think>(.*?)</think>", full_response, re.DOTALL)
-        if think_match:
-            if not full_thinking:
-                full_thinking = think_match.group(1).strip()
-            clean_response = re.sub(r"<think>.*?</think>\s*", "", full_response, flags=re.DOTALL).strip()
+        def _run_sync() -> str:
+            result = agent.run_conversation(
+                user_content,
+                system_message=_PLAIN_CHAT_TOOL_HINT,
+                conversation_history=list(hermes_history),
+            )
+            if isinstance(result, dict):
+                return str(result.get("final_response") or "")
+            return str(result or "")
+
+        bot_task = asyncio.create_task(asyncio.to_thread(_run_sync))
+        bot_task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+
+        full_response = ""
+        full_thinking = ""
+        try:
+            while not bot_task.done():
+                try:
+                    evt_type, payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": json.dumps({"ts": int(time.time())})}
+                    continue
+                if evt_type == "chunk":
+                    full_response += payload
+                    yield {"event": "chunk", "data": json.dumps({"content": payload})}
+                elif evt_type == "thinking":
+                    full_thinking += payload
+                    yield {"event": "thinking", "data": json.dumps({"content": payload})}
+
+            while not queue.empty():
+                evt_type, payload = queue.get_nowait()
+                if evt_type == "chunk":
+                    full_response += payload
+                    yield {"event": "chunk", "data": json.dumps({"content": payload})}
+                elif evt_type == "thinking":
+                    full_thinking += payload
+                    yield {"event": "thinking", "data": json.dumps({"content": payload})}
+
+            final = bot_task.result()
+        except asyncio.CancelledError:
+            # Client hat abgebrochen: Hermes kooperativ stoppen, nichts speichern.
+            try:
+                agent.interrupt("Vom Benutzer abgebrochen.")
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        except Exception:
+            logger.exception("Hermes-Chat fehlgeschlagen (Modell %s)", model)
+            yield {"event": "error", "data": json.dumps({"error": "LLM-Antwort fehlgeschlagen"})}
+            return
+
+        if final and not full_response:
+            # Kein Streaming (z. B. Modell ohne Delta-Support): Komplettantwort senden.
+            clean, extra_think = _split_think_tags(final)
+            if extra_think and not full_thinking:
+                full_thinking = extra_think
+            full_response = clean
+            yield {"event": "chunk", "data": json.dumps({"content": clean})}
+        else:
+            clean, extra_think = _split_think_tags(full_response or final)
+            if extra_think and not full_thinking:
+                full_thinking = extra_think
+            full_response = clean
+
+        total_tokens_used = int(getattr(agent, "session_total_tokens", 0) or 0)
+        cost_usd = 0.0
+        if not model.startswith("ollama/") and model not in ("hermes", "nanobot", ""):
+            try:
+                cost_usd = litellm.cost_calculator.completion_cost(
+                    model=model,
+                    prompt="\n".join(m["content"] for m in hermes_history) + user_content,
+                    completion=full_response,
+                )
+            except Exception:  # noqa: BLE001 - Kostenberechnung ist best-effort
+                pass
 
         async with async_session() as save_db:
             assistant_msg = LlmMessage(
                 conversation_id=uuid.UUID(conv_id_str),
                 role="assistant",
-                content=clean_response,
+                content=full_response,
                 model=model,
                 tokens=total_tokens_used,
                 cost_usd=cost_usd if cost_usd > 0 else None,
@@ -652,15 +809,15 @@ async def send_message(
             "data": json.dumps({
                 "message_id": str(assistant_msg.id),
                 "tokens": total_tokens_used,
-                "reasoning_tokens": reasoning_tokens,
+                "reasoning_tokens": 0,
                 "cost_usd": round(cost_usd, 6) if cost_usd > 0 else None,
-                "content": clean_response,
-                "thinking": full_thinking if full_thinking else None,
+                "content": full_response,
+                "thinking": full_thinking.strip() if full_thinking else None,
                 "model": model,
             }),
         }
 
-    return EventSourceResponse(generate())
+    return EventSourceResponse(generate_hermes_chat())
 
 
 @router.post("/messages/{message_id}/create-task")
@@ -894,16 +1051,69 @@ def _get_configured_mcp_servers() -> dict:
         return {}
 
 
-def _build_agent_prompt(
+async def _build_task_briefing(task_id) -> str:
+    """Task-Briefing für Konversationen mit verknüpfter Task (``task_id``).
+
+    Nutzt den vollständigen Auftragskontext des Workers (Titel, Beschreibung,
+    Checkliste, Anhänge, Tags, Referenzen), damit «Mit Agent besprechen» direkt
+    mit dem ganzen Task-Wissen startet. Best-effort: leerer String bei Fehlern.
+    """
+    if not task_id:
+        return ""
+    try:
+        from sqlalchemy.orm import selectinload as _selectinload
+
+        from app.services.hermes_worker import _format_task_context
+
+        async with async_session() as db:
+            task = (
+                await db.execute(
+                    select(Task)
+                    .options(
+                        _selectinload(Task.checklist_items),
+                        _selectinload(Task.attachments),
+                        _selectinload(Task.tags),
+                    )
+                    .where(Task.id == task_id)
+                )
+            ).scalar_one_or_none()
+        if not task:
+            return ""
+        return (
+            "\n## Verknüpfte Aufgabe (Kontext dieser Konversation)\n\n"
+            "Diese Konversation ist mit folgender TaskPilot-Aufgabe verknüpft. "
+            "Beziehe dich bei deinen Antworten darauf:\n\n"
+            f"{_format_task_context(task)}\n"
+        )
+    except Exception:  # noqa: BLE001 - best-effort, darf den Chat nie blockieren
+        logger.warning("Task-Briefing für Konversation konnte nicht geladen werden")
+        return ""
+
+
+async def _build_agent_prompt(
     user_content: str,
-    conversation_messages: list,
-    attached_context: str = "",
+    task_id=None,
 ) -> str:
-    """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Hermes-Agent via MCP."""
-    from datetime import datetime, timezone as tz
+    """Baut einen schlanken Prompt — Tool-Definitionen kommen nativ vom Hermes-Agent via MCP.
+
+    Der Konversationsverlauf und angepinnte Dokumente werden NICHT mehr in den
+    Prompt-String dupliziert: sie laufen als echtes Message-Array über
+    ``run_conversation(conversation_history=...)`` (siehe ``send_agent_message``).
+    """
+    from datetime import datetime
     from zoneinfo import ZoneInfo
 
     skills_text = _load_agent_skills()
+
+    # Lern-Schicht (Paritaet mit der E-Mail-Triage): freigegebene Leitregeln im
+    # Chat-Kontext + gelernte Lektionen aus aehnlichen frueheren Faellen.
+    from app.services.hermes_worker import _build_recall_block, _build_rules_block
+
+    rules_block = await _build_rules_block("chat")
+    recall_block = await _build_recall_block(
+        {}, job_type=None, query=user_content[:400],
+    )
+    task_briefing = await _build_task_briefing(task_id)
 
     now_zurich = datetime.now(ZoneInfo("Europe/Zurich"))
     date_context = now_zurich.strftime("%A, %d. %B %Y, %H:%M Uhr")
@@ -928,21 +1138,6 @@ def _build_agent_prompt(
         f"'Nächste Woche' (Mo–Fr, beginnt am nächsten Montag): {_week_line(next_monday)}."
     )
 
-    history_lines = []
-    for msg in conversation_messages[-10:]:
-        role_label = "User" if msg.role == "user" else "Assistant"
-        history_lines.append(f"**{role_label}:** {msg.content[:500]}")
-    history_block = "\n\n".join(history_lines) if history_lines else "(Erste Nachricht)"
-
-    attached_block = ""
-    if attached_context:
-        attached_block = (
-            "\n## Angehängte Dokumente\n\n"
-            "Anthony hat folgende Dokumente angehängt. Nutze ihren Inhalt direkt. "
-            "Weitere/grössere Dateien kannst du bei Bedarf mit download_file nachladen.\n\n"
-            f"{attached_context}\n"
-        )
-
     return f"""Du bist InnoPilot, der KI-Agent von Anthony Smith (InnoSmith GmbH, Schweiz).
 Du hast direkten Zugriff auf Firmendaten über deine MCP-Tools (siehst du in deiner Tool-Liste).
 Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
@@ -962,6 +1157,7 @@ Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
 - Öffentliche/aktuelle Recherche im Internet (News, Studien, Markt, Personen, Firmen): Nutze IMMER `web_search` (und `web_extract` für Detailseiten). Das ist die agentische Web-Recherche.
 - WICHTIG — SIGNA ist NICHT das Internet: `semantic_search_signals`/`search_signals` durchsuchen NUR die interne strategische Signal-Datenbank (ISI). Nutze SIGNA ausschliesslich, wenn explizit nach SIGNA-Signalen/Briefings gefragt wird — NICHT für allgemeine Web-Recherche. Bei „recherchiere aktuelle Entwicklungen im Internet" → `web_search`, nicht SIGNA.
 - CRM-Suche (Pipedrive): `search_crm` mit EINEM kurzen Begriff (Name, Firma, E-Mail) aufrufen, nicht mit ganzen Themensätzen. item_types im Singular (deal,person,organization).
+- Angepinnte Dokumente: Dokumente, die Anthony in dieser Konversation angehängt hat, stehen vollständig im Verlauf (als «angepinnt» markiert). Nutze ihren Inhalt direkt — lade sie NICHT erneut mit download_file.
 - Frühere Gespräche: Wenn Anthony sich auf etwas Früheres bezieht ("wie letzte Woche besprochen"), durchsuche den Verlauf mit session_search, bevor du nachfragst.
 - Dauerhaftes Wissen: Lernst du eine stabile Präferenz oder Tatsache über Anthony/Arbeitsweise, halte sie knapp mit dem memory-Tool fest.
 - Rückfragen bei Mehrdeutigkeit: Ist der Auftrag unklar oder gibt es mehrere sinnvolle Wege, stelle mit dem clarify-Tool eine kurze, strukturierte Rückfrage statt zu raten.
@@ -974,11 +1170,7 @@ Nutze deine Tools aktiv. Behaupte niemals, du hättest keinen Zugriff.
 ## Verfügbare Skills (bei Bedarf mit skill_view laden)
 
 {skills_text}
-{attached_block}
-## Chat-Verlauf
-
-{history_block}
-
+{rules_block}{recall_block}{task_briefing}
 ## Anfrage
 
 {user_content}"""
@@ -1066,6 +1258,7 @@ async def send_agent_message(
         conversation_id=conv.id,
         role="user",
         content=user_content,
+        attachments=body.get("attachments", []),
     )
     db.add(user_msg)
     await db.flush()
@@ -1083,12 +1276,39 @@ async def send_agent_message(
     if not conv.title and len(conv.messages) <= 1:
         conv.title = user_content[:80] + ("..." if len(user_content) > 80 else "")
 
-    # Inhalte angehängter Dokumente extrahieren und in den Agent-Prompt einbetten
-    # (zusätzlich zu den On-Demand-Tools search_files/download_file).
-    attached_context = await _resolve_attached_context(context_sources)
+    # Dokumente an die Konversation pinnen (einmalige Extraktion) und den
+    # gesamten angepinnten Korpus laden — identische Kontext-Pipeline wie im
+    # Plain-Chat: Dokumente bleiben über die ganze Konversation sichtbar.
+    from app.services.conversation_context import (
+        build_conversation_history,
+        build_pinned_context_block,
+        load_pinned_items,
+        persist_context_sources,
+    )
 
-    sorted_messages = sorted(conv.messages, key=lambda m: m.created_at)
-    full_prompt = _build_agent_prompt(user_content, sorted_messages, attached_context)
+    await persist_context_sources(db, conv.id, context_sources)
+    pinned_items = await load_pinned_items(db, conv.id)
+    pinned_block = build_pinned_context_block(pinned_items)
+
+    # Verlauf ohne die soeben gespeicherte User-Nachricht — sie steht bereits
+    # als '## Anfrage' im Prompt. Der Verlauf geht als echtes Message-Array an
+    # die Hermes-Runtime (conversation_history) statt als gekürzter Textblock.
+    sorted_messages = sorted(
+        (m for m in conv.messages if m.id != user_msg.id),
+        key=lambda m: m.created_at,
+    )
+    conversation_history = build_conversation_history(sorted_messages)
+    if pinned_block:
+        conversation_history = [{
+            "role": "user",
+            "content": (
+                "Folgende Dokumente sind in dieser Konversation angepinnt und "
+                "bleiben dauerhaft verfügbar. Nutze ihren Inhalt direkt:\n\n"
+                + pinned_block
+            ),
+        }, *conversation_history]
+
+    full_prompt = await _build_agent_prompt(user_content, task_id=conv.task_id)
 
     agent_job = AgentJob(
         job_type="chat_agent",
@@ -1120,6 +1340,7 @@ async def send_agent_message(
             selected_model,
             enabled_servers=grounding["enabled_servers"],
             include_memory=grounding["include_memory"],
+            conversation_history=conversation_history,
         )
     )
 
@@ -1138,6 +1359,7 @@ async def _run_agent_background(
     *,
     enabled_servers: list[str] | None = None,
     include_memory: bool = False,
+    conversation_history: list[dict] | None = None,
 ):
     """Führt den Hermes-Agent (InnoPilot) als Background-Task aus.
 
@@ -1242,8 +1464,60 @@ async def _run_agent_background(
         _trace_append(event)
         _emit("tool_start", str(name))
 
+    def _web_search_provider() -> str:
+        """Tatsächliches Such-Backend der Hermes-nativen Websuche (z. B. ddgs).
+
+        Für den Datenschutz-Audit-Trail soll nachvollziehbar sein, WOHIN die
+        Query ging -- nicht nur, dass Hermes gesucht hat. Fallback: 'hermes'.
+        """
+        try:
+            from tools.web_tools import _get_search_backend
+
+            return _get_search_backend() or "hermes"
+        except Exception:  # noqa: BLE001 - Audit-Log darf den Agenten nie stören
+            return "hermes"
+
+    async def _log_web_search(query: str, result_preview: str):
+        """Hermes-native Websuche in ``web_searches`` historisieren (Audit-Parität).
+
+        Ersetzt das Logging des abgelösten Tavily-Modus: jede agentische Suche
+        bleibt damit im Suchverlauf nachvollziehbar. Best-effort.
+        """
+        try:
+            from app.models.models import WebSearch
+
+            async with async_session() as wdb:
+                wdb.add(WebSearch(
+                    query=query[:500],
+                    provider=_web_search_provider(),
+                    results=[{"content": result_preview[:2000]}] if result_preview else [],
+                    result_count=1 if result_preview else 0,
+                    triggered_by="agent",
+                    conversation_id=uuid.UUID(conv_id),
+                    credits_used=0,
+                ))
+                await wdb.commit()
+        except Exception:  # noqa: BLE001 - Audit-Log darf den Agenten nie stören
+            logger.warning("web_search-Audit-Log fehlgeschlagen")
+
     def on_tool_complete(tc_id, name, args, result):
         _trace_append({"type": "tool_complete", "name": str(name), "result": str(result)[:500]})
+        # Audit-Parität: Hermes-native web_search-Aufrufe historisieren.
+        # Exakter Abgleich -- ein Substring-Match hatte frueher auch
+        # mcp_taskpilot_web_search erfasst und Duplikate erzeugt.
+        if str(name) == "web_search":
+            query = ""
+            try:
+                if isinstance(args, dict):
+                    query = str(args.get("query") or "")
+                elif isinstance(args, str) and args.strip().startswith("{"):
+                    query = str((json.loads(args) or {}).get("query") or "")
+            except Exception:  # noqa: BLE001
+                query = ""
+            if query:
+                asyncio.run_coroutine_threadsafe(
+                    _log_web_search(query, str(result or "")), loop
+                )
         _emit("tool_event", json.dumps(
             {"tool": str(name), "result": str(result)[:500]}, ensure_ascii=False
         ))
@@ -1312,7 +1586,10 @@ async def _run_agent_background(
                 conv_id, active_model, len(prompt))
 
     def _run_sync() -> str:
-        result = agent.run_conversation(prompt)
+        result = agent.run_conversation(
+            prompt,
+            conversation_history=list(conversation_history or []),
+        )
         if isinstance(result, dict):
             return str(result.get("final_response") or "")
         return str(result or "")
@@ -1385,20 +1662,33 @@ async def _run_agent_background(
         asyncio.create_task(_cleanup_agent_events(job_id))
         return
 
+    # Token-Tracking: Hermes akkumuliert die tatsächliche Usage des Laufs
+    # (alle Iterationen inkl. Tool-Turns) auf dem frisch gebauten Agenten.
+    total_tokens_used = int(getattr(agent, "session_total_tokens", 0) or 0)
+
     async with async_session() as save_db:
         assistant_msg = LlmMessage(
             conversation_id=uuid.UUID(conv_id),
             role="assistant",
             content=content,
+            model=model if model not in ("hermes", "nanobot", "") else None,
+            tokens=total_tokens_used or None,
         )
         save_db.add(assistant_msg)
+        if total_tokens_used:
+            conv_res = await save_db.execute(
+                select(LlmConversation).where(LlmConversation.id == uuid.UUID(conv_id))
+            )
+            conv_update = conv_res.scalar_one_or_none()
+            if conv_update:
+                conv_update.total_tokens = (conv_update.total_tokens or 0) + total_tokens_used
         await save_db.commit()
 
     await _update_agent_job("completed", output=content, tools_used=tools_used, trace=list(_trace))
 
     await _push_agent_event(job_id, {"event": "done", "data": json.dumps({
         "message_id": str(assistant_msg.id),
-        "tokens": 0,
+        "tokens": total_tokens_used,
         "content": content,
         "tools_used": tools_used,
         "elapsed_s": round(time.time() - t_start, 1),

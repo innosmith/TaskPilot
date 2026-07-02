@@ -1,0 +1,307 @@
+"""Tests für die proaktiven Assistenzfunktionen.
+
+Abgedeckt (rein deterministisch, ohne DB/Netz):
+- Briefing-Scheduler: Soll-Zeitpunkt-Berechnung (Daily/Weekly/Monthly)
+- Meeting-Pipeline: VTT-Parser, Chunking, Anonymisierung (Regex + Pseudonyme)
+- Follow-up-Erkennung: Arbeitstage, Antwort-Erkennung, Empfänger-Extraktion
+"""
+
+from datetime import datetime, date, timezone
+from zoneinfo import ZoneInfo
+
+from app.services.briefing import _parse_time, _scheduled_for
+from app.services.followup import (
+    _NOREPLY_RE,
+    _first_recipient,
+    _has_reply,
+    _workdays_since,
+)
+from app.services.meetings import (
+    _letter_label,
+    apply_pseudonyms,
+    chunk_transcript,
+    mask_deterministic,
+    parse_vtt,
+)
+
+_TZ = ZoneInfo("Europe/Zurich")
+
+
+# ── Briefing-Scheduler ────────────────────────────────────────────────────────
+
+class TestScheduledFor:
+    def test_daily_werktag_nach_sollzeit(self):
+        # Donnerstag 2026-07-02 08:00 -> Soll heute 06:30
+        now = datetime(2026, 7, 2, 8, 0, tzinfo=_TZ)
+        result = _scheduled_for("daily_briefing", {}, now)
+        assert result == datetime(2026, 7, 2, 6, 30, tzinfo=_TZ)
+
+    def test_daily_vor_sollzeit_nimmt_vortag(self):
+        # Donnerstag 05:00 -> jüngster Werktag-Slot ist Mittwoch 06:30
+        now = datetime(2026, 7, 2, 5, 0, tzinfo=_TZ)
+        result = _scheduled_for("daily_briefing", {}, now)
+        assert result == datetime(2026, 7, 1, 6, 30, tzinfo=_TZ)
+
+    def test_daily_wochenende_springt_auf_freitag(self):
+        # Sonntag 2026-07-05 10:00 -> jüngster Werktag ist Freitag 03.07.
+        now = datetime(2026, 7, 5, 10, 0, tzinfo=_TZ)
+        result = _scheduled_for("daily_briefing", {}, now)
+        assert result == datetime(2026, 7, 3, 6, 30, tzinfo=_TZ)
+
+    def test_daily_deaktiviert(self):
+        now = datetime(2026, 7, 2, 8, 0, tzinfo=_TZ)
+        assert _scheduled_for("daily_briefing", {"briefing_daily_enabled": False}, now) is None
+
+    def test_daily_eigene_uhrzeit(self):
+        now = datetime(2026, 7, 2, 9, 0, tzinfo=_TZ)
+        result = _scheduled_for("daily_briefing", {"briefing_daily_time": "08:15"}, now)
+        assert result == datetime(2026, 7, 2, 8, 15, tzinfo=_TZ)
+
+    def test_weekly_default_sonntag(self):
+        # Montag 2026-07-06 09:00 -> jüngster Sonntag-Slot war 05.07. 17:00
+        now = datetime(2026, 7, 6, 9, 0, tzinfo=_TZ)
+        result = _scheduled_for("weekly_briefing", {}, now)
+        assert result == datetime(2026, 7, 5, 17, 0, tzinfo=_TZ)
+
+    def test_weekly_slot_heute_noch_nicht_erreicht(self):
+        # Sonntag 10:00, Slot 17:00 -> Vorwoche
+        now = datetime(2026, 7, 5, 10, 0, tzinfo=_TZ)
+        result = _scheduled_for("weekly_briefing", {}, now)
+        assert result == datetime(2026, 6, 28, 17, 0, tzinfo=_TZ)
+
+    def test_weekly_eigener_tag(self):
+        # Freitag als Weekly-Tag; Samstag 10:00 -> gestriger Freitag-Slot
+        now = datetime(2026, 7, 4, 10, 0, tzinfo=_TZ)
+        result = _scheduled_for("weekly_briefing", {"briefing_weekly_day": 4}, now)
+        assert result == datetime(2026, 7, 3, 17, 0, tzinfo=_TZ)
+
+    def test_monthly_letzter_kalendertag(self):
+        # 31.07. 18:00 -> Slot heute 17:00
+        now = datetime(2026, 7, 31, 18, 0, tzinfo=_TZ)
+        result = _scheduled_for("monthly_briefing", {}, now)
+        assert result == datetime(2026, 7, 31, 17, 0, tzinfo=_TZ)
+
+    def test_monthly_mitte_monat_nimmt_vormonat(self):
+        now = datetime(2026, 7, 15, 12, 0, tzinfo=_TZ)
+        result = _scheduled_for("monthly_briefing", {}, now)
+        assert result == datetime(2026, 6, 30, 17, 0, tzinfo=_TZ)
+
+    def test_unbekannter_typ(self):
+        now = datetime(2026, 7, 2, 8, 0, tzinfo=_TZ)
+        assert _scheduled_for("quarterly_briefing", {}, now) is None
+
+
+class TestParseTime:
+    def test_gueltig(self):
+        t = _parse_time("07:45", "06:30")
+        assert (t.hour, t.minute) == (7, 45)
+
+    def test_ungueltig_faellt_auf_default(self):
+        t = _parse_time("kaputt", "06:30")
+        assert (t.hour, t.minute) == (6, 30)
+
+    def test_none_faellt_auf_default(self):
+        t = _parse_time(None, "17:00")
+        assert (t.hour, t.minute) == (17, 0)
+
+
+# ── VTT-Parser + Chunking ─────────────────────────────────────────────────────
+
+SAMPLE_VTT = """WEBVTT
+
+a1b2c3d4-0001/1-0
+00:00:01.000 --> 00:00:04.000
+<v Anthony Smith>Guten Morgen zusammen.</v>
+
+a1b2c3d4-0002/2-0
+00:00:04.500 --> 00:00:08.000
+<v Anthony Smith>Fangen wir mit dem Status an.</v>
+
+a1b2c3d4-0003/3-0
+00:00:08.500 --> 00:00:12.000
+<v Petra Muster>Das Backend ist bereit für den Test.</v>
+"""
+
+
+class TestParseVtt:
+    def test_sprecher_attribuiert(self):
+        text = parse_vtt(SAMPLE_VTT)
+        assert "**Anthony Smith:**" in text
+        assert "**Petra Muster:**" in text
+        assert "Backend ist bereit" in text
+
+    def test_caption_merge_gleicher_sprecher(self):
+        text = parse_vtt(SAMPLE_VTT)
+        # Beide Anthony-Captions verschmelzen zu einem Absatz
+        assert text.count("**Anthony Smith:**") == 1
+        assert "Guten Morgen zusammen. Fangen wir mit dem Status an." in text
+
+    def test_header_und_identifier_verworfen(self):
+        text = parse_vtt(SAMPLE_VTT)
+        assert "WEBVTT" not in text
+        assert "a1b2c3d4" not in text
+        assert "-->" not in text
+
+    def test_leerer_input(self):
+        assert parse_vtt("") == ""
+        assert parse_vtt("WEBVTT\n") == ""
+
+
+class TestChunkTranscript:
+    def test_kurzer_text_ein_chunk(self):
+        assert chunk_transcript("Hallo Welt", max_chars=100) == ["Hallo Welt"]
+
+    def test_langer_text_mehrere_chunks(self):
+        paras = [f"**Sprecher {i}:** " + ("bla " * 50) for i in range(20)]
+        text = "\n\n".join(paras)
+        chunks = chunk_transcript(text, max_chars=1000)
+        assert len(chunks) > 1
+        # Kein Absatz wird zerteilt: Zusammensetzen ergibt den Originaltext
+        assert "\n\n".join(chunks) == text
+
+    def test_chunkgrenzen_respektieren_max(self):
+        paras = ["x" * 400 for _ in range(10)]
+        chunks = chunk_transcript("\n\n".join(paras), max_chars=1000)
+        assert all(len(c) <= 1000 for c in chunks)
+
+
+# ── Anonymisierung ────────────────────────────────────────────────────────────
+
+class TestMaskDeterministic:
+    def test_email_maskiert(self):
+        mapping: dict[str, str] = {}
+        out = mask_deterministic("Bitte an anthony@innosmith.ch senden.", mapping)
+        assert "anthony@innosmith.ch" not in out
+        assert "[E-Mail 1]" in out
+        assert mapping["anthony@innosmith.ch"] == "[E-Mail 1]"
+
+    def test_telefon_maskiert(self):
+        mapping: dict[str, str] = {}
+        out = mask_deterministic("Erreichbar unter +41 79 123 45 67 heute.", mapping)
+        assert "79 123 45 67" not in out
+        assert "[Telefon 1]" in out
+
+    def test_konsistenz_bei_wiederholung(self):
+        mapping: dict[str, str] = {}
+        out = mask_deterministic("a@b.ch schreibt an a@b.ch und c@d.ch", mapping)
+        assert out.count("[E-Mail 1]") == 2
+        assert "[E-Mail 2]" in out
+
+    def test_mapping_wird_fortgefuehrt(self):
+        # Re-Run mit bestehendem Mapping vergibt keine doppelten Nummern
+        mapping = {"alt@firma.ch": "[E-Mail 1]"}
+        out = mask_deterministic("neu@firma.ch", mapping)
+        assert "[E-Mail 2]" in out
+
+
+class TestApplyPseudonyms:
+    def test_personen_und_firmen(self):
+        mapping: dict[str, str] = {}
+        names = [
+            {"name": "Petra Muster", "type": "person"},
+            {"name": "InnoSmith", "type": "org"},
+        ]
+        out = apply_pseudonyms("Petra Muster arbeitet bei InnoSmith.", names, mapping)
+        assert out == "Person A arbeitet bei Firma A."
+
+    def test_laengste_namen_zuerst(self):
+        # "Petra Muster" darf nicht durch ein separates "Petra" zerteilt werden
+        mapping: dict[str, str] = {}
+        names = [
+            {"name": "Petra", "type": "person"},
+            {"name": "Petra Muster", "type": "person"},
+        ]
+        out = apply_pseudonyms("Petra Muster und Petra.", names, mapping)
+        assert mapping["Petra Muster"] != mapping["Petra"]
+        assert "Muster" not in out
+
+    def test_wortgrenzen(self):
+        mapping: dict[str, str] = {}
+        names = [{"name": "Max", "type": "person"}]
+        out = apply_pseudonyms("Max nutzt Maximal viel.", names, mapping)
+        assert "Person A nutzt Maximal" in out
+
+    def test_mapping_konsistent_ueber_reruns(self):
+        mapping: dict[str, str] = {}
+        names = [{"name": "Petra", "type": "person"}]
+        apply_pseudonyms("Petra", names, mapping)
+        first = mapping["Petra"]
+        # Zweiter Lauf mit zusätzlichem Namen: bestehendes Mapping bleibt
+        names2 = [{"name": "Petra", "type": "person"}, {"name": "Hans", "type": "person"}]
+        apply_pseudonyms("Petra und Hans", names2, mapping)
+        assert mapping["Petra"] == first
+        assert mapping["Hans"] != first
+
+
+class TestLetterLabel:
+    def test_erste_buchstaben(self):
+        assert _letter_label(0) == "A"
+        assert _letter_label(1) == "B"
+        assert _letter_label(25) == "Z"
+
+    def test_ueberlauf_excel_stil(self):
+        assert _letter_label(26) == "AA"
+        assert _letter_label(27) == "AB"
+
+
+# ── Follow-up-Erkennung ───────────────────────────────────────────────────────
+
+class TestWorkdaysSince:
+    def test_gleiche_woche(self):
+        # Mo 29.06. -> Fr 03.07. = 4 Arbeitstage (Di, Mi, Do, Fr)
+        assert _workdays_since(date(2026, 6, 29), date(2026, 7, 3)) == 4
+
+    def test_wochenende_zaehlt_nicht(self):
+        # Fr 03.07. -> Mo 06.07. = 1 Arbeitstag (nur Montag)
+        assert _workdays_since(date(2026, 7, 3), date(2026, 7, 6)) == 1
+
+    def test_gleicher_tag(self):
+        assert _workdays_since(date(2026, 7, 3), date(2026, 7, 3)) == 0
+
+    def test_ende_vor_start(self):
+        assert _workdays_since(date(2026, 7, 6), date(2026, 7, 3)) == 0
+
+
+class TestHasReply:
+    SENT_AT = datetime(2026, 6, 25, 10, 0, tzinfo=timezone.utc)
+
+    @staticmethod
+    def _msg(sender: str, received: str) -> dict:
+        return {
+            "from": {"emailAddress": {"address": sender}},
+            "receivedDateTime": received,
+        }
+
+    def test_antwort_von_anderem_absender(self):
+        msgs = [self._msg("kunde@firma.ch", "2026-06-26T09:00:00Z")]
+        assert _has_reply(msgs, "anthony@innosmith.ch", self.SENT_AT) is True
+
+    def test_eigene_nachricht_zaehlt_nicht(self):
+        msgs = [self._msg("anthony@innosmith.ch", "2026-06-26T09:00:00Z")]
+        assert _has_reply(msgs, "anthony@innosmith.ch", self.SENT_AT) is False
+
+    def test_aeltere_nachricht_zaehlt_nicht(self):
+        msgs = [self._msg("kunde@firma.ch", "2026-06-24T09:00:00Z")]
+        assert _has_reply(msgs, "anthony@innosmith.ch", self.SENT_AT) is False
+
+    def test_leerer_thread(self):
+        assert _has_reply([], "anthony@innosmith.ch", self.SENT_AT) is False
+
+
+class TestFirstRecipient:
+    def test_normale_adresse(self):
+        msg = {"toRecipients": [{"emailAddress": {"address": "Kunde@Firma.CH"}}]}
+        assert _first_recipient(msg) == "kunde@firma.ch"
+
+    def test_keine_empfaenger(self):
+        assert _first_recipient({}) == ""
+        assert _first_recipient({"toRecipients": []}) == ""
+
+
+class TestNoreplyFilter:
+    def test_noreply_varianten(self):
+        for addr in ("no-reply@x.ch", "noreply@x.ch", "do_not_reply@x.ch", "newsletter@x.ch"):
+            assert _NOREPLY_RE.search(addr), addr
+
+    def test_normale_adresse_passiert(self):
+        assert _NOREPLY_RE.search("dominique.chuard@t-r.ch") is None

@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.auth.deps import MEMBER_RESTRICTED_TASK_FIELDS, check_project_access, get_current_user, require_role
 from app.routers.uploads import _scan_with_clamav
 from app.database import get_db
-from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, BoardMember, ChecklistItem, EmailTriage, Project, Task, User
+from app.models import ActivityLog, AgentJob, Attachment, BoardColumn, BoardMember, ChecklistItem, EmailTriage, FollowupSuggestion, Project, Task, User
 from app.services.notification import notify_mentions, notify_task_assigned
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "email-graph"))
@@ -208,6 +208,23 @@ async def create_task(
     db.add(task)
     await db.flush()
 
+    # Agent-Delegation direkt bei der Erstellung: gleicher 'planned'-Pfad wie
+    # beim PATCH (Zuweisung entkoppelt Ausführung; Freigabe via "Jetzt
+    # ausführen" oder Agent-Scheduler am Fälligkeitstag). Vorher erzeugte nur
+    # der Umweg über PATCH einen Job -- POST mit assignee='agent' lief leer.
+    if task.assignee == "agent" and user.role == "owner":
+        db.add(AgentJob(
+            task_id=task.id,
+            job_type="task",
+            status="planned",
+            llm_model=task.llm_override,
+            metadata_json={
+                "autonomy_level": task.autonomy_level,
+                "data_class": task.data_class,
+                "llm_override": task.llm_override,
+            },
+        ))
+
     if task.due_date and task.assignee != "agent":
         from app.services.pipeline_promoter import auto_place_task
         await auto_place_task(db, task)
@@ -238,6 +255,7 @@ class PendingReviewOut(BaseModel):
     email_conversation_id: str | None = None
     source_email_subject: str | None = None
     source_email_from: str | None = None
+    source: str | None = None  # 'followup' | None (Herkunfts-Badge im Cockpit)
     created_at: str
 
 
@@ -306,9 +324,14 @@ async def list_pending_review(
 ) -> list[PendingReviewOut]:
     """Tasks mit needs_review=True laden (auto-erstellte Task-Vorschlaege)."""
     result = await db.execute(
-        select(Task, Project.name, EmailTriage.subject, EmailTriage.from_name, EmailTriage.from_address)
+        select(
+            Task, Project.name,
+            EmailTriage.subject, EmailTriage.from_name, EmailTriage.from_address,
+            FollowupSuggestion.id,
+        )
         .join(Project, Task.project_id == Project.id)
         .outerjoin(EmailTriage, Task.email_message_id == EmailTriage.message_id)
+        .outerjoin(FollowupSuggestion, FollowupSuggestion.task_id == Task.id)
         .where(Task.needs_review == True)  # noqa: E712
         .order_by(Task.created_at.desc())
     )
@@ -327,9 +350,10 @@ async def list_pending_review(
             email_conversation_id=task.email_conversation_id,
             source_email_subject=email_subject,
             source_email_from=email_from_name or email_from_addr,
+            source="followup" if followup_id else None,
             created_at=task.created_at.isoformat(),
         )
-        for task, proj_name, email_subject, email_from_name, email_from_addr in rows
+        for task, proj_name, email_subject, email_from_name, email_from_addr, followup_id in rows
     ]
 
 
@@ -586,6 +610,23 @@ async def dismiss_review_task(
                 )
     except Exception:  # noqa: BLE001 - best-effort
         logger.warning("dismiss-review-Signal konnte nicht erfasst werden")
+
+    # Verwerfen-Entscheid auf der Quell-Triage festschreiben: Ohne diesen Marker
+    # erzeugte die nächste praktisch identische E-Mail (z. B. n8n-Fehler-Burst)
+    # denselben Vorschlag erneut, weil der Dedupe nur OFFENE Tasks prüft.
+    if task.email_message_id:
+        try:
+            triage_row = (
+                await db.execute(
+                    select(EmailTriage).where(EmailTriage.message_id == task.email_message_id)
+                )
+            ).scalar_one_or_none()
+            if triage_row is not None:
+                action = dict(triage_row.suggested_action or {})
+                action["task_dismissed"] = True
+                triage_row.suggested_action = action
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.warning("dismiss-review: Triage-Marker konnte nicht gesetzt werden")
 
     await db.delete(task)
 

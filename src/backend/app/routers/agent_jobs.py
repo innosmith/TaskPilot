@@ -172,6 +172,7 @@ def _extract_draft_id(job: AgentJob) -> str | None:
 async def list_agent_jobs(
     status: str | None = None,
     task_id: uuid.UUID | None = None,
+    job_type: str | None = Query(None, description="Job-Typ oder kommagetrennte Liste (z.B. daily_briefing,weekly_briefing)"),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require_role("owner")),
@@ -181,6 +182,10 @@ async def list_agent_jobs(
         query = query.where(AgentJob.status == status)
     if task_id:
         query = query.where(AgentJob.task_id == task_id)
+    if job_type:
+        types = [t.strip() for t in job_type.split(",") if t.strip()]
+        if types:
+            query = query.where(AgentJob.job_type.in_(types))
     query = query.order_by(AgentJob.created_at.desc()).limit(limit)
 
     result = await db.execute(query)
@@ -434,6 +439,28 @@ async def update_agent_job(
                 finally:
                     await client.close()
 
+    # Nutzer-Entscheid festschreiben: Ohne diesen Schritt blieb die zugehörige
+    # email_triage-Zeile bei Parser-Fehlschlägen auf (class=NULL, status=pending)
+    # hängen -- der Resweep reihte die Mail dann erneut ein und die bereits
+    # bestätigte/abgelehnte Freigabe tauchte im Cockpit wieder auf.
+    if (
+        old_status == "awaiting_approval"
+        and body.status in ("completed", "failed")
+        and job.job_type in ("send_email", "email_triage")
+    ):
+        from sqlalchemy import or_, update as sa_update
+
+        from app.models import EmailTriage
+
+        await db.execute(
+            sa_update(EmailTriage)
+            .where(
+                EmailTriage.agent_job_id == job.id,
+                or_(EmailTriage.status == "pending", EmailTriage.triage_class.is_(None)),
+            )
+            .values(status="acted" if body.status == "completed" else "dismissed")
+        )
+
     return job
 
 
@@ -522,7 +549,11 @@ async def bulk_delete_agent_jobs(
 
     conditions = [status_filter]
     if job_type:
-        conditions.append(AgentJob.job_type == job_type)
+        # 'briefing' ist ein Sammel-Alias für die drei Briefing-Job-Typen (UI-Filter).
+        if job_type == "briefing":
+            conditions.append(AgentJob.job_type.in_(["daily_briefing", "weekly_briefing", "monthly_briefing"]))
+        else:
+            conditions.append(AgentJob.job_type == job_type)
     if older_than_days is not None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
         conditions.append(AgentJob.created_at < cutoff)
